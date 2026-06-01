@@ -28,6 +28,7 @@ public final class FabricCli {
                 case "diff" -> new DiffCommand().run(rest, out);
                 case "explain-rejection" -> new ExplainRejectionCommand().run(rest, out);
                 case "analyze-workflow" -> new AnalyzeWorkflowCommand().run(rest, out);
+                case "ask-advisor" -> new AskAdvisorCommand().run(rest, out);
                 default -> throw FabricCliException.usage("unknown command: " + command);
             };
         } catch (FabricCliException ex) {
