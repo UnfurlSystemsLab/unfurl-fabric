@@ -1,0 +1,48 @@
+# Maven / Java build output
+target/
+*/target/
+**/target/
+*.class
+
+# Test framework state
+.jqwik-database
+.jqwik-database/
+surefire-reports/
+**/surefire-reports/
+
+# Jar manifests + intermediate build artifacts that escape target/
+*.jar
+!src/test/resources/**/*.jar
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+out/
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Temporary files
+*.tmp
+*.swp
+*~
+
+# Maven wrapper that might escape
+.mvn/wrapper/maven-wrapper.jar

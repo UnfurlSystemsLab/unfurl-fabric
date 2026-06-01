@@ -20,9 +20,14 @@ public final class FabricCli {
                 case "list-capabilities" -> new ListCapabilitiesCommand().run(rest, out);
                 case "plan" -> new PlanCommand().run(rest, out);
                 case "compile" -> new CompileCommand().run(rest, out, err);
+                case "dry-run" -> new DryRunCommand().run(rest, out, err);
                 case "sign" -> new SignCommand().run(rest, out);
                 case "verify" -> new VerifyCommand().run(rest, out, err);
+                case "explain" -> new ExplainCommand().run(rest, out);
+                case "explain-substrate" -> new ExplainSubstrateCommand().run(rest, out);
+                case "diff" -> new DiffCommand().run(rest, out);
                 case "explain-rejection" -> new ExplainRejectionCommand().run(rest, out);
+                case "analyze-workflow" -> new AnalyzeWorkflowCommand().run(rest, out);
                 default -> throw FabricCliException.usage("unknown command: " + command);
             };
         } catch (FabricCliException ex) {
