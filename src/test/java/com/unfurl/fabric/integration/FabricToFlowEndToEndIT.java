@@ -96,6 +96,52 @@ class FabricToFlowEndToEndIT {
         }
     }
 
+    @Test
+    void fabricContainerPolicyIsRejectedByFlowStrictShapeGate() throws Exception {
+        Path flowJar = flowJar();
+        Assumptions.assumeTrue(Files.isRegularFile(flowJar),
+                "set -Dunfurl.flow.jar=<path-to-unfurl-flow-shaded-jar> or run mvn package in ../unfurl-flow");
+
+        Path catalog = tempDir.resolve("shape-catalog");
+        writeShapedCatalogJar(catalog, "function.jar", "function-local", "function.local",
+                "function.local@*?substrate=true&provider=flow");
+        Path needs = writeNeeds("function.local");
+        Path policy = writeDeploymentPolicy();
+        Path compiled = tempDir.resolve("shape-compiled.yaml");
+        Path substrateProfile = tempDir.resolve("shape-compiled.substrate-profile.yaml");
+
+        assertRunOk(FabricCli.run(new String[]{"compile",
+                "--catalog", catalog.toString(),
+                "--needs", needs.toString(),
+                "--deployment-policy", policy.toString(),
+                "--out", compiled.toString(),
+                "--substrate-profile-out", substrateProfile.toString()
+        }, stdout(), stderr()));
+
+        KeyPair pair = SigningTestFixtures.generateEcKeyPair();
+        Path privateKey = SigningTestFixtures.writePrivateKeyPem(tempDir, "shape-fabric-key.pem", pair.getPrivate());
+        Path publicKey = SigningTestFixtures.writePublicKeyPem(tempDir, "shape-fabric-pub.pem", pair.getPublic());
+        Path signed = tempDir.resolve("shape-signed.yaml");
+        assertRunOk(FabricCli.run(new String[]{"sign",
+                "--contract", compiled.toString(),
+                "--key", privateKey.toString(),
+                "--public-key", publicKey.toString(),
+                "--out", signed.toString()
+        }, stdout(), stderr()));
+
+        Path runtimeProfile = writeRuntimeProfile(signed, substrateProfile);
+        int port = freePort();
+        Process flow = startFlow(flowJar, runtimeProfile, port);
+        try {
+            assertThat(flow.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(flow.exitValue()).isNotZero();
+            assertThat(Files.readString(tempDir.resolve("flow.log"), StandardCharsets.UTF_8))
+                    .contains("deployment shape CONTAINERIZED_SERVICE is not supported by substrate");
+        } finally {
+            flow.destroyForcibly();
+        }
+    }
+
     private Process startFlow(Path flowJar, Path runtimeProfile, int port) throws IOException {
         return new ProcessBuilder(
                 javaExecutable().toString(),
@@ -205,6 +251,16 @@ class FabricToFlowEndToEndIT {
         }
     }
 
+    private void writeShapedCatalogJar(Path dir, String fileName, String artifact, String capability, String dependency) throws IOException {
+        Files.createDirectories(dir);
+        Path target = dir.resolve(fileName);
+        try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(target))) {
+            jar.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
+            jar.write(shapedManifest(artifact, capability, dependency).getBytes(StandardCharsets.UTF_8));
+            jar.closeEntry();
+        }
+    }
+
     private String manifest(String artifact, String capability, String dependency) {
         return """
                 claim:
@@ -245,6 +301,15 @@ class FabricToFlowEndToEndIT {
                 """.formatted(artifact, artifact, artifact, capability, capability, dependency, capability, capability, artifact);
     }
 
+    private String shapedManifest(String artifact, String capability, String dependency) {
+        return manifest(artifact, capability, dependency) + """
+                  componentShapeProfile:
+                    defaultShape: IN_PROCESS_LIBRARY
+                    supportedShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
+                    shapeRuntime: {}
+                """;
+    }
+
     private Path writeNeeds(String capability) throws IOException {
         Path target = tempDir.resolve("needs.yaml");
         Files.writeString(target, """
@@ -252,6 +317,20 @@ class FabricToFlowEndToEndIT {
                   - capability: %s
                     capabilityVersion: ^1
                 """.formatted(capability), StandardCharsets.UTF_8);
+        return target;
+    }
+
+    private Path writeDeploymentPolicy() throws IOException {
+        Path target = tempDir.resolve("deployment-policy.yaml");
+        Files.writeString(target, """
+                preferredShapes: [CONTAINERIZED_SERVICE]
+                disallowedShapes: []
+                requireIsolationForCapabilityPatterns: []
+                runtime:
+                  springBoot: true
+                  kubernetes: true
+                  serviceMesh: true
+                """, StandardCharsets.UTF_8);
         return target;
     }
 
