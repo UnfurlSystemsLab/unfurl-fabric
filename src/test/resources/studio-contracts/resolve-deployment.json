@@ -1,0 +1,19 @@
+{
+  "status": "RESOLVED",
+  "candidateId": "cand-abc123",
+  "selections": [
+    {
+      "componentId": "storage-s3",
+      "artifactCoordinates": "com.unfurl:storage-s3:1.0.0",
+      "capability": "storage.put",
+      "deploymentShape": "CONTAINERIZED_SERVICE",
+      "requiredPorts": [
+        "substrate.container.runtime"
+      ]
+    }
+  ],
+  "warnings": [
+    "service count is near the configured maximum"
+  ],
+  "rejectedShapes": []
+}

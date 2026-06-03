@@ -13,6 +13,7 @@ surefire-reports/
 # Jar manifests + intermediate build artifacts that escape target/
 *.jar
 !src/test/resources/**/*.jar
+dependency-reduced-pom.xml
 
 # IDE files
 .idea/
