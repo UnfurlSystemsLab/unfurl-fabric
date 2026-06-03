@@ -1,6 +1,8 @@
 package com.unfurl.fabric.substrate;
 
 import com.unfurl.dcp.claim.Dependencies;
+import com.unfurl.deployment.plan.BindingPlan;
+import com.unfurl.deployment.plan.BindingPlanEntry;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.substrate.api.BindingMode;
@@ -24,6 +26,10 @@ public final class SubstrateProfileDeriver {
             Pattern.compile("(?i).*(?:_KEY|_TOKEN|_SECRET|PASSWORD|APIKEY|ACCESSKEY).*");
 
     public SubstrateProfile derive(CompositionCandidate candidate) {
+        return derive(candidate, null);
+    }
+
+    public SubstrateProfile derive(CompositionCandidate candidate, BindingPlan bindingPlan) {
         if (candidate == null) {
             throw new IllegalArgumentException("candidate is required");
         }
@@ -49,6 +55,14 @@ public final class SubstrateProfileDeriver {
                 SubstrateDependencyUri uri = SubstrateDependencyUri.parse(raw);
                 ports.merge(uri.port(), new PortAccum(uri.port(), uri.versionRange(), uri.provider()),
                         SubstrateProfileDeriver::merge);
+            }
+        }
+        if (bindingPlan != null) {
+            for (BindingPlanEntry entry : bindingPlan.entries()) {
+                for (String port : entry.requiredSubstratePorts()) {
+                    rejectSecretLike(port);
+                    ports.merge(port, new PortAccum(port, "*", null), SubstrateProfileDeriver::merge);
+                }
             }
         }
 

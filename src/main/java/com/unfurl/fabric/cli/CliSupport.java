@@ -7,6 +7,19 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.unfurl.dcp.claim.Offer;
+import com.unfurl.deployment.domain.ComponentShapeProfile;
+import com.unfurl.deployment.domain.DeploymentShape;
+import com.unfurl.deployment.domain.SubstrateShapeSupport;
+import com.unfurl.deployment.plan.BindingPlan;
+import com.unfurl.deployment.plan.DeploymentResolutionException;
+import com.unfurl.deployment.plan.DeploymentResolutionReport;
+import com.unfurl.deployment.policy.DeploymentPolicy;
+import com.unfurl.deployment.policy.DeploymentRuntime;
+import com.unfurl.deployment.resolver.DeploymentComponent;
+import com.unfurl.deployment.resolver.DeploymentShapeResolver;
+import com.unfurl.deployment.resolver.ResolverOutcome;
+import com.unfurl.deployment.serialization.DeploymentPolicyCodec;
 import com.unfurl.fabric.catalog.Catalog;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogScanReport;
@@ -34,6 +47,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.OptionalInt;
 import java.util.stream.Collectors;
 
 final class CliSupport {
@@ -67,19 +81,53 @@ final class CliSupport {
         return new Planned(catalog, need, trust, result);
     }
 
+    static DeploymentPolicy loadDeploymentPolicy(CliArgs args) {
+        Path path = args.optionalPath("deployment-policy");
+        if (path == null) {
+            return defaultDeploymentPolicy();
+        }
+        try {
+            return new DeploymentPolicyCodec().parse(Files.readString(path));
+        } catch (IOException ex) {
+            throw FabricCliException.runtime("unable to read deployment policy " + path + ": " + ex.getMessage());
+        }
+    }
+
     static CompiledWithProfile compileCandidate(CompositionCandidate candidate, Need need, String selectionMode) {
+        return compileCandidate(candidate, need, selectionMode, defaultDeploymentPolicy());
+    }
+
+    static CompiledWithProfile compileCandidate(
+            CompositionCandidate candidate,
+            Need need,
+            String selectionMode,
+            DeploymentPolicy deploymentPolicy) {
+        ResolverOutcome resolved = resolveDeployment(candidate, deploymentPolicy);
         CompiledContract compiled = new ContractCompiler(CLI_COMPILE_CLOCK)
                 .compile(candidate, need, new HostOwnerMeta(null, null, null));
-        SubstrateProfile profile = new SubstrateProfileDeriver().derive(candidate);
+        BindingPlan bindingPlan = resolved.plan();
+        SubstrateProfile profile = new SubstrateProfileDeriver().derive(candidate, bindingPlan);
         SubstrateProfileCodec profileCodec = new SubstrateProfileCodec();
         SubstrateProfile hashedProfile = profile.withProfileHash(profileCodec.computeProfileHash(profile));
         CompiledContract withProfileHash = new CompiledContract(
                 compiled.contract(),
-                compiled.selections(),
+                selectionsWithDeploymentShapes(compiled.selections(), bindingPlan),
                 compiled.audit().withSelectionMode(selectionMode),
                 hashedProfile.profileHash(),
+                bindingPlan,
                 compiled.signature());
-        return new CompiledWithProfile(withProfileHash, hashedProfile);
+        return new CompiledWithProfile(withProfileHash, hashedProfile, resolved.report());
+    }
+
+    static ResolverOutcome resolveDeployment(CompositionCandidate candidate, DeploymentPolicy deploymentPolicy) {
+        try {
+            return new DeploymentShapeResolver().resolve(
+                    deploymentComponents(candidate),
+                    allShapeSupport(),
+                    deploymentPolicy == null ? defaultDeploymentPolicy() : deploymentPolicy);
+        } catch (DeploymentResolutionException ex) {
+            throw FabricCliException.runtime(renderDeploymentFailure(ex));
+        }
     }
 
     static void writeCompiled(CompiledContract compiled, Path out) {
@@ -148,10 +196,88 @@ final class CliSupport {
         return mapper;
     }
 
+    private static List<DeploymentComponent> deploymentComponents(CompositionCandidate candidate) {
+        return candidate.entries().stream()
+                .sorted(CatalogEntry.CANONICAL_ORDER)
+                .map(entry -> new DeploymentComponent(
+                        entry.artifact().coordinates(),
+                        entry.artifact().coordinates(),
+                        entry.artifact().sha256(),
+                        entry.claimDescriptor().claim().offers().stream()
+                                .map(Offer::capability)
+                                .sorted()
+                                .toList(),
+                        entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry))))
+                .toList();
+    }
+
+    private static ComponentShapeProfile inferredShapeProfile(CatalogEntry entry) {
+        DeploymentShape shape = switch (entry.metadata().binding().defaultMode()) {
+            case REMOTE_HTTP -> DeploymentShape.REMOTE_MICROSERVICE;
+            default -> DeploymentShape.IN_PROCESS_LIBRARY;
+        };
+        return new ComponentShapeProfile(shape, java.util.Set.of(shape), java.util.Map.of());
+    }
+
+    private static SubstrateShapeSupport allShapeSupport() {
+        return new SubstrateShapeSupport(java.util.EnumSet.allOf(DeploymentShape.class));
+    }
+
+    private static DeploymentPolicy defaultDeploymentPolicy() {
+        return new DeploymentPolicy(
+                List.of(DeploymentShape.IN_PROCESS_LIBRARY),
+                java.util.Set.of(),
+                List.of(),
+                new DeploymentRuntime(null, true, true, true, OptionalInt.empty()));
+    }
+
+    private static List<com.unfurl.fabric.compiler.SelectionRecord> selectionsWithDeploymentShapes(
+            List<com.unfurl.fabric.compiler.SelectionRecord> selections,
+            BindingPlan bindingPlan) {
+        java.util.Map<String, DeploymentShape> shapesByCoordinates = bindingPlan.entries().stream()
+                .collect(Collectors.toMap(
+                        com.unfurl.deployment.plan.BindingPlanEntry::artifactCoordinates,
+                        com.unfurl.deployment.plan.BindingPlanEntry::deploymentShape,
+                        (left, right) -> left,
+                        java.util.TreeMap::new));
+        return selections.stream()
+                .map(selection -> new com.unfurl.fabric.compiler.SelectionRecord(
+                        selection.artifact(),
+                        selection.claimHash(),
+                        selection.bindingMode(),
+                        selection.chosenInterfaceKind(),
+                        shapesByCoordinates.get(selection.artifact().coordinates())))
+                .toList();
+    }
+
+    private static String renderDeploymentFailure(DeploymentResolutionException ex) {
+        StringBuilder message = new StringBuilder("deployment shape resolution failed: ")
+                .append(ex.getMessage());
+        ex.partialReport().ifPresent(report -> appendReport(message, report));
+        return message.toString();
+    }
+
+    private static void appendReport(StringBuilder out, DeploymentResolutionReport report) {
+        if (!report.rejectedShapesWithReasons().isEmpty()) {
+            out.append(System.lineSeparator()).append("rejectedShapes:");
+            report.rejectedShapesWithReasons().forEach((component, rejections) -> {
+                out.append(System.lineSeparator()).append("- ").append(component);
+                rejections.forEach(rejection -> out.append(System.lineSeparator())
+                        .append("  ")
+                        .append(rejection.shape())
+                        .append(": ")
+                        .append(rejection.detail()));
+            });
+        }
+    }
+
     record Planned(Catalog catalog, Need need, TrustClassification trust, MatchResult result) {
     }
 
-    record CompiledWithProfile(CompiledContract contract, SubstrateProfile profile) {
+    record CompiledWithProfile(
+            CompiledContract contract,
+            SubstrateProfile profile,
+            DeploymentResolutionReport deploymentReport) {
     }
 
     private CliSupport() {

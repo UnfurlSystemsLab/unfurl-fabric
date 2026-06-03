@@ -49,6 +49,20 @@ final class CliTestFixtures {
         return writeCatalogJar(dir, fileName, artifact, capability, "Unfurl", "ACTIVE", dependencyYaml);
     }
 
+    static Path writeCatalogJarWithShapeProfile(
+            Path dir,
+            String fileName,
+            String artifact,
+            String capability,
+            String componentShapeProfileYaml,
+            String... dependencies) throws IOException {
+        String dependencyYaml = java.util.Arrays.stream(dependencies)
+                .map(dep -> "                      - " + dep)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        return writeCatalogJar(dir, fileName, artifact, capability, "Unfurl", "ACTIVE",
+                dependencyYaml, componentShapeProfileYaml);
+    }
+
     private static Path writeCatalogJar(
             Path dir,
             String fileName,
@@ -57,11 +71,23 @@ final class CliTestFixtures {
             String publisher,
             String lifecycle,
             String dependencyYaml) throws IOException {
+        return writeCatalogJar(dir, fileName, artifact, capability, publisher, lifecycle, dependencyYaml, "");
+    }
+
+    private static Path writeCatalogJar(
+            Path dir,
+            String fileName,
+            String artifact,
+            String capability,
+            String publisher,
+            String lifecycle,
+            String dependencyYaml,
+            String componentShapeProfileYaml) throws IOException {
         Files.createDirectories(dir);
         Path target = dir.resolve(fileName);
         try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(target))) {
             jar.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
-            jar.write(manifest(artifact, capability, publisher, lifecycle, dependencyYaml)
+            jar.write(manifest(artifact, capability, publisher, lifecycle, dependencyYaml, componentShapeProfileYaml)
                     .getBytes(StandardCharsets.UTF_8));
             jar.closeEntry();
         }
@@ -125,7 +151,20 @@ final class CliTestFixtures {
             String publisher,
             String lifecycle,
             String dependencyYaml) {
+        return manifest(artifact, capability, publisher, lifecycle, dependencyYaml, "");
+    }
+
+    private static String manifest(
+            String artifact,
+            String capability,
+            String publisher,
+            String lifecycle,
+            String dependencyYaml,
+            String componentShapeProfileYaml) {
         String deps = dependencyYaml == null || dependencyYaml.isBlank() ? "[]" : "\n" + dependencyYaml;
+        String shapeProfile = componentShapeProfileYaml == null || componentShapeProfileYaml.isBlank()
+                ? ""
+                : "\n" + componentShapeProfileYaml;
         return """
                 claim:
                   identity:
@@ -161,8 +200,9 @@ final class CliTestFixtures {
                   binding:
                     defaultMode: IN_PROCESS
                     supportedModes: [IN_PROCESS]
+                %s
                 """.formatted(artifact, artifact, publisher, artifact, capability, capability,
-                deps, capability, capability, lifecycle, artifact);
+                deps, capability, capability, lifecycle, artifact, shapeProfile);
     }
 
     record CliRun(int exitCode, String stdout, String stderr) {

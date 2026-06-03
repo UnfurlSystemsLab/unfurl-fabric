@@ -17,16 +17,17 @@ final class CompileCommand {
         if (profileTarget == null) {
             profileTarget = CliSupport.defaultProfilePath(target);
         }
+        var deploymentPolicy = CliSupport.loadDeploymentPolicy(args);
         CliSupport.Planned planned = CliSupport.planned(args);
         MatchResult result = planned.result();
 
         if (result instanceof MatchResult.ExactMatch exact) {
-            write(exact.candidate(), planned, target, profileTarget, "AUTO_SINGLE", out);
+            write(exact.candidate(), planned, target, profileTarget, "AUTO_SINGLE", deploymentPolicy, out);
             return 0;
         }
         if (result instanceof MatchResult.Ambiguous ambiguous) {
             if (args.has("auto-select-best")) {
-                write(ambiguous.candidates().get(0), planned, target, profileTarget, "AUTO_BEST_SCORE", out);
+                write(ambiguous.candidates().get(0), planned, target, profileTarget, "AUTO_BEST_SCORE", deploymentPolicy, out);
                 return 0;
             }
             String selected = args.get("select");
@@ -34,7 +35,7 @@ final class CompileCommand {
                 CompositionCandidate candidate = ambiguous.findById(selected)
                         .orElseThrow(() -> FabricCliException.usage(
                                 "unknown candidate id " + selected + "; valid ids: " + validIds(ambiguous)));
-                write(candidate, planned, target, profileTarget, "MANUAL", out);
+                write(candidate, planned, target, profileTarget, "MANUAL", deploymentPolicy, out);
                 return 0;
             }
             err.println("ambiguous candidates:");
@@ -57,14 +58,17 @@ final class CompileCommand {
             Path target,
             Path profileTarget,
             String selectionMode,
+            com.unfurl.deployment.policy.DeploymentPolicy deploymentPolicy,
             PrintStream out) {
-        CliSupport.CompiledWithProfile compiled = CliSupport.compileCandidate(candidate, planned.need(), selectionMode);
+        CliSupport.CompiledWithProfile compiled = CliSupport.compileCandidate(
+                candidate, planned.need(), selectionMode, deploymentPolicy);
         CliSupport.writeCompiled(compiled.contract(), target);
         CliSupport.writeProfile(compiled.profile(), profileTarget);
         out.println("compiled=" + target);
         out.println("substrateProfile=" + profileTarget);
         out.println("candidateId=" + candidate.candidateId());
         out.println("selectionMode=" + selectionMode);
+        out.println("deploymentShapes=" + compiled.deploymentReport().selectedShapePerComponent());
     }
 
     private static String validIds(MatchResult.Ambiguous ambiguous) {
