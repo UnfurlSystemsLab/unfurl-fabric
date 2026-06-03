@@ -25,6 +25,8 @@ public final class FabricCli {
                 case "verify" -> new VerifyCommand().run(rest, out, err);
                 case "explain" -> new ExplainCommand().run(rest, out);
                 case "explain-substrate" -> new ExplainSubstrateCommand().run(rest, out);
+                case "explain-deployment" -> new ExplainDeploymentCommand().run(rest, out);
+                case "resolve-deployment" -> new ResolveDeploymentCommand().run(rest, out, err);
                 case "diff" -> new DiffCommand().run(rest, out);
                 case "explain-rejection" -> new ExplainRejectionCommand().run(rest, out);
                 case "analyze-workflow" -> new AnalyzeWorkflowCommand().run(rest, out);

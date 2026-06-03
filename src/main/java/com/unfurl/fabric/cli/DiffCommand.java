@@ -2,6 +2,7 @@ package com.unfurl.fabric.cli;
 
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.SelectionRecord;
+import com.unfurl.deployment.plan.BindingPlanEntry;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
 import com.unfurl.substrate.api.SubstratePortRequirement;
@@ -34,6 +35,7 @@ final class DiffCommand {
         out.println();
 
         printSelectionDelta(out, left.contract(), right.contract());
+        printDeploymentDelta(out, left.contract(), right.contract());
         printSubstrateDelta(out, left.contract(), right.contract(), args);
         return 0;
     }
@@ -54,6 +56,36 @@ final class DiffCommand {
                 .filter(key -> leftSelections.containsKey(key) && rightSelections.containsKey(key))
                 .filter(key -> selectionChanged(leftSelections.get(key), rightSelections.get(key)))
                 .toList());
+        out.println();
+    }
+
+    private void printDeploymentDelta(PrintStream out, CompiledContract left, CompiledContract right) {
+        Map<String, BindingPlanEntry> leftEntries = bindingEntries(left);
+        Map<String, BindingPlanEntry> rightEntries = bindingEntries(right);
+        Set<String> keys = union(leftEntries.keySet(), rightEntries.keySet());
+
+        out.println("Deployment shape delta");
+        printKeys(out, "addedDeploymentEntries", keys.stream()
+                .filter(key -> !leftEntries.containsKey(key) && rightEntries.containsKey(key))
+                .toList());
+        printKeys(out, "removedDeploymentEntries", keys.stream()
+                .filter(key -> leftEntries.containsKey(key) && !rightEntries.containsKey(key))
+                .toList());
+        java.util.List<String> changed = keys.stream()
+                .filter(key -> leftEntries.containsKey(key) && rightEntries.containsKey(key))
+                .filter(key -> deploymentChanged(leftEntries.get(key), rightEntries.get(key)))
+                .toList();
+        out.println("changedDeploymentShapes:");
+        if (changed.isEmpty()) {
+            out.println("- none");
+        } else {
+            for (String key : changed) {
+                BindingPlanEntry l = leftEntries.get(key);
+                BindingPlanEntry r = rightEntries.get(key);
+                out.println("- " + key + " " + l.deploymentShape() + " -> " + r.deploymentShape()
+                        + " ports " + l.requiredSubstratePorts() + " -> " + r.requiredSubstratePorts());
+            }
+        }
         out.println();
     }
 
@@ -98,6 +130,17 @@ final class DiffCommand {
         return result;
     }
 
+    private Map<String, BindingPlanEntry> bindingEntries(CompiledContract contract) {
+        Map<String, BindingPlanEntry> result = new LinkedHashMap<>();
+        if (contract.bindingPlan() == null) {
+            return result;
+        }
+        contract.bindingPlan().entries().stream()
+                .sorted(Comparator.comparing(this::bindingKey))
+                .forEach(entry -> result.put(bindingKey(entry), entry));
+        return result;
+    }
+
     private Map<String, SubstratePortRequirement> portsByName(SubstrateProfile profile) {
         Map<String, SubstratePortRequirement> result = new LinkedHashMap<>();
         profile.portRequirements().stream()
@@ -110,7 +153,19 @@ final class DiffCommand {
         return !Objects.equals(left.artifact().sha256(), right.artifact().sha256())
                 || !Objects.equals(left.claimHash(), right.claimHash())
                 || left.bindingMode() != right.bindingMode()
-                || left.chosenInterfaceKind() != right.chosenInterfaceKind();
+                || left.chosenInterfaceKind() != right.chosenInterfaceKind()
+                || left.deploymentShape() != right.deploymentShape();
+    }
+
+    private boolean deploymentChanged(BindingPlanEntry left, BindingPlanEntry right) {
+        return left.deploymentShape() != right.deploymentShape()
+                || left.bindingMode() != right.bindingMode()
+                || !Objects.equals(left.endpointRef(), right.endpointRef())
+                || !Objects.equals(left.requiredSubstratePorts(), right.requiredSubstratePorts());
+    }
+
+    private String bindingKey(BindingPlanEntry entry) {
+        return entry.componentId() + "/" + entry.capability();
     }
 
     private boolean portChanged(SubstratePortRequirement left, SubstratePortRequirement right) {
