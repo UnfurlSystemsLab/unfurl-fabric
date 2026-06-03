@@ -1,6 +1,7 @@
 package com.unfurl.fabric.compiler;
 
 import com.unfurl.dcp.claim.InterfaceKind;
+import com.unfurl.deployment.domain.DeploymentShape;
 import com.unfurl.fabric.catalog.ArtifactDescriptor;
 import com.unfurl.substrate.api.BindingMode;
 
@@ -8,8 +9,17 @@ public record SelectionRecord(
         ArtifactDescriptor artifact,
         String claimHash,
         BindingMode bindingMode,
-        InterfaceKind chosenInterfaceKind
+        InterfaceKind chosenInterfaceKind,
+        DeploymentShape deploymentShape
 ) {
+    public SelectionRecord(
+            ArtifactDescriptor artifact,
+            String claimHash,
+            BindingMode bindingMode,
+            InterfaceKind chosenInterfaceKind) {
+        this(artifact, claimHash, bindingMode, chosenInterfaceKind, null);
+    }
+
     public SelectionRecord {
         if (artifact == null) {
             throw new IllegalArgumentException("artifact is required");

@@ -95,4 +95,34 @@ class CatalogManifestCodecTest {
 
         assertThat(hashA).isNotEqualTo(hashB);
     }
+
+    @Test
+    void parsesComponentShapeProfileBlock() {
+        String manifest = CatalogFixtures.storageS3Manifest()
+                .replace("""
+                          binding:
+                            defaultMode: IN_PROCESS
+                            supportedModes: [IN_PROCESS]
+                        """, """
+                          binding:
+                            defaultMode: IN_PROCESS
+                            supportedModes: [IN_PROCESS]
+                          componentShapeProfile:
+                            defaultShape: IN_PROCESS_LIBRARY
+                            supportedShapes: [IN_PROCESS_LIBRARY, SPRING_BOOT_SERVICE]
+                            shapeRuntime:
+                              SPRING_BOOT_SERVICE:
+                                shape: SPRING_BOOT_SERVICE
+                                bindingMode: REMOTE_HTTP
+                                endpointRefHint: storage-service
+                        """);
+
+        ParsedManifest parsed = codec.parse(manifest.getBytes(StandardCharsets.UTF_8));
+
+        assertThat(parsed.componentShapeProfile()).isNotNull();
+        assertThat(parsed.componentShapeProfile().defaultShape().name()).isEqualTo("IN_PROCESS_LIBRARY");
+        assertThat(parsed.componentShapeProfile().supportedShapes())
+                .extracting(Enum::name)
+                .containsExactlyInAnyOrder("IN_PROCESS_LIBRARY", "SPRING_BOOT_SERVICE");
+    }
 }

@@ -1,6 +1,7 @@
 package com.unfurl.fabric.compiler;
 
 import com.unfurl.dcp.contract.CompositionContract;
+import com.unfurl.deployment.plan.BindingPlan;
 
 import java.util.List;
 
@@ -9,8 +10,18 @@ public record CompiledContract(
         List<SelectionRecord> selections,
         DecisionAudit audit,
         String substrateProfileHash,
+        BindingPlan bindingPlan,
         byte[] signature
 ) {
+    public CompiledContract(
+            CompositionContract contract,
+            List<SelectionRecord> selections,
+            DecisionAudit audit,
+            String substrateProfileHash,
+            byte[] signature) {
+        this(contract, selections, audit, substrateProfileHash, null, signature);
+    }
+
     public CompiledContract {
         if (contract == null) {
             throw new IllegalArgumentException("contract is required");

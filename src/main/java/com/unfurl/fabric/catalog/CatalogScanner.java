@@ -100,7 +100,7 @@ public final class CatalogScanner {
 
         CatalogMetadata metadata = new CatalogMetadata(parsed.lifecycle(), parsed.binding());
 
-        return new CatalogEntry(artifact, claimDescriptor, metadata, jarPath);
+        return new CatalogEntry(artifact, claimDescriptor, metadata, parsed.componentShapeProfile(), jarPath);
     }
 
     private byte[] readJarBytes(Path jarPath) {

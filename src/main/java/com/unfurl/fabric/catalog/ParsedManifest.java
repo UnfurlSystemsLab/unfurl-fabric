@@ -1,6 +1,7 @@
 package com.unfurl.fabric.catalog;
 
 import com.unfurl.dcp.claim.Claim;
+import com.unfurl.deployment.domain.ComponentShapeProfile;
 
 /**
  * Result of parsing META-INF/unfurl-catalog.yaml. The two-block manifest separates a pure
@@ -11,8 +12,17 @@ public record ParsedManifest(
         Claim claim,
         Lifecycle lifecycle,
         AuthoredArtifact authoredArtifact,
-        BindingDescriptor binding
+        BindingDescriptor binding,
+        ComponentShapeProfile componentShapeProfile
 ) {
+    public ParsedManifest(
+            Claim claim,
+            Lifecycle lifecycle,
+            AuthoredArtifact authoredArtifact,
+            BindingDescriptor binding) {
+        this(claim, lifecycle, authoredArtifact, binding, null);
+    }
+
     public ParsedManifest {
         if (claim == null) {
             throw new IllegalArgumentException("claim block is required");

@@ -8,7 +8,9 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.unfurl.dcp.claim.Claim;
+import com.unfurl.deployment.domain.ComponentShapeProfile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -55,7 +57,7 @@ public final class CatalogManifestCodec {
             if (cat.binding == null) {
                 throw new CatalogScanException("manifest catalog block is missing required `binding`");
             }
-            return new ParsedManifest(envelope.claim, cat.lifecycle, cat.artifact, cat.binding);
+            return new ParsedManifest(envelope.claim, cat.lifecycle, cat.artifact, cat.binding, cat.componentShapeProfile);
         } catch (IOException ex) {
             throw new CatalogScanException("unable to parse catalog manifest: " + ex.getMessage(), ex);
         }
@@ -80,6 +82,7 @@ public final class CatalogManifestCodec {
                 .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
                 .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES);
         ObjectMapper mapper = new ObjectMapper(yamlFactory);
+        mapper.registerModule(new Jdk8Module());
         mapper.registerModule(new JavaTimeModule());
         mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -92,6 +95,7 @@ public final class CatalogManifestCodec {
                 .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
                 .disable(YAMLGenerator.Feature.SPLIT_LINES);
         ObjectMapper mapper = new ObjectMapper(yamlFactory);
+        mapper.registerModule(new Jdk8Module());
         mapper.registerModule(new JavaTimeModule());
         mapper.enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
         mapper.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);
@@ -119,6 +123,7 @@ public final class CatalogManifestCodec {
         public Lifecycle lifecycle;
         public AuthoredArtifact artifact;
         public BindingDescriptor binding;
+        public ComponentShapeProfile componentShapeProfile;
     }
 
     private static final class Sha256 {
