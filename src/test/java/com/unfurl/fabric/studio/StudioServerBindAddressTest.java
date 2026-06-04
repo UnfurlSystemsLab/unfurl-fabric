@@ -8,7 +8,11 @@ class StudioServerBindAddressTest {
 
     @Test
     void defaultsToLoopbackBindAddress() throws Exception {
-        try (StudioServer server = new StudioServer()) {
+        // The no-arg constructor binds to DEFAULT_PORT, which races against any
+        // real Studio server running on the developer's machine. Verify the
+        // loopback default through the constant + an ephemeral-port server.
+        assertThat(StudioServer.DEFAULT_BIND_ADDRESS).isEqualTo("127.0.0.1");
+        try (StudioServer server = new StudioServer(StudioServer.DEFAULT_BIND_ADDRESS, 0)) {
             assertThat(server.bindAddress()).isEqualTo("127.0.0.1");
             assertThat(server.nonLoopbackBindWarningRequired()).isFalse();
         }

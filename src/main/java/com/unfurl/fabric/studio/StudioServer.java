@@ -9,15 +9,22 @@ import com.unfurl.fabric.studio.handlers.ResolveDeploymentHandler;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Map;
-import java.util.Set;
+import java.util.regex.Pattern;
 
 public final class StudioServer implements AutoCloseable {
     public static final String DEFAULT_BIND_ADDRESS = "127.0.0.1";
     public static final int DEFAULT_PORT = 7878;
 
-    private static final Set<String> ALLOWED_DEV_ORIGINS = Set.of(
-            "http://localhost:5173",
-            "http://127.0.0.1:5173");
+    /**
+     * Any HTTP loopback origin is accepted in dev: {@code http://localhost(:port)?}
+     * or {@code http://127.0.0.1(:port)?}. Pinning to a single port (e.g. 5173)
+     * is too brittle in practice because Vite picks the next available port
+     * when its default is taken, drifting to 5174, 5175, 5177, etc. The
+     * loopback-only invariant from §2.5 Rule 2 is preserved: HTTPS, non-loopback
+     * hostnames, and non-loopback IPv4 addresses are all rejected.
+     */
+    static final Pattern ALLOWED_DEV_ORIGIN = Pattern.compile(
+            "^http://(localhost|127\\.0\\.0\\.1)(:\\d{1,5})?$");
 
     private final HttpServer server;
     private final ObjectMapper mapper;
@@ -81,7 +88,7 @@ public final class StudioServer implements AutoCloseable {
 
     private void applyCors(HttpExchange exchange) {
         String origin = exchange.getRequestHeaders().getFirst("Origin");
-        if (origin != null && ALLOWED_DEV_ORIGINS.contains(origin)) {
+        if (origin != null && ALLOWED_DEV_ORIGIN.matcher(origin).matches()) {
             exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
             exchange.getResponseHeaders().set("Vary", "Origin");
             exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
