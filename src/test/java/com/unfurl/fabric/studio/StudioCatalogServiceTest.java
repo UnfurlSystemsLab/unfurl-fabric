@@ -79,4 +79,29 @@ class StudioCatalogServiceTest {
                 .extracting(StudioAssemblySummary::assemblyId)
                 .contains("assembly-demo", "assembly-checkout");
     }
+
+    @Test
+    void projectsDynamicDcpGraphForTenantAssembly() {
+        StudioCatalogService service = new StudioCatalogService();
+        service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
+                "assembly-checkout",
+                "Checkout Platform",
+                "kubernetes-prod"));
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-checkout");
+
+        assertThat(projection.tenantId()).isEqualTo("tenant-a");
+        assertThat(projection.assemblyId()).isEqualTo("assembly-checkout");
+        assertThat(projection.compositionMode()).isEqualTo("DYNAMIC");
+        assertThat(projection.nodes())
+                .extracting(StudioDynamicDcpNode::level)
+                .contains("PARENT", "ASSEMBLY", "CHILD");
+        assertThat(projection.nodes())
+                .filteredOn(StudioDynamicDcpNode::replacementAllowed)
+                .extracting(StudioDynamicDcpNode::catalogEntryId)
+                .contains("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
+        assertThat(projection.edges())
+                .extracting(StudioDynamicDcpEdge::relationship)
+                .contains("CONTAINS", "REQUIRES");
+    }
 }

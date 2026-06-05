@@ -121,6 +121,14 @@ class StudioServerTest {
             HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
             assertThat(assemblies.statusCode()).isEqualTo(200);
             assertThat(assemblies.body()).contains("assembly-demo", "assembly-payments");
+
+            HttpResponse<String> projection = get(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/dynamic-dcp");
+            assertThat(projection.statusCode()).isEqualTo(200);
+            assertThat(projection.body())
+                    .contains("\"compositionMode\":\"DYNAMIC\"")
+                    .contains("\"level\":\"PARENT\"")
+                    .contains("\"level\":\"ASSEMBLY\"")
+                    .contains("\"level\":\"CHILD\"");
         }
     }
 

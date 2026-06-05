@@ -48,6 +48,10 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.listAssemblies(route.tenantId()));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.dynamicDcp()) {
+                write(exchange, 200, service.dynamicDcpProjection(route.tenantId(), route.assemblyId()));
+                return;
+            }
             if ("POST".equals(exchange.getRequestMethod()) && route.assemblyCreate()) {
                 StudioCreateAssemblyRequest request = mapper.readValue(
                         exchange.getRequestBody(),
@@ -124,6 +128,10 @@ public final class StudioTenantHandler {
 
         boolean assemblyCreate() {
             return "assemblies".equals(tail);
+        }
+
+        boolean dynamicDcp() {
+            return "assemblies/{assemblyId}/dynamic-dcp".equals(tail);
         }
 
         boolean saveDraft() {

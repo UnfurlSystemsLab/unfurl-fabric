@@ -111,6 +111,67 @@ public final class StudioCatalogService {
                 .toList());
     }
 
+    public StudioDynamicDcpProjection dynamicDcpProjection(String tenantId, String assemblyId) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        StudioAssemblySummary summary = assemblies.getOrDefault(assembly, fixtureAssemblies(tenant).get("assembly-demo"));
+        String target = summary == null || summary.targetApplicationName().isBlank()
+                ? "E-Commerce Platform"
+                : summary.targetApplicationName();
+        String rootNodeId = "company:" + slug(target);
+        String focusNodeId = "assembly:" + slug(assembly);
+        return new StudioDynamicDcpProjection(
+                tenant,
+                assembly,
+                "DYNAMIC",
+                rootNodeId,
+                focusNodeId,
+                List.of(
+                        new StudioDynamicDcpNode(
+                                rootNodeId,
+                                target,
+                                "COMPANY",
+                                "PARENT",
+                                "",
+                                List.of("commerce.checkout", "commerce.fulfillment"),
+                                List.of(focusNodeId),
+                                false),
+                        new StudioDynamicDcpNode(
+                                focusNodeId,
+                                "Checkout Assembly",
+                                "MODULE",
+                                "ASSEMBLY",
+                                "",
+                                List.of("order.create", "validate.order", "payment.authorize"),
+                                List.of("component.validation-service", "component.storage-s3"),
+                                false),
+                        new StudioDynamicDcpNode(
+                                "component.validation-service",
+                                "Validation Service",
+                                "COMPONENT",
+                                "CHILD",
+                                "com.unfurl:validation-service:1.1.0",
+                                List.of("validate.order", "validate.payment", "validate.inventory"),
+                                List.of("component.customer-policy-validator", "component.fraud-validator"),
+                                true),
+                        new StudioDynamicDcpNode(
+                                "component.storage-s3",
+                                "S3 Storage",
+                                "COMPONENT",
+                                "CHILD",
+                                "com.unfurl:storage-s3:1.2.0",
+                                List.of("storage.put"),
+                                List.of("component.azure-blob", "component.minio-storage"),
+                                true)),
+                List.of(
+                        new StudioDynamicDcpEdge(rootNodeId, focusNodeId, "CONTAINS"),
+                        new StudioDynamicDcpEdge(focusNodeId, "component.validation-service", "CONTAINS"),
+                        new StudioDynamicDcpEdge(focusNodeId, "component.storage-s3", "CONTAINS"),
+                        new StudioDynamicDcpEdge("component.validation-service", "component.storage-s3", "REQUIRES")),
+                List.of());
+    }
+
     public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
         String tenant = normalizeTenant(tenantId);
         if (request == null) {
@@ -195,6 +256,13 @@ public final class StudioCatalogService {
             return "tenant-local";
         }
         return tenantId.trim();
+    }
+
+    private String slug(String value) {
+        String slug = value.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-|-$", "");
+        return slug.isBlank() ? "local" : slug;
     }
 
     private String sha256(String value) {
