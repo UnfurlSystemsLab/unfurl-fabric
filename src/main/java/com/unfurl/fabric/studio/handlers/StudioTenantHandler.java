@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.unfurl.fabric.studio.StudioCatalogAdmissionRequest;
 import com.unfurl.fabric.studio.StudioCatalogService;
+import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
+import com.unfurl.fabric.studio.StudioSaveDraftRequest;
 
 import java.io.IOException;
 import java.net.URLDecoder;
@@ -40,6 +42,24 @@ public final class StudioTenantHandler {
                         exchange.getRequestBody(),
                         StudioNeedsExtractionRequest.class);
                 write(exchange, 200, service.extractNeeds(route.tenantId(), route.assemblyId(), request));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.assemblyList()) {
+                write(exchange, 200, service.listAssemblies(route.tenantId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.assemblyCreate()) {
+                StudioCreateAssemblyRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioCreateAssemblyRequest.class);
+                write(exchange, 200, service.createAssembly(route.tenantId(), request));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.saveDraft()) {
+                StudioSaveDraftRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioSaveDraftRequest.class);
+                write(exchange, 200, service.saveDraft(route.tenantId(), route.assemblyId(), request));
                 return;
             }
             write(exchange, 404, Map.of("error", "unknown Studio tenant route"));
@@ -96,6 +116,18 @@ public final class StudioTenantHandler {
 
         boolean needsExtraction() {
             return "assemblies/{assemblyId}/needs/extract".equals(tail);
+        }
+
+        boolean assemblyList() {
+            return "assemblies".equals(tail);
+        }
+
+        boolean assemblyCreate() {
+            return "assemblies".equals(tail);
+        }
+
+        boolean saveDraft() {
+            return "assemblies/{assemblyId}/drafts/save".equals(tail);
         }
 
         private static String decode(String value) {

@@ -89,6 +89,38 @@ class StudioServerTest {
                     .contains("\"needsId\":\"assembly-checkout-extracted-needs\"")
                     .contains("checkout.platform.run")
                     .contains("\"defaultDeploymentTarget\":\"kubernetes-prod\"");
+
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies", """
+                    {
+                      "assemblyId": "assembly-payments",
+                      "targetApplicationName": "Payments Platform",
+                      "defaultDeploymentTarget": "kubernetes-prod"
+                    }
+                    """);
+            assertThat(created.statusCode()).isEqualTo(200);
+            assertThat(created.body()).contains("\"assemblyId\":\"assembly-payments\"");
+
+            HttpResponse<String> saved = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-payments/drafts/save",
+                    """
+                    {
+                      "targetApplicationName": "Payments Platform",
+                      "needsId": "assembly-payments-extracted-needs",
+                      "deploymentTarget": "kubernetes-prod",
+                      "deploymentShape": "CONTAINERIZED_SERVICE",
+                      "currentCandidateId": "cand-abc123",
+                      "sceneRevision": 8
+                    }
+                    """);
+            assertThat(saved.statusCode()).isEqualTo(200);
+            assertThat(saved.body())
+                    .contains("\"status\":\"SAVED\"")
+                    .contains("\"currentCandidateId\":\"cand-abc123\"");
+
+            HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
+            assertThat(assemblies.statusCode()).isEqualTo(200);
+            assertThat(assemblies.body()).contains("assembly-demo", "assembly-payments");
         }
     }
 

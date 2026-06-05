@@ -55,4 +55,28 @@ class StudioCatalogServiceTest {
         assertThat(response.defaultDeploymentTarget()).isEqualTo("kubernetes-prod");
         assertThat(response.warnings()).isEmpty();
     }
+
+    @Test
+    void createsListsAndSavesTenantAssemblies() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioAssemblySummary created = service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
+                "assembly-checkout",
+                "Checkout Platform",
+                "kubernetes-prod"));
+        StudioSaveDraftResponse saved = service.saveDraft("tenant-a", "assembly-checkout", new StudioSaveDraftRequest(
+                "Checkout Platform",
+                "assembly-checkout-extracted-needs",
+                "kubernetes-prod",
+                "CONTAINERIZED_SERVICE",
+                "cand-abc123",
+                8));
+
+        assertThat(created.assemblyId()).isEqualTo("assembly-checkout");
+        assertThat(saved.status()).isEqualTo("SAVED");
+        assertThat(saved.assembly().needsId()).isEqualTo("assembly-checkout-extracted-needs");
+        assertThat(service.listAssemblies("tenant-a").assemblies())
+                .extracting(StudioAssemblySummary::assemblyId)
+                .contains("assembly-demo", "assembly-checkout");
+    }
 }

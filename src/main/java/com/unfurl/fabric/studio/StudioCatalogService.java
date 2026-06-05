@@ -12,6 +12,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
 
     public StudioCatalogVisualsResponse listCatalogVisuals(String tenantId) {
         String tenant = normalizeTenant(tenantId);
@@ -102,6 +103,58 @@ public final class StudioCatalogService {
                 warnings);
     }
 
+    public StudioAssemblyListResponse listAssemblies(String tenantId) {
+        String tenant = normalizeTenant(tenantId);
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        return new StudioAssemblyListResponse(tenant, assemblies.values().stream()
+                .sorted(Comparator.comparing(StudioAssemblySummary::assemblyId))
+                .toList());
+    }
+
+    public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
+        String tenant = normalizeTenant(tenantId);
+        if (request == null) {
+            throw new IllegalArgumentException("assembly request is required");
+        }
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        StudioAssemblySummary summary = new StudioAssemblySummary(
+                tenant,
+                request.assemblyId(),
+                request.targetApplicationName(),
+                request.defaultDeploymentTarget(),
+                "",
+                "CONTAINERIZED_SERVICE",
+                "",
+                0);
+        assemblies.put(summary.assemblyId(), summary);
+        return summary;
+    }
+
+    public StudioSaveDraftResponse saveDraft(String tenantId, String assemblyId, StudioSaveDraftRequest request) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        StudioSaveDraftRequest safeRequest = request == null
+                ? new StudioSaveDraftRequest("", "", "", "CONTAINERIZED_SERVICE", "", 0)
+                : request;
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        StudioAssemblySummary previous = assemblies.get(assembly);
+        StudioAssemblySummary saved = new StudioAssemblySummary(
+                tenant,
+                assembly,
+                safeRequest.targetApplicationName().isBlank() && previous != null
+                        ? previous.targetApplicationName()
+                        : safeRequest.targetApplicationName(),
+                safeRequest.deploymentTarget().isBlank() && previous != null
+                        ? previous.defaultDeploymentTarget()
+                        : safeRequest.deploymentTarget(),
+                safeRequest.needsId(),
+                safeRequest.deploymentShape(),
+                safeRequest.currentCandidateId(),
+                safeRequest.sceneRevision());
+        assemblies.put(assembly, saved);
+        return new StudioSaveDraftResponse("SAVED", saved, List.of());
+    }
+
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
@@ -116,6 +169,18 @@ public final class StudioCatalogService {
                 fallbackVisual("APPLICATION"),
                 Map.of("visualManifestHash", sha256("visual:validation-service"), "assets", List.of()),
                 List.of()));
+    }
+
+    private Map<String, StudioAssemblySummary> fixtureAssemblies(String tenantId) {
+        return new ConcurrentHashMap<>(Map.of("assembly-demo", new StudioAssemblySummary(
+                tenantId,
+                "assembly-demo",
+                "E-Commerce Platform",
+                "On-Prem Cluster",
+                "",
+                "CONTAINERIZED_SERVICE",
+                "",
+                0)));
     }
 
     private Map<String, Object> fallbackVisual(String category) {
