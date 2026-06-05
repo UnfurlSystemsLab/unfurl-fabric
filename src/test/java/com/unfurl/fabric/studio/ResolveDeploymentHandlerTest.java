@@ -69,7 +69,7 @@ class ResolveDeploymentHandlerTest {
     }
 
     private StudioServer started() throws Exception {
-        StudioServer server = new StudioServer("127.0.0.1", 0);
+        StudioServer server = new StudioServer("127.0.0.1", 0, new StudioCatalogService());
         server.start();
         return server;
     }

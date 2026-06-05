@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.unfurl.fabric.studio.StudioCatalogAdmissionRequest;
 import com.unfurl.fabric.studio.StudioCatalogService;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
+import com.unfurl.fabric.studio.StudioLayoutStateRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
 
@@ -71,6 +72,17 @@ public final class StudioTenantHandler {
                         exchange.getRequestBody(),
                         StudioSaveDraftRequest.class);
                 write(exchange, 200, service.saveDraft(route.tenantId(), route.assemblyId(), request));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.layout()) {
+                write(exchange, 200, service.layout(route.tenantId(), route.assemblyId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.layout()) {
+                StudioLayoutStateRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioLayoutStateRequest.class);
+                write(exchange, 200, service.saveLayout(route.tenantId(), route.assemblyId(), request));
                 return;
             }
             write(exchange, 404, Map.of("error", "unknown Studio tenant route"));
@@ -147,6 +159,10 @@ public final class StudioTenantHandler {
 
         boolean saveDraft() {
             return "assemblies/{assemblyId}/drafts/save".equals(tail);
+        }
+
+        boolean layout() {
+            return "assemblies/{assemblyId}/layout".equals(tail);
         }
 
         private static String decode(String value) {

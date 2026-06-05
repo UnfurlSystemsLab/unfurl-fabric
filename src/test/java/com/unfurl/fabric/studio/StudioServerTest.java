@@ -118,6 +118,29 @@ class StudioServerTest {
                     .contains("\"status\":\"SAVED\"")
                     .contains("\"currentCandidateId\":\"cand-abc123\"");
 
+            HttpResponse<String> layoutSaved = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-payments/layout",
+                    """
+                    {
+                      "activeView": "Exploded",
+                      "semanticZoomLevel": "CHILD_DCP",
+                      "selectedSurface": "payment",
+                      "camera": { "distance": 5.5 },
+                      "annotations": ["inspect payment replacement"]
+                    }
+                    """);
+            assertThat(layoutSaved.statusCode()).isEqualTo(200);
+            assertThat(layoutSaved.body())
+                    .contains("\"activeView\":\"Exploded\"")
+                    .contains("\"semanticZoomLevel\":\"CHILD_DCP\"");
+
+            HttpResponse<String> layout = get(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/layout");
+            assertThat(layout.statusCode()).isEqualTo(200);
+            assertThat(layout.body())
+                    .contains("\"selectedSurface\":\"payment\"")
+                    .contains("inspect payment replacement");
+
             HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
             assertThat(assemblies.statusCode()).isEqualTo(200);
             assertThat(assemblies.body()).contains("assembly-demo", "assembly-payments");
@@ -142,7 +165,7 @@ class StudioServerTest {
     }
 
     private StudioServer started() throws Exception {
-        StudioServer server = new StudioServer("127.0.0.1", 0);
+        StudioServer server = new StudioServer("127.0.0.1", 0, new StudioCatalogService());
         server.start();
         return server;
     }

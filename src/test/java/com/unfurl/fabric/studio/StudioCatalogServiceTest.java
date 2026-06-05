@@ -1,8 +1,11 @@
 package com.unfurl.fabric.studio;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.util.List;
+import java.util.Map;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -131,5 +134,41 @@ class StudioCatalogServiceTest {
                 .extracting(StudioReplacementCandidate::reason)
                 .asString()
                 .contains("validate.inventory");
+    }
+
+    @Test
+    void persistsTenantCatalogAssembliesAndLayouts(@TempDir Path dir) {
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService first = new StudioCatalogService(store);
+
+        first.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.jar", ""))));
+        first.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
+                "assembly-checkout",
+                "Checkout Platform",
+                "kubernetes-prod"));
+        first.saveLayout("tenant-a", "assembly-checkout", new StudioLayoutStateRequest(
+                "Exploded",
+                "CHILD_DCP",
+                "payment",
+                Map.of("distance", 5.5),
+                List.of("inspect payment replacement")));
+
+        StudioCatalogService second = new StudioCatalogService(store);
+
+        assertThat(second.listCatalogVisuals("tenant-a").entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .contains("uploaded:payment.jar");
+        assertThat(second.listAssemblies("tenant-a").assemblies())
+                .extracting(StudioAssemblySummary::assemblyId)
+                .contains("assembly-checkout");
+        assertThat(second.layout("tenant-a", "assembly-checkout"))
+                .satisfies(layout -> {
+                    assertThat(layout.activeView()).isEqualTo("Exploded");
+                    assertThat(layout.semanticZoomLevel()).isEqualTo("CHILD_DCP");
+                    assertThat(layout.selectedSurface()).isEqualTo("payment");
+                    assertThat(layout.annotations()).contains("inspect payment replacement");
+                });
     }
 }

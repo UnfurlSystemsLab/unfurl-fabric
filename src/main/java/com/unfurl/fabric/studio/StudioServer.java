@@ -30,15 +30,23 @@ public final class StudioServer implements AutoCloseable {
     private final HttpServer server;
     private final ObjectMapper mapper;
     private final String bindAddress;
+    private final StudioCatalogService catalogService;
 
     public StudioServer() throws IOException {
         this(DEFAULT_BIND_ADDRESS, DEFAULT_PORT);
     }
 
     public StudioServer(String bindAddress, int port) throws IOException {
+        this(bindAddress, port, new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath())));
+    }
+
+    public StudioServer(String bindAddress, int port, StudioCatalogService catalogService) throws IOException {
         this.bindAddress = bindAddress == null || bindAddress.isBlank() ? DEFAULT_BIND_ADDRESS : bindAddress;
         this.server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
         this.mapper = StudioJson.mapper();
+        this.catalogService = catalogService == null
+                ? new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath()))
+                : catalogService;
         routes();
     }
 
@@ -73,7 +81,7 @@ public final class StudioServer implements AutoCloseable {
         }));
         ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(new StudioDeploymentService(), mapper);
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
-        StudioTenantHandler tenantHandler = new StudioTenantHandler(new StudioCatalogService(), mapper);
+        StudioTenantHandler tenantHandler = new StudioTenantHandler(catalogService, mapper);
         server.createContext("/studio/tenants", withCors(tenantHandler::handle));
     }
 

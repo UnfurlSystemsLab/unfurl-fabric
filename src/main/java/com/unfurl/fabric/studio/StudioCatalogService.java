@@ -13,6 +13,24 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
+    private final StudioStateStore store;
+
+    public StudioCatalogService() {
+        this(null);
+    }
+
+    public StudioCatalogService(StudioStateStore store) {
+        this.store = store;
+        if (store != null) {
+            StudioStateStore.State state = store.load();
+            entriesByTenant.putAll(state.entriesByTenant());
+            state.assembliesByTenant().forEach((tenant, assemblies) ->
+                    assembliesByTenant.put(tenant, new ConcurrentHashMap<>(assemblies)));
+            state.layoutsByTenant().forEach((tenant, layouts) ->
+                    layoutsByTenant.put(tenant, new ConcurrentHashMap<>(layouts)));
+        }
+    }
 
     public StudioCatalogVisualsResponse listCatalogVisuals(String tenantId) {
         String tenant = normalizeTenant(tenantId);
@@ -58,6 +76,7 @@ public final class StudioCatalogService {
 
         entries.sort(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId));
         entriesByTenant.put(tenant, List.copyOf(entries));
+        persist();
         boolean allVerified = !results.isEmpty()
                 && results.stream().allMatch(result -> "VERIFIED".equals(result.status()));
         return new StudioCatalogAdmissionResponse(
@@ -245,6 +264,7 @@ public final class StudioCatalogService {
                 "",
                 0);
         assemblies.put(summary.assemblyId(), summary);
+        persist();
         return summary;
     }
 
@@ -270,13 +290,57 @@ public final class StudioCatalogService {
                 safeRequest.currentCandidateId(),
                 safeRequest.sceneRevision());
         assemblies.put(assembly, saved);
+        persist();
         return new StudioSaveDraftResponse("SAVED", saved, List.of());
+    }
+
+    public StudioLayoutState layout(String tenantId, String assemblyId) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        Map<String, StudioLayoutState> layouts = layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        return layouts.computeIfAbsent(assembly, ignored -> new StudioLayoutState(
+                tenant,
+                assembly,
+                "Assembly",
+                "ASSEMBLY_DCP",
+                "validation",
+                Map.of(),
+                List.of()));
+    }
+
+    public StudioLayoutState saveLayout(String tenantId, String assemblyId, StudioLayoutStateRequest request) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        StudioLayoutStateRequest safe = request == null
+                ? new StudioLayoutStateRequest("Assembly", "ASSEMBLY_DCP", "validation", Map.of(), List.of())
+                : request;
+        StudioLayoutState state = new StudioLayoutState(
+                tenant,
+                assembly,
+                safe.activeView(),
+                safe.semanticZoomLevel(),
+                safe.selectedSurface(),
+                safe.camera(),
+                safe.annotations());
+        layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(assembly, state);
+        persist();
+        return state;
     }
 
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
                 entries);
+    }
+
+    private void persist() {
+        if (store == null) {
+            return;
+        }
+        store.save(new StudioStateStore.State(
+                Map.copyOf(entriesByTenant),
+                Map.copyOf(assembliesByTenant),
+                Map.copyOf(layoutsByTenant)));
     }
 
     private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
