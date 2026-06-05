@@ -104,4 +104,28 @@ class StudioCatalogServiceTest {
                 .extracting(StudioDynamicDcpEdge::relationship)
                 .contains("CONTAINS", "REQUIRES");
     }
+
+    @Test
+    void providesReplacementCandidatesFromDynamicDcpProjection() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioReplacementCandidatesResponse response = service.replacementCandidates(
+                "tenant-a",
+                "assembly-demo",
+                "component.validation-service");
+
+        assertThat(response.componentNodeId()).isEqualTo("component.validation-service");
+        assertThat(response.candidates())
+                .extracting(StudioReplacementCandidate::catalogEntryId)
+                .contains(
+                        "com.unfurl:validation-service:1.1.0",
+                        "com.unfurl:customer-policy-validator:1.2.0",
+                        "com.unfurl:fraud-only-validator:1.0.0");
+        assertThat(response.candidates())
+                .filteredOn(candidate -> "BLOCKED".equals(candidate.status()))
+                .singleElement()
+                .extracting(StudioReplacementCandidate::reason)
+                .asString()
+                .contains("validate.inventory");
+    }
 }

@@ -129,6 +129,15 @@ class StudioServerTest {
                     .contains("\"level\":\"PARENT\"")
                     .contains("\"level\":\"ASSEMBLY\"")
                     .contains("\"level\":\"CHILD\"");
+
+            HttpResponse<String> replacements = get(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-payments/dynamic-dcp/replacements?componentNodeId=component.validation-service");
+            assertThat(replacements.statusCode()).isEqualTo(200);
+            assertThat(replacements.body())
+                    .contains("\"componentNodeId\":\"component.validation-service\"")
+                    .contains("customer-policy-validator")
+                    .contains("\"status\":\"BLOCKED\"");
         }
     }
 

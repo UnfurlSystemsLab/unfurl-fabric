@@ -52,6 +52,13 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.dynamicDcpProjection(route.tenantId(), route.assemblyId()));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.replacementCandidates()) {
+                write(exchange, 200, service.replacementCandidates(
+                        route.tenantId(),
+                        route.assemblyId(),
+                        queryParam(exchange, "componentNodeId")));
+                return;
+            }
             if ("POST".equals(exchange.getRequestMethod()) && route.assemblyCreate()) {
                 StudioCreateAssemblyRequest request = mapper.readValue(
                         exchange.getRequestBody(),
@@ -134,6 +141,10 @@ public final class StudioTenantHandler {
             return "assemblies/{assemblyId}/dynamic-dcp".equals(tail);
         }
 
+        boolean replacementCandidates() {
+            return "assemblies/{assemblyId}/dynamic-dcp/replacements".equals(tail);
+        }
+
         boolean saveDraft() {
             return "assemblies/{assemblyId}/drafts/save".equals(tail);
         }
@@ -141,5 +152,21 @@ public final class StudioTenantHandler {
         private static String decode(String value) {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
         }
+    }
+
+    private static String queryParam(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isBlank()) {
+            return "";
+        }
+        for (String pair : query.split("&")) {
+            int equals = pair.indexOf('=');
+            String key = equals < 0 ? pair : pair.substring(0, equals);
+            if (name.equals(URLDecoder.decode(key, StandardCharsets.UTF_8))) {
+                String value = equals < 0 ? "" : pair.substring(equals + 1);
+                return URLDecoder.decode(value, StandardCharsets.UTF_8);
+            }
+        }
+        return "";
     }
 }

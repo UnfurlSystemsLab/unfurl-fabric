@@ -172,6 +172,64 @@ public final class StudioCatalogService {
                 List.of());
     }
 
+    public StudioReplacementCandidatesResponse replacementCandidates(
+            String tenantId,
+            String assemblyId,
+            String componentNodeId
+    ) {
+        StudioDynamicDcpProjection projection = dynamicDcpProjection(tenantId, assemblyId);
+        String selectedNodeId = componentNodeId == null || componentNodeId.isBlank()
+                ? "component.validation-service"
+                : componentNodeId;
+        StudioDynamicDcpNode selected = projection.nodes().stream()
+                .filter(node -> node.nodeId().equals(selectedNodeId))
+                .findFirst()
+                .orElse(null);
+        if (selected == null) {
+            return new StudioReplacementCandidatesResponse(
+                    projection.tenantId(),
+                    projection.assemblyId(),
+                    selectedNodeId,
+                    List.of(),
+                    List.of("selected DCP node is not present in this assembly projection"));
+        }
+        if (!selected.replacementAllowed()) {
+            return new StudioReplacementCandidatesResponse(
+                    projection.tenantId(),
+                    projection.assemblyId(),
+                    selectedNodeId,
+                    List.of(new StudioReplacementCandidate(
+                            selected.catalogEntryId(),
+                            selected.label(),
+                            "fabric",
+                            selected.dcpType(),
+                            "BLOCKED",
+                            "selected DCP node is governed by the parent composition and cannot be replaced directly")),
+                    List.of());
+        }
+
+        List<StudioReplacementCandidate> candidates = new ArrayList<>();
+        candidates.add(new StudioReplacementCandidate(
+                selected.catalogEntryId(),
+                selected.label(),
+                "current-selection",
+                selected.dcpType(),
+                "ALLOWED",
+                "current selected component remains valid for this dynamic DCP slot"));
+        for (String descendant : selected.compatibleDescendants()) {
+            candidates.add(candidateForDescendant(descendant, selected));
+        }
+        candidates.sort(Comparator
+                .comparing((StudioReplacementCandidate candidate) -> "BLOCKED".equals(candidate.status()) ? 1 : 0)
+                .thenComparing(StudioReplacementCandidate::label));
+        return new StudioReplacementCandidatesResponse(
+                projection.tenantId(),
+                projection.assemblyId(),
+                selectedNodeId,
+                candidates,
+                List.of());
+    }
+
     public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
         String tenant = normalizeTenant(tenantId);
         if (request == null) {
@@ -249,6 +307,60 @@ public final class StudioCatalogService {
                 "fallbackShape", Map.of("kind", "CUBE", "category", category),
                 "ports", List.of(),
                 "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
+    }
+
+    private StudioReplacementCandidate candidateForDescendant(String descendantNodeId, StudioDynamicDcpNode selected) {
+        return switch (descendantNodeId) {
+            case "component.customer-policy-validator" -> new StudioReplacementCandidate(
+                    "com.unfurl:customer-policy-validator:1.2.0",
+                    "Customer Policy Validator",
+                    "risk-team",
+                    "CONTAINER",
+                    "ALLOWED",
+                    "offers the validation capabilities required by " + selected.label());
+            case "component.fraud-validator" -> new StudioReplacementCandidate(
+                    "com.unfurl:fraud-only-validator:1.0.0",
+                    "Fraud-only Validator",
+                    "risk-team",
+                    "SERVICE",
+                    "BLOCKED",
+                    "missing validate.inventory required by the selected DCP slot");
+            case "component.azure-blob" -> new StudioReplacementCandidate(
+                    "com.unfurl:storage-adapter-blob:1.2.0",
+                    "Azure Blob Adapter",
+                    "platform-team",
+                    "SIDECAR",
+                    "ALLOWED",
+                    "compatible object-storage capability range for this deployment target");
+            case "component.minio-storage" -> new StudioReplacementCandidate(
+                    "com.unfurl:storage-adapter-minio:1.1.0",
+                    "MinIO Storage Adapter",
+                    "platform-team",
+                    "SIDECAR",
+                    "ALLOWED",
+                    "keeps storage inside the tenant perimeter");
+            default -> new StudioReplacementCandidate(
+                    "dynamic:" + descendantNodeId,
+                    labelFromNodeId(descendantNodeId),
+                    "fabric",
+                    "COMPONENT",
+                    "ALLOWED",
+                    "declared as a compatible descendant by the dynamic DCP projection");
+        };
+    }
+
+    private String labelFromNodeId(String nodeId) {
+        String value = nodeId == null ? "" : nodeId;
+        int separator = value.indexOf('.');
+        String slug = separator >= 0 ? value.substring(separator + 1) : value;
+        String[] parts = slug.split("-");
+        List<String> words = new ArrayList<>();
+        for (String part : parts) {
+            if (!part.isBlank()) {
+                words.add(part.substring(0, 1).toUpperCase() + part.substring(1));
+            }
+        }
+        return words.isEmpty() ? "Dynamic Component" : String.join(" ", words);
     }
 
     private String normalizeTenant(String tenantId) {
