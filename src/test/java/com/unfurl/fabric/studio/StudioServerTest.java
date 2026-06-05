@@ -61,6 +61,13 @@ class StudioServerTest {
             assertThat(catalog.statusCode()).isEqualTo(200);
             assertThat(catalog.body()).contains("\"catalogHash\":\"sha256:", "validation-service");
 
+            HttpResponse<String> asset = get(server, "/studio/tenants/tenant-a/assets/validation-service-model");
+            assertThat(asset.statusCode()).isEqualTo(200);
+            assertThat(asset.body())
+                    .contains("\"status\":\"HASH_PINNED\"")
+                    .contains("META-INF/visual/validation-service.glb")
+                    .contains("sha256=");
+
             HttpResponse<String> admission = post(server, "/studio/tenants/tenant-a/catalog/admissions", """
                     {
                       "assemblyId": "assembly-checkout",

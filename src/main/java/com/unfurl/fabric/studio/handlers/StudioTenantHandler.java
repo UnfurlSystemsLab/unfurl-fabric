@@ -18,17 +18,31 @@ import java.util.Map;
 public final class StudioTenantHandler {
     private final StudioCatalogService service;
     private final ObjectMapper mapper;
+    private final boolean requireTenantHeader;
 
     public StudioTenantHandler(StudioCatalogService service, ObjectMapper mapper) {
+        this(service, mapper, tenantHeaderRequired());
+    }
+
+    public StudioTenantHandler(StudioCatalogService service, ObjectMapper mapper, boolean requireTenantHeader) {
         this.service = service == null ? new StudioCatalogService() : service;
         this.mapper = mapper;
+        this.requireTenantHeader = requireTenantHeader;
     }
 
     public void handle(HttpExchange exchange) throws IOException {
         try {
             Route route = Route.parse(exchange.getRequestURI().getPath());
+            if (!tenantAuthorized(exchange, route.tenantId())) {
+                write(exchange, 403, Map.of("error", "tenant header does not match route tenant"));
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogList()) {
                 write(exchange, 200, service.listCatalogVisuals(route.tenantId()));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.asset()) {
+                write(exchange, 200, service.visualAsset(route.tenantId(), route.assetId()));
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod()) && route.catalogAdmission()) {
@@ -103,7 +117,23 @@ public final class StudioTenantHandler {
         exchange.close();
     }
 
-    private record Route(String tenantId, String assemblyId, String tail) {
+    private boolean tenantAuthorized(HttpExchange exchange, String routeTenant) {
+        if (!requireTenantHeader) {
+            return true;
+        }
+        String header = exchange.getRequestHeaders().getFirst("X-Unfurl-Tenant");
+        return routeTenant.equals(header);
+    }
+
+    private static boolean tenantHeaderRequired() {
+        String value = System.getProperty("unfurl.studio.requireTenantHeader");
+        if (value == null || value.isBlank()) {
+            value = System.getenv("UNFURL_STUDIO_REQUIRE_TENANT_HEADER");
+        }
+        return "true".equalsIgnoreCase(value);
+    }
+
+    private record Route(String tenantId, String assemblyId, String assetId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -117,6 +147,7 @@ public final class StudioTenantHandler {
             String tenant = decode(remainder.substring(0, slash));
             String tail = remainder.substring(slash + 1);
             String assembly = "";
+            String assetId = "";
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
                 String assemblyRemainder = tail.substring(assemblyPrefix.length());
@@ -126,7 +157,16 @@ public final class StudioTenantHandler {
                     tail = assemblyPrefix + "{assemblyId}/" + assemblyRemainder.substring(assemblySlash + 1);
                 }
             }
-            return new Route(tenant, assembly, tail);
+            String assetPrefix = "assets/";
+            if (tail.startsWith(assetPrefix)) {
+                String assetRemainder = tail.substring(assetPrefix.length());
+                int assetSlash = assetRemainder.indexOf('/');
+                assetId = decode(assetSlash >= 0 ? assetRemainder.substring(0, assetSlash) : assetRemainder);
+                tail = assetSlash >= 0
+                        ? assetPrefix + "{assetId}/" + assetRemainder.substring(assetSlash + 1)
+                        : assetPrefix + "{assetId}";
+            }
+            return new Route(tenant, assembly, assetId, tail);
         }
 
         boolean catalogList() {
@@ -135,6 +175,10 @@ public final class StudioTenantHandler {
 
         boolean catalogAdmission() {
             return "catalog/admissions".equals(tail);
+        }
+
+        boolean asset() {
+            return "assets/{assetId}".equals(tail);
         }
 
         boolean needsExtraction() {

@@ -327,6 +327,38 @@ public final class StudioCatalogService {
         return state;
     }
 
+    public StudioVisualAsset visualAsset(String tenantId, String assetId) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedAssetId = assetId == null ? "" : assetId.trim();
+        if (normalizedAssetId.isBlank()) {
+            throw new IllegalArgumentException("asset id is required");
+        }
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        for (StudioVisualCatalogEntry entry : entries) {
+            for (Map<String, Object> asset : visualAssets(entry)) {
+                if (normalizedAssetId.equals(stringValue(asset.get("assetId"), ""))) {
+                    String sha = stringValue(asset.get("sha256"), "");
+                    return new StudioVisualAsset(
+                            normalizedAssetId,
+                            stringValue(asset.get("path"), ""),
+                            stringValue(asset.get("mediaType"), mediaTypeForPath(stringValue(asset.get("path"), ""))),
+                            sha,
+                            "/studio/tenants/" + tenant + "/assets/" + normalizedAssetId + "/content?sha256=" + sha,
+                            sha.startsWith("sha256:") ? "HASH_PINNED" : "FALLBACK_REQUIRED",
+                            sha.startsWith("sha256:") ? "" : "asset hash missing; Studio must render generated fallback shape");
+                }
+            }
+        }
+        return new StudioVisualAsset(
+                normalizedAssetId,
+                "",
+                "application/octet-stream",
+                "",
+                "",
+                "FALLBACK_REQUIRED",
+                "asset is not present in the tenant visual catalog");
+    }
+
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
@@ -351,7 +383,7 @@ public final class StudioCatalogService {
                         sha256("artifact:validation-service"),
                         visual("WORKFLOW", List.of("validate.order", "validate.payment", "validate.inventory")),
                         dynamicComposition("COMPONENT", List.of("component.customer-policy-validator", "component.fraud-validator")),
-                        Map.of("visualManifestHash", sha256("visual:validation-service"), "assets", List.of()),
+                        visualIntegrity("validation-service", "META-INF/visual/validation-service.glb"),
                         List.of()),
                 new StudioVisualCatalogEntry(
                         "com.unfurl:storage-s3:1.2.0",
@@ -359,7 +391,7 @@ public final class StudioCatalogService {
                         sha256("artifact:storage-s3"),
                         visual("STORAGE", List.of("storage.put")),
                         dynamicComposition("COMPONENT", List.of("component.azure-blob", "component.minio-storage")),
-                        Map.of("visualManifestHash", sha256("visual:storage-s3"), "assets", List.of()),
+                        visualIntegrity("storage-s3", "META-INF/visual/storage-s3.glb"),
                         List.of()));
     }
 
@@ -403,6 +435,38 @@ public final class StudioCatalogService {
                 "compatibleDescendants", compatibleDescendants,
                 "selectionPolicy", Map.of("strategy", "POLICY_DRIVEN", "rules", List.of()),
                 "binding", Map.of("mode", "LATE_BOUND", "validation", "REQUIRED_BEFORE_ACTIVATION"));
+    }
+
+    private Map<String, Object> visualIntegrity(String slug, String path) {
+        return Map.of(
+                "visualManifestHash", sha256("visual:" + slug),
+                "assets", List.of(Map.of(
+                        "assetId", slug + "-model",
+                        "path", path,
+                        "mediaType", mediaTypeForPath(path),
+                        "sha256", sha256("asset:" + slug + ":" + path))));
+    }
+
+    private List<Map<String, Object>> visualAssets(StudioVisualCatalogEntry entry) {
+        Object assets = entry.visualIntegrity().get("assets");
+        if (!(assets instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(Map.class::isInstance)
+                .map(item -> (Map<String, Object>) item)
+                .toList();
+    }
+
+    private String mediaTypeForPath(String path) {
+        String normalized = path == null ? "" : path.toLowerCase();
+        if (normalized.endsWith(".glb")) {
+            return "model/gltf-binary";
+        }
+        if (normalized.endsWith(".png")) {
+            return "image/png";
+        }
+        return "application/octet-stream";
     }
 
     private StudioDynamicDcpNode dynamicNodeForEntry(StudioVisualCatalogEntry entry) {

@@ -171,4 +171,20 @@ class StudioCatalogServiceTest {
                     assertThat(layout.annotations()).contains("inspect payment replacement");
                 });
     }
+
+    @Test
+    void exposesHashPinnedVisualAssets() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioVisualAsset asset = service.visualAsset("tenant-a", "validation-service-model");
+        StudioVisualAsset missing = service.visualAsset("tenant-a", "missing-model");
+
+        assertThat(asset.status()).isEqualTo("HASH_PINNED");
+        assertThat(asset.path()).isEqualTo("META-INF/visual/validation-service.glb");
+        assertThat(asset.mediaType()).isEqualTo("model/gltf-binary");
+        assertThat(asset.sha256()).startsWith("sha256:");
+        assertThat(asset.url()).contains("sha256=");
+        assertThat(missing.status()).isEqualTo("FALLBACK_REQUIRED");
+        assertThat(missing.warning()).contains("not present");
+    }
 }
