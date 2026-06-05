@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.unfurl.fabric.studio.handlers.ResolveDeploymentHandler;
+import com.unfurl.fabric.studio.handlers.StudioTenantHandler;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -72,6 +73,8 @@ public final class StudioServer implements AutoCloseable {
         }));
         ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(new StudioDeploymentService(), mapper);
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
+        StudioTenantHandler tenantHandler = new StudioTenantHandler(new StudioCatalogService(), mapper);
+        server.createContext("/studio/tenants", withCors(tenantHandler::handle));
     }
 
     private HttpHandler withCors(HttpHandler delegate) {

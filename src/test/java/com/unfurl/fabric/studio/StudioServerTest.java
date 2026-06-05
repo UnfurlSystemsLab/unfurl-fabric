@@ -54,6 +54,44 @@ class StudioServerTest {
         }
     }
 
+    @Test
+    void servesTenantScopedStudioCatalogAdmissionAndNeedsExtraction() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> catalog = get(server, "/studio/tenants/tenant-a/catalog");
+            assertThat(catalog.statusCode()).isEqualTo(200);
+            assertThat(catalog.body()).contains("\"catalogHash\":\"sha256:", "validation-service");
+
+            HttpResponse<String> admission = post(server, "/studio/tenants/tenant-a/catalog/admissions", """
+                    {
+                      "assemblyId": "assembly-checkout",
+                      "artifacts": [
+                        { "fileName": "payment.jar" }
+                      ]
+                    }
+                    """);
+            assertThat(admission.statusCode()).isEqualTo(200);
+            assertThat(admission.body())
+                    .contains("\"status\":\"VERIFIED\"")
+                    .contains("\"catalogEntryId\":\"uploaded:payment.jar\"");
+
+            HttpResponse<String> needs = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-checkout/needs/extract",
+                    """
+                    {
+                      "targetApplicationName": "Checkout Platform",
+                      "fileNames": ["workflow.yaml"],
+                      "defaultDeploymentTarget": "kubernetes-prod"
+                    }
+                    """);
+            assertThat(needs.statusCode()).isEqualTo(200);
+            assertThat(needs.body())
+                    .contains("\"needsId\":\"assembly-checkout-extracted-needs\"")
+                    .contains("checkout.platform.run")
+                    .contains("\"defaultDeploymentTarget\":\"kubernetes-prod\"");
+        }
+    }
+
     private StudioServer started() throws Exception {
         StudioServer server = new StudioServer("127.0.0.1", 0);
         server.start();
