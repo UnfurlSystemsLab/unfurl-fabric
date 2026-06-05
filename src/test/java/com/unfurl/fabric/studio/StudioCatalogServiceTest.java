@@ -15,8 +15,12 @@ class StudioCatalogServiceTest {
         StudioCatalogVisualsResponse first = service.listCatalogVisuals("tenant-a");
         StudioCatalogVisualsResponse second = service.listCatalogVisuals("tenant-b");
 
-        assertThat(first.entries()).hasSize(1);
-        assertThat(second.entries()).hasSize(1);
+        assertThat(first.entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .containsExactly("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
+        assertThat(second.entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .containsExactly("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
         assertThat(first.catalogHash()).startsWith("sha256:");
         assertThat(second.catalogHash()).startsWith("sha256:");
     }

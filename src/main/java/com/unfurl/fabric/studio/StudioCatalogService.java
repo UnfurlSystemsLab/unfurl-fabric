@@ -48,6 +48,7 @@ public final class StudioCatalogService {
                     claimHash,
                     artifactSha,
                     fallbackVisual("COMPONENT"),
+                    dynamicComposition("COMPONENT", List.of()),
                     Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
                     List.of());
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
@@ -121,54 +122,52 @@ public final class StudioCatalogService {
                 : summary.targetApplicationName();
         String rootNodeId = "company:" + slug(target);
         String focusNodeId = "assembly:" + slug(assembly);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioDynamicDcpNode> childNodes = entries.stream()
+                .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
+                .map(this::dynamicNodeForEntry)
+                .toList();
+        List<String> childNodeIds = childNodes.stream().map(StudioDynamicDcpNode::nodeId).toList();
+        List<StudioDynamicDcpEdge> edges = new ArrayList<>();
+        edges.add(new StudioDynamicDcpEdge(rootNodeId, focusNodeId, "CONTAINS"));
+        for (String childNodeId : childNodeIds) {
+            edges.add(new StudioDynamicDcpEdge(focusNodeId, childNodeId, "CONTAINS"));
+        }
+        for (int i = 0; i < childNodeIds.size() - 1; i++) {
+            edges.add(new StudioDynamicDcpEdge(childNodeIds.get(i), childNodeIds.get(i + 1), "REQUIRES"));
+        }
+
+        List<StudioDynamicDcpNode> nodes = new ArrayList<>();
+        nodes.add(new StudioDynamicDcpNode(
+                rootNodeId,
+                target,
+                "COMPANY",
+                "PARENT",
+                "",
+                List.of(slug(target).replace('-', '.') + ".compose"),
+                List.of(focusNodeId),
+                false));
+        nodes.add(new StudioDynamicDcpNode(
+                focusNodeId,
+                summary == null || summary.targetApplicationName().isBlank()
+                        ? "Checkout Assembly"
+                        : summary.targetApplicationName() + " Assembly",
+                "MODULE",
+                "ASSEMBLY",
+                "",
+                childNodes.stream().flatMap(node -> node.capabilities().stream()).distinct().sorted().toList(),
+                childNodeIds,
+                false));
+        nodes.addAll(childNodes);
+
         return new StudioDynamicDcpProjection(
                 tenant,
                 assembly,
                 "DYNAMIC",
                 rootNodeId,
                 focusNodeId,
-                List.of(
-                        new StudioDynamicDcpNode(
-                                rootNodeId,
-                                target,
-                                "COMPANY",
-                                "PARENT",
-                                "",
-                                List.of("commerce.checkout", "commerce.fulfillment"),
-                                List.of(focusNodeId),
-                                false),
-                        new StudioDynamicDcpNode(
-                                focusNodeId,
-                                "Checkout Assembly",
-                                "MODULE",
-                                "ASSEMBLY",
-                                "",
-                                List.of("order.create", "validate.order", "payment.authorize"),
-                                List.of("component.validation-service", "component.storage-s3"),
-                                false),
-                        new StudioDynamicDcpNode(
-                                "component.validation-service",
-                                "Validation Service",
-                                "COMPONENT",
-                                "CHILD",
-                                "com.unfurl:validation-service:1.1.0",
-                                List.of("validate.order", "validate.payment", "validate.inventory"),
-                                List.of("component.customer-policy-validator", "component.fraud-validator"),
-                                true),
-                        new StudioDynamicDcpNode(
-                                "component.storage-s3",
-                                "S3 Storage",
-                                "COMPONENT",
-                                "CHILD",
-                                "com.unfurl:storage-s3:1.2.0",
-                                List.of("storage.put"),
-                                List.of("component.azure-blob", "component.minio-storage"),
-                                true)),
-                List.of(
-                        new StudioDynamicDcpEdge(rootNodeId, focusNodeId, "CONTAINS"),
-                        new StudioDynamicDcpEdge(focusNodeId, "component.validation-service", "CONTAINS"),
-                        new StudioDynamicDcpEdge(focusNodeId, "component.storage-s3", "CONTAINS"),
-                        new StudioDynamicDcpEdge("component.validation-service", "component.storage-s3", "REQUIRES")),
+                nodes,
+                edges,
                 List.of());
     }
 
@@ -281,13 +280,23 @@ public final class StudioCatalogService {
     }
 
     private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
-        return List.of(new StudioVisualCatalogEntry(
-                "com.unfurl:validation-service:1.1.0",
-                sha256("claim:" + tenantId + ":validation-service"),
-                sha256("artifact:validation-service"),
-                fallbackVisual("APPLICATION"),
-                Map.of("visualManifestHash", sha256("visual:validation-service"), "assets", List.of()),
-                List.of()));
+        return List.of(
+                new StudioVisualCatalogEntry(
+                        "com.unfurl:validation-service:1.1.0",
+                        sha256("claim:" + tenantId + ":validation-service"),
+                        sha256("artifact:validation-service"),
+                        visual("WORKFLOW", List.of("validate.order", "validate.payment", "validate.inventory")),
+                        dynamicComposition("COMPONENT", List.of("component.customer-policy-validator", "component.fraud-validator")),
+                        Map.of("visualManifestHash", sha256("visual:validation-service"), "assets", List.of()),
+                        List.of()),
+                new StudioVisualCatalogEntry(
+                        "com.unfurl:storage-s3:1.2.0",
+                        sha256("claim:" + tenantId + ":storage-s3"),
+                        sha256("artifact:storage-s3"),
+                        visual("STORAGE", List.of("storage.put")),
+                        dynamicComposition("COMPONENT", List.of("component.azure-blob", "component.minio-storage")),
+                        Map.of("visualManifestHash", sha256("visual:storage-s3"), "assets", List.of()),
+                        List.of()));
     }
 
     private Map<String, StudioAssemblySummary> fixtureAssemblies(String tenantId) {
@@ -307,6 +316,87 @@ public final class StudioCatalogService {
                 "fallbackShape", Map.of("kind", "CUBE", "category", category),
                 "ports", List.of(),
                 "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
+    }
+
+    private Map<String, Object> visual(String category, List<String> offeredCapabilities) {
+        return Map.of(
+                "fallbackShape", Map.of("kind", "CUBE", "category", category),
+                "ports", offeredCapabilities.stream()
+                        .map(capability -> Map.of(
+                                "id", capability.replace('.', '-'),
+                                "mapsTo", "claim.offers." + capability,
+                                "kind", "OFFER",
+                                "anchor", "right",
+                                "connectorShape", "SQUARE_SOCKET"))
+                        .toList(),
+                "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
+    }
+
+    private Map<String, Object> dynamicComposition(String dcpType, List<String> compatibleDescendants) {
+        return Map.of(
+                "compositionMode", "DYNAMIC",
+                "dcpType", dcpType,
+                "compatibleDescendants", compatibleDescendants,
+                "selectionPolicy", Map.of("strategy", "POLICY_DRIVEN", "rules", List.of()),
+                "binding", Map.of("mode", "LATE_BOUND", "validation", "REQUIRED_BEFORE_ACTIVATION"));
+    }
+
+    private StudioDynamicDcpNode dynamicNodeForEntry(StudioVisualCatalogEntry entry) {
+        String nodeId = nodeIdForEntry(entry.catalogEntryId());
+        Map<String, Object> dynamic = entry.dynamicComposition();
+        return new StudioDynamicDcpNode(
+                nodeId,
+                labelForCatalogEntry(entry.catalogEntryId()),
+                stringValue(dynamic.get("dcpType"), "COMPONENT"),
+                "CHILD",
+                entry.catalogEntryId(),
+                capabilitiesFromVisual(entry.visualManifest()),
+                stringList(dynamic.get("compatibleDescendants")),
+                true);
+    }
+
+    private List<String> capabilitiesFromVisual(Map<String, Object> visualManifest) {
+        Object ports = visualManifest.get("ports");
+        if (!(ports instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(Map.class::isInstance)
+                .map(Map.class::cast)
+                .filter(port -> "OFFER".equals(stringValue(port.get("kind"), "")))
+                .map(port -> stringValue(port.get("mapsTo"), ""))
+                .filter(value -> value.startsWith("claim.offers."))
+                .map(value -> value.substring("claim.offers.".length()))
+                .sorted()
+                .toList();
+    }
+
+    private List<String> stringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .filter(item -> !item.isBlank())
+                .sorted()
+                .toList();
+    }
+
+    private String stringValue(Object value, String fallback) {
+        return value instanceof String text && !text.isBlank() ? text : fallback;
+    }
+
+    private String nodeIdForEntry(String catalogEntryId) {
+        String[] parts = catalogEntryId.split(":");
+        String artifact = parts.length >= 2 ? parts[1] : catalogEntryId;
+        return "component." + slug(artifact);
+    }
+
+    private String labelForCatalogEntry(String catalogEntryId) {
+        String[] parts = catalogEntryId.split(":");
+        String artifact = parts.length >= 2 ? parts[1] : catalogEntryId;
+        return labelFromNodeId("component." + artifact);
     }
 
     private StudioReplacementCandidate candidateForDescendant(String descendantNodeId, StudioDynamicDcpNode selected) {

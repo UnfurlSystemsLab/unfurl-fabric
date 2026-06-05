@@ -8,9 +8,21 @@ public record StudioVisualCatalogEntry(
         String claimHash,
         String artifactSha256,
         Map<String, Object> visualManifest,
+        Map<String, Object> dynamicComposition,
         Map<String, Object> visualIntegrity,
         List<String> warnings
 ) {
+    public StudioVisualCatalogEntry(
+            String catalogEntryId,
+            String claimHash,
+            String artifactSha256,
+            Map<String, Object> visualManifest,
+            Map<String, Object> visualIntegrity,
+            List<String> warnings
+    ) {
+        this(catalogEntryId, claimHash, artifactSha256, visualManifest, Map.of(), visualIntegrity, warnings);
+    }
+
     public StudioVisualCatalogEntry {
         if (catalogEntryId == null || catalogEntryId.isBlank()) {
             throw new IllegalArgumentException("catalogEntryId is required");
@@ -18,6 +30,7 @@ public record StudioVisualCatalogEntry(
         claimHash = claimHash == null || claimHash.isBlank() ? "sha256:unknown-claim" : claimHash;
         artifactSha256 = artifactSha256 == null || artifactSha256.isBlank() ? "sha256:unknown-artifact" : artifactSha256;
         visualManifest = visualManifest == null ? Map.of() : Map.copyOf(visualManifest);
+        dynamicComposition = dynamicComposition == null ? Map.of() : Map.copyOf(dynamicComposition);
         visualIntegrity = visualIntegrity == null ? Map.of() : Map.copyOf(visualIntegrity);
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
     }
