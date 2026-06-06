@@ -211,6 +211,55 @@ class StudioCatalogServiceTest {
     }
 
     @Test
+    void scansPackageVisualAssetsFromConfiguredAssetRoot(@TempDir Path dir) throws Exception {
+        Path model = dir.resolve("packages/payment/META-INF/visual/payment.glb");
+        Path manifest = dir.resolve("packages/payment/META-INF/unfurl-studio-visuals.json");
+        Files.createDirectories(model.getParent());
+        Files.writeString(model, "real package glb bytes", StandardCharsets.UTF_8);
+        Files.writeString(manifest, """
+                {
+                  "entries": [
+                    {
+                      "catalogEntryId": "com.unfurl:payment-adapter:2.0.0",
+                      "claimHash": "sha256:claim-payment",
+                      "artifactSha256": "sha256:artifact-payment",
+                      "visualManifest": {
+                        "fallbackShape": { "kind": "CUBE", "category": "WORKFLOW" },
+                        "ports": [],
+                        "interactions": { "draggable": true, "connectable": true, "inspectable": true }
+                      },
+                      "dynamicComposition": {
+                        "compositionMode": "STATIC",
+                        "dcpType": "COMPONENT"
+                      },
+                      "assets": [
+                        {
+                          "assetId": "payment-model",
+                          "path": "packages/payment/META-INF/visual/payment.glb",
+                          "mediaType": "model/gltf-binary"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """, StandardCharsets.UTF_8);
+        StudioCatalogService service = new StudioCatalogService(null, dir);
+
+        assertThat(service.listCatalogVisuals("tenant-a").entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .contains("com.unfurl:payment-adapter:2.0.0", "com.unfurl:storage-s3:1.2.0");
+        StudioVisualAsset asset = service.visualAsset("tenant-a", "payment-model");
+
+        assertThat(asset.status()).isEqualTo("HASH_PINNED");
+        assertThat(asset.path()).isEqualTo("packages/payment/META-INF/visual/payment.glb");
+        assertThat(asset.sha256()).startsWith("sha256:");
+        assertThat(service.visualAssetContent("tenant-a", "payment-model", asset.sha256()))
+                .hasValueSatisfying(content ->
+                        assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
+                                .isEqualTo("real package glb bytes"));
+    }
+
+    @Test
     void coordinatesCollaborativeSessionsWithOptimisticRevisions() throws Exception {
         StudioCatalogService service = new StudioCatalogService();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(

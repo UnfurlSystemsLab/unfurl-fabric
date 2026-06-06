@@ -28,6 +28,7 @@ public final class StudioCatalogService {
     private final Map<String, CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>>> sessionEventSubscribers = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
+    private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
 
     public StudioCatalogService() {
         this(null, defaultAssetRoot());
@@ -597,6 +598,21 @@ public final class StudioCatalogService {
     }
 
     private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
+        List<StudioVisualCatalogEntry> packageEntries = packageVisualAssets.scan(assetRoot);
+        if (packageEntries.isEmpty()) {
+            return bundledFixtureEntries(tenantId);
+        }
+        Map<String, StudioVisualCatalogEntry> entries = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : packageEntries) {
+            entries.put(entry.catalogEntryId(), entry);
+        }
+        for (StudioVisualCatalogEntry entry : bundledFixtureEntries(tenantId)) {
+            entries.putIfAbsent(entry.catalogEntryId(), entry);
+        }
+        return List.copyOf(entries.values());
+    }
+
+    private List<StudioVisualCatalogEntry> bundledFixtureEntries(String tenantId) {
         return List.of(
                 new StudioVisualCatalogEntry(
                         "com.unfurl:validation-service:1.1.0",
