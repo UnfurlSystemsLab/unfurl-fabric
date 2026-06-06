@@ -241,7 +241,7 @@ class StudioServerTest {
                     server,
                     "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
                             + createdBody.session().sessionId()
-                            + "/events");
+                            + "/events?once=true");
             assertThat(events.statusCode()).isEqualTo(200);
             assertThat(events.headers().firstValue("Content-Type"))
                     .hasValueSatisfying(contentType -> assertThat(contentType).contains("text/event-stream"));

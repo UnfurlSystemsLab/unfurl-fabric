@@ -15,13 +15,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.LinkedBlockingQueue;
 
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
+    private final Map<String, CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>>> sessionEventSubscribers = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
 
@@ -369,6 +373,7 @@ public final class StudioCatalogService {
                 List.of());
         sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
         persist();
+        publishSessionEvent(session);
         return new StudioCreateDraftCompositionResponse(session);
     }
 
@@ -386,6 +391,21 @@ public final class StudioCatalogService {
 
     public synchronized StudioSessionEvent sessionEvent(String tenantId, String assemblyId, String sessionId) {
         StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        return eventForSession(session);
+    }
+
+    public StudioSessionEventSubscription subscribeSessionEvents(String tenantId, String assemblyId, String sessionId) {
+        StudioSessionEvent initial = sessionEvent(tenantId, assemblyId, sessionId);
+        String key = sessionEventKey(initial.session().tenantId(), initial.session().assemblyId(), initial.session().sessionId());
+        BlockingQueue<StudioSessionEvent> events = new LinkedBlockingQueue<>();
+        events.offer(initial);
+        CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>> subscribers =
+                sessionEventSubscribers.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>());
+        subscribers.add(events);
+        return new StudioSessionEventSubscription(key, events, () -> subscribers.remove(events));
+    }
+
+    private StudioSessionEvent eventForSession(StudioDraftSession session) {
         return new StudioSessionEvent(
                 session.sessionId() + ":" + session.sceneRevision(),
                 "session",
@@ -429,6 +449,7 @@ public final class StudioCatalogService {
         putSession(updated);
         updateAssemblyRevision(updated);
         persist();
+        publishSessionEvent(updated);
         return StudioIntentResponse.valid(revision, candidateId, updated);
     }
 
@@ -454,6 +475,7 @@ public final class StudioCatalogService {
                 current.intentLog());
         putSession(updated);
         persist();
+        publishSessionEvent(updated);
         return updated;
     }
 
@@ -809,6 +831,22 @@ public final class StudioCatalogService {
         sessionsByTenant
                 .computeIfAbsent(session.tenantId(), ignored -> new ConcurrentHashMap<>())
                 .put(sessionKey(session.assemblyId(), session.sessionId()), session);
+    }
+
+    private String sessionEventKey(String tenantId, String assemblyId, String sessionId) {
+        return normalizeTenant(tenantId) + "/" + normalizeAssembly(assemblyId) + "/" + sessionId;
+    }
+
+    private void publishSessionEvent(StudioDraftSession session) {
+        StudioSessionEvent event = eventForSession(session);
+        List<BlockingQueue<StudioSessionEvent>> subscribers = sessionEventSubscribers.get(
+                sessionEventKey(session.tenantId(), session.assemblyId(), session.sessionId()));
+        if (subscribers == null || subscribers.isEmpty()) {
+            return;
+        }
+        for (BlockingQueue<StudioSessionEvent> subscriber : subscribers) {
+            subscriber.offer(event);
+        }
     }
 
     private StudioDraftSession pruneCollaborators(StudioDraftSession session) {

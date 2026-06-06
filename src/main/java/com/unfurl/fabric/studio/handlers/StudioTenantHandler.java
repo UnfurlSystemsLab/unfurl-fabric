@@ -17,11 +17,13 @@ import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
 import com.unfurl.fabric.studio.StudioPrincipal;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
 import com.unfurl.fabric.studio.StudioSessionEvent;
+import com.unfurl.fabric.studio.StudioSessionEventSubscription;
 
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public final class StudioTenantHandler {
     private final StudioCatalogService service;
@@ -143,7 +145,11 @@ public final class StudioTenantHandler {
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.sessionEvents()) {
-                writeEventStream(exchange, service.sessionEvent(route.tenantId(), route.assemblyId(), route.sessionId()));
+                if ("true".equalsIgnoreCase(queryParam(exchange, "once"))) {
+                    writeEventStream(exchange, service.sessionEvent(route.tenantId(), route.assemblyId(), route.sessionId()));
+                } else {
+                    writeLiveEventStream(exchange, service.subscribeSessionEvents(route.tenantId(), route.assemblyId(), route.sessionId()));
+                }
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod()) && route.sessionHeartbeat()) {
@@ -196,18 +202,44 @@ public final class StudioTenantHandler {
     }
 
     private void writeEventStream(HttpExchange exchange, StudioSessionEvent event) throws IOException {
+        byte[] bytes = encodeEvent(event);
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.sendResponseHeaders(200, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private void writeLiveEventStream(HttpExchange exchange, StudioSessionEventSubscription subscription) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.getResponseHeaders().set("Connection", "keep-alive");
+        exchange.sendResponseHeaders(200, 0);
+        try (subscription; var output = exchange.getResponseBody()) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            while (System.nanoTime() < deadline) {
+                StudioSessionEvent event = subscription.poll(15, TimeUnit.SECONDS);
+                byte[] bytes = event == null
+                        ? ": keep-alive\n\n".getBytes(StandardCharsets.UTF_8)
+                        : encodeEvent(event);
+                output.write(bytes);
+                output.flush();
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        } finally {
+            exchange.close();
+        }
+    }
+
+    private byte[] encodeEvent(StudioSessionEvent event) throws IOException {
         byte[] json = mapper.writeValueAsBytes(event);
         String body = "retry: 3000\n"
                 + "id: " + event.eventId() + "\n"
                 + "event: session\n"
                 + "data: " + new String(json, StandardCharsets.UTF_8) + "\n\n";
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
-        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
-        exchange.getResponseHeaders().set("Connection", "keep-alive");
-        exchange.sendResponseHeaders(200, bytes.length);
-        exchange.getResponseBody().write(bytes);
-        exchange.close();
+        return bytes;
     }
 
     private StudioAccessDecision authorize(HttpExchange exchange, String routeTenant) {

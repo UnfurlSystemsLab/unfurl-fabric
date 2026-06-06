@@ -8,6 +8,7 @@ import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -210,7 +211,7 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void coordinatesCollaborativeSessionsWithOptimisticRevisions() {
+    void coordinatesCollaborativeSessionsWithOptimisticRevisions() throws Exception {
         StudioCatalogService service = new StudioCatalogService();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
@@ -242,24 +243,33 @@ class StudioCatalogServiceTest {
         bob.type = "CONNECT";
         bob.collaboratorId = "bob";
 
-        StudioIntentResponse accepted = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), alice);
-        StudioIntentResponse stale = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), bob);
+        try (StudioSessionEventSubscription subscription = service.subscribeSessionEvents(
+                "tenant-a",
+                "assembly-demo",
+                created.session().sessionId())) {
+            StudioSessionEvent initial = subscription.poll(1, TimeUnit.SECONDS);
+            assertThat(initial).isNotNull();
+            assertThat(initial.session().sceneRevision()).isZero();
 
-        assertThat(accepted.status()).isEqualTo("VALID");
-        assertThat(accepted.newRevision()).isEqualTo(1);
-        assertThat(accepted.session().intentLog()).singleElement()
-                .extracting(StudioIntentRecord::collaboratorId)
-                .isEqualTo("alice");
-        assertThat(stale.status()).isEqualTo("STALE_REVISION");
-        assertThat(stale.expectedRevision()).isEqualTo(1);
-        assertThat(stale.receivedRevision()).isEqualTo(0);
+            StudioIntentResponse accepted = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), alice);
+            StudioIntentResponse stale = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), bob);
+            StudioSessionEvent event = subscription.poll(1, TimeUnit.SECONDS);
 
-        StudioSessionEvent event = service.sessionEvent("tenant-a", "assembly-demo", created.session().sessionId());
-        assertThat(event.eventId()).endsWith(":1");
-        assertThat(event.session().sceneRevision()).isEqualTo(1);
-        assertThat(event.session().collaborators())
-                .extracting(StudioCollaborator::collaboratorId)
-                .contains("alice");
+            assertThat(accepted.status()).isEqualTo("VALID");
+            assertThat(accepted.newRevision()).isEqualTo(1);
+            assertThat(accepted.session().intentLog()).singleElement()
+                    .extracting(StudioIntentRecord::collaboratorId)
+                    .isEqualTo("alice");
+            assertThat(stale.status()).isEqualTo("STALE_REVISION");
+            assertThat(stale.expectedRevision()).isEqualTo(1);
+            assertThat(stale.receivedRevision()).isEqualTo(0);
+            assertThat(event).isNotNull();
+            assertThat(event.eventId()).endsWith(":1");
+            assertThat(event.session().sceneRevision()).isEqualTo(1);
+            assertThat(event.session().collaborators())
+                    .extracting(StudioCollaborator::collaboratorId)
+                    .contains("alice");
+        }
     }
 
     @Test
