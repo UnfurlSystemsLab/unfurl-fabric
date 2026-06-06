@@ -13,6 +13,7 @@ import com.unfurl.fabric.studio.StudioIntentRequest;
 import com.unfurl.fabric.studio.StudioLayoutStateRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
+import com.unfurl.fabric.studio.StudioSessionEvent;
 
 import java.io.IOException;
 import java.net.URLDecoder;
@@ -133,6 +134,10 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.draftSession(route.tenantId(), route.assemblyId(), route.sessionId()));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.sessionEvents()) {
+                writeEventStream(exchange, service.sessionEvent(route.tenantId(), route.assemblyId(), route.sessionId()));
+                return;
+            }
             if ("POST".equals(exchange.getRequestMethod()) && route.sessionHeartbeat()) {
                 StudioCollaborator request = mapper.readValue(exchange.getRequestBody(), StudioCollaborator.class);
                 write(exchange, 200, service.heartbeat(route.tenantId(), route.assemblyId(), route.sessionId(), request));
@@ -178,6 +183,21 @@ public final class StudioTenantHandler {
         exchange.getResponseHeaders().set("Content-Type", mediaType);
         exchange.getResponseHeaders().set("Cache-Control", "public, immutable");
         exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private void writeEventStream(HttpExchange exchange, StudioSessionEvent event) throws IOException {
+        byte[] json = mapper.writeValueAsBytes(event);
+        String body = "retry: 3000\n"
+                + "id: " + event.eventId() + "\n"
+                + "event: session\n"
+                + "data: " + new String(json, StandardCharsets.UTF_8) + "\n\n";
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+        exchange.getResponseHeaders().set("Connection", "keep-alive");
+        exchange.sendResponseHeaders(200, bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
     }
@@ -294,6 +314,10 @@ public final class StudioTenantHandler {
 
         boolean session() {
             return "assemblies/{assemblyId}/sessions/{sessionId}".equals(tail);
+        }
+
+        boolean sessionEvents() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/events".equals(tail);
         }
 
         boolean sessionHeartbeat() {

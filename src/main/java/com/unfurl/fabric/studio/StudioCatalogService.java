@@ -384,6 +384,15 @@ public final class StudioCatalogService {
         return pruneCollaborators(session);
     }
 
+    public synchronized StudioSessionEvent sessionEvent(String tenantId, String assemblyId, String sessionId) {
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        return new StudioSessionEvent(
+                session.sessionId() + ":" + session.sceneRevision(),
+                "session",
+                session,
+                Instant.now());
+    }
+
     public synchronized StudioIntentResponse applyIntent(String tenantId, String assemblyId, String sessionId, StudioIntentRequest request) {
         StudioDraftSession current = draftSession(tenantId, assemblyId, sessionId);
         if (request == null || request.type == null || request.type.isBlank()) {

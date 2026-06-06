@@ -237,6 +237,20 @@ class StudioServerTest {
                     .contains("\"expectedRevision\":1")
                     .contains("\"receivedRevision\":0");
 
+            HttpResponse<String> events = get(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
+                            + createdBody.session().sessionId()
+                            + "/events");
+            assertThat(events.statusCode()).isEqualTo(200);
+            assertThat(events.headers().firstValue("Content-Type"))
+                    .hasValueSatisfying(contentType -> assertThat(contentType).contains("text/event-stream"));
+            assertThat(events.body())
+                    .contains("retry: 3000")
+                    .contains("event: session")
+                    .contains("\"eventId\":\"" + createdBody.session().sessionId() + ":1\"")
+                    .contains("\"sceneRevision\":1");
+
             HttpResponse<String> metadata = get(server, "/studio/tenants/tenant-a/assets/validation-service-model");
             StudioVisualAsset visualAsset = StudioJson.mapper().readValue(metadata.body(), StudioVisualAsset.class);
             HttpResponse<byte[]> content = HttpClient.newHttpClient().send(

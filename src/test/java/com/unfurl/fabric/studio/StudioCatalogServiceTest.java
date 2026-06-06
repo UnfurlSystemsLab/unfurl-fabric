@@ -234,6 +234,13 @@ class StudioCatalogServiceTest {
         assertThat(stale.status()).isEqualTo("STALE_REVISION");
         assertThat(stale.expectedRevision()).isEqualTo(1);
         assertThat(stale.receivedRevision()).isEqualTo(0);
+
+        StudioSessionEvent event = service.sessionEvent("tenant-a", "assembly-demo", created.session().sessionId());
+        assertThat(event.eventId()).endsWith(":1");
+        assertThat(event.session().sceneRevision()).isEqualTo(1);
+        assertThat(event.session().collaborators())
+                .extracting(StudioCollaborator::collaboratorId)
+                .contains("alice");
     }
 
     @Test
