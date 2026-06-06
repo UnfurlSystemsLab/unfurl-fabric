@@ -186,8 +186,27 @@ class StudioCatalogServiceTest {
         assertThat(asset.mediaType()).isEqualTo("model/gltf-binary");
         assertThat(asset.sha256()).startsWith("sha256:");
         assertThat(asset.url()).contains("sha256=");
+        assertThat(service.visualAsset("tenant-a", "validation-service-thumbnail"))
+                .satisfies(thumbnail -> {
+                    assertThat(thumbnail.status()).isEqualTo("HASH_PINNED");
+                    assertThat(thumbnail.path()).isEqualTo("META-INF/visual/validation-service-thumbnail.png");
+                    assertThat(thumbnail.mediaType()).isEqualTo("image/png");
+                });
         assertThat(missing.status()).isEqualTo("FALLBACK_REQUIRED");
         assertThat(missing.warning()).contains("not present");
+    }
+
+    @Test
+    void servesBundledFixtureAssetsByDefault() {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioVisualAsset metadata = service.visualAsset("tenant-a", "storage-s3-model");
+
+        assertThat(service.visualAssetContent("tenant-a", "storage-s3-model", metadata.sha256()))
+                .hasValueSatisfying(content -> {
+                    assertThat(content.mediaType()).isEqualTo("model/gltf-binary");
+                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
+                            .isEqualTo("asset:storage-s3:META-INF/visual/storage-s3.glb");
+                });
     }
 
     @Test

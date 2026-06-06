@@ -637,13 +637,20 @@ public final class StudioCatalogService {
     }
 
     private Map<String, Object> visualIntegrity(String slug, String path) {
+        String thumbnailPath = path.replace(".glb", "-thumbnail.png");
         return Map.of(
                 "visualManifestHash", sha256("visual:" + slug),
-                "assets", List.of(Map.of(
-                        "assetId", slug + "-model",
-                        "path", path,
-                        "mediaType", mediaTypeForPath(path),
-                        "sha256", sha256("asset:" + slug + ":" + path))));
+                "assets", List.of(
+                        Map.of(
+                                "assetId", slug + "-model",
+                                "path", path,
+                                "mediaType", mediaTypeForPath(path),
+                                "sha256", sha256("asset:" + slug + ":" + path)),
+                        Map.of(
+                                "assetId", slug + "-thumbnail",
+                                "path", thumbnailPath,
+                                "mediaType", mediaTypeForPath(thumbnailPath),
+                                "sha256", sha256("asset:" + slug + ":" + thumbnailPath))));
     }
 
     private List<Map<String, Object>> visualAssets(StudioVisualCatalogEntry entry) {
@@ -897,7 +904,7 @@ public final class StudioCatalogService {
         if (configured == null || configured.isBlank()) {
             configured = System.getenv("UNFURL_STUDIO_ASSET_ROOT");
         }
-        return configured == null || configured.isBlank() ? null : Path.of(configured);
+        return configured == null || configured.isBlank() ? StudioFixtureAssets.assetRoot() : Path.of(configured);
     }
 
     private String slug(String value) {
