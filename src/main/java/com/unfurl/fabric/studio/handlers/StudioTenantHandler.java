@@ -3,6 +3,8 @@ package com.unfurl.fabric.studio.handlers;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
+import com.unfurl.fabric.studio.StudioAccessDecision;
+import com.unfurl.fabric.studio.StudioAccessPolicy;
 import com.unfurl.fabric.studio.StudioCatalogAdmissionRequest;
 import com.unfurl.fabric.studio.StudioCatalogService;
 import com.unfurl.fabric.studio.StudioCollaborator;
@@ -12,6 +14,7 @@ import com.unfurl.fabric.studio.StudioCreateDraftCompositionRequest;
 import com.unfurl.fabric.studio.StudioIntentRequest;
 import com.unfurl.fabric.studio.StudioLayoutStateRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
+import com.unfurl.fabric.studio.StudioPrincipal;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
 import com.unfurl.fabric.studio.StudioSessionEvent;
 
@@ -23,23 +26,28 @@ import java.util.Map;
 public final class StudioTenantHandler {
     private final StudioCatalogService service;
     private final ObjectMapper mapper;
-    private final boolean requireTenantHeader;
+    private final StudioAccessPolicy accessPolicy;
 
     public StudioTenantHandler(StudioCatalogService service, ObjectMapper mapper) {
         this(service, mapper, tenantHeaderRequired());
     }
 
     public StudioTenantHandler(StudioCatalogService service, ObjectMapper mapper, boolean requireTenantHeader) {
+        this(service, mapper, new StudioAccessPolicy(requireTenantHeader));
+    }
+
+    public StudioTenantHandler(StudioCatalogService service, ObjectMapper mapper, StudioAccessPolicy accessPolicy) {
         this.service = service == null ? new StudioCatalogService() : service;
         this.mapper = mapper;
-        this.requireTenantHeader = requireTenantHeader;
+        this.accessPolicy = accessPolicy == null ? new StudioAccessPolicy(false) : accessPolicy;
     }
 
     public void handle(HttpExchange exchange) throws IOException {
         try {
             Route route = Route.parse(exchange.getRequestURI().getPath());
-            if (!tenantAuthorized(exchange, route.tenantId())) {
-                write(exchange, 403, Map.of("error", "tenant header does not match route tenant"));
+            StudioAccessDecision access = authorize(exchange, route.tenantId());
+            if (!access.allowed()) {
+                write(exchange, 403, Map.of("error", access.reason()));
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogList()) {
@@ -202,12 +210,12 @@ public final class StudioTenantHandler {
         exchange.close();
     }
 
-    private boolean tenantAuthorized(HttpExchange exchange, String routeTenant) {
-        if (!requireTenantHeader) {
-            return true;
-        }
-        String header = exchange.getRequestHeaders().getFirst("X-Unfurl-Tenant");
-        return routeTenant.equals(header);
+    private StudioAccessDecision authorize(HttpExchange exchange, String routeTenant) {
+        return accessPolicy.authorize(StudioPrincipal.fromHeaders(
+                routeTenant,
+                exchange.getRequestHeaders().getFirst("X-Unfurl-Tenant"),
+                exchange.getRequestHeaders().getFirst("X-Unfurl-User"),
+                exchange.getRequestHeaders().getFirst("X-Unfurl-Tenant-Memberships")));
     }
 
     private static boolean tenantHeaderRequired() {

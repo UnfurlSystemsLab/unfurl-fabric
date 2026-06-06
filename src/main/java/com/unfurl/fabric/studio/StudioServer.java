@@ -103,7 +103,9 @@ public final class StudioServer implements AutoCloseable {
             exchange.getResponseHeaders().set("Access-Control-Allow-Origin", origin);
             exchange.getResponseHeaders().set("Vary", "Origin");
             exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+            exchange.getResponseHeaders().set(
+                    "Access-Control-Allow-Headers",
+                    "Content-Type, X-Unfurl-Tenant, X-Unfurl-User, X-Unfurl-Tenant-Memberships");
         }
     }
 
