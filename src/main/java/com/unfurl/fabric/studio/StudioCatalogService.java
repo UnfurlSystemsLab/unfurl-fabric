@@ -398,8 +398,15 @@ public final class StudioCatalogService {
     }
 
     public StudioSessionEventSubscription subscribeSessionEvents(String tenantId, String assemblyId, String sessionId) {
-        StudioSessionEvent initial = sessionEvent(tenantId, assemblyId, sessionId);
-        String key = sessionEventKey(initial.session().tenantId(), initial.session().assemblyId(), initial.session().sessionId());
+        String tenant = normalizeTenant(tenantId);
+        String assembly = normalizeAssembly(assemblyId);
+        StudioSessionEvent initial;
+        try {
+            initial = sessionEvent(tenant, assembly, sessionId);
+        } catch (IllegalArgumentException ex) {
+            initial = null;
+        }
+        String key = sessionEventKey(tenant, assembly, sessionId);
         return eventBus.subscribe(key, initial);
     }
 

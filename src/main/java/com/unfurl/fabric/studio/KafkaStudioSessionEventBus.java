@@ -38,7 +38,9 @@ public final class KafkaStudioSessionEventBus implements StudioSessionEventBus {
     @Override
     public StudioSessionEventSubscription subscribe(String key, StudioSessionEvent initialEvent) {
         BlockingQueue<StudioSessionEvent> events = new LinkedBlockingQueue<>();
-        events.offer(initialEvent);
+        if (initialEvent != null) {
+            events.offer(initialEvent);
+        }
         AtomicBoolean running = new AtomicBoolean(true);
         KafkaConsumer<String, String> consumer = new KafkaConsumer<>(consumerProperties(bootstrapServers));
         consumer.subscribe(List.of(topic));

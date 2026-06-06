@@ -27,7 +27,9 @@ public final class RedisStudioSessionEventBus implements StudioSessionEventBus {
     @Override
     public StudioSessionEventSubscription subscribe(String key, StudioSessionEvent initialEvent) {
         BlockingQueue<StudioSessionEvent> events = new LinkedBlockingQueue<>();
-        events.offer(initialEvent);
+        if (initialEvent != null) {
+            events.offer(initialEvent);
+        }
         Jedis subscriber = new Jedis(redisUri);
         JedisPubSub pubSub = new JedisPubSub() {
             @Override

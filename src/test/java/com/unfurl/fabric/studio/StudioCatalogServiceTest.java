@@ -322,6 +322,47 @@ class StudioCatalogServiceTest {
     }
 
     @Test
+    void peerInstanceCanSubscribeBeforeSessionIsLocal() throws Exception {
+        InMemoryStudioSessionEventBus sharedBus = new InMemoryStudioSessionEventBus();
+        StudioCatalogService writer = new StudioCatalogService(null, null, sharedBus);
+        StudioCatalogService reader = new StudioCatalogService(null, null, sharedBus);
+        StudioCreateDraftCompositionResponse created = writer.createDraftSession(
+                "tenant-a",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-demo",
+                        "sha256:catalog",
+                        "needs-checkout",
+                        "trust-prod",
+                        "cand-initial",
+                        "alice",
+                        "Alice"));
+
+        try (StudioSessionEventSubscription subscription = reader.subscribeSessionEvents(
+                "tenant-a",
+                "assembly-demo",
+                created.session().sessionId())) {
+            assertThat(subscription.poll(100, TimeUnit.MILLISECONDS)).isNull();
+
+            StudioIntentRequest intent = new StudioIntentRequest();
+            intent.tenantId = "tenant-a";
+            intent.assemblyId = "assembly-demo";
+            intent.sessionId = created.session().sessionId();
+            intent.baseRevision = 0;
+            intent.type = "REPLACE_COMPONENT";
+            intent.collaboratorId = "alice";
+            intent.put("newCatalogEntryId", "com.unfurl:customer-policy-validator:1.2.0");
+            writer.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), intent);
+
+            StudioSessionEvent event = subscription.poll(1, TimeUnit.SECONDS);
+            assertThat(event).isNotNull();
+            assertThat(event.session().sessionId()).isEqualTo(created.session().sessionId());
+            assertThat(event.session().sceneRevision()).isEqualTo(1);
+        }
+    }
+
+    @Test
     void servesBinaryAssetOnlyWhenPinnedHashMatches(@TempDir Path dir) throws Exception {
         Path asset = dir.resolve("META-INF/visual/validation-service.glb");
         Files.createDirectories(asset.getParent());

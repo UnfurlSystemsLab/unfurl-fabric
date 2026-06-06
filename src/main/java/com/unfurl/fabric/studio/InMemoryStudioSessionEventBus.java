@@ -18,7 +18,9 @@ public final class InMemoryStudioSessionEventBus implements StudioSessionEventBu
     @Override
     public StudioSessionEventSubscription subscribe(String key, StudioSessionEvent initialEvent) {
         BlockingQueue<StudioSessionEvent> events = new LinkedBlockingQueue<>();
-        events.offer(initialEvent);
+        if (initialEvent != null) {
+            events.offer(initialEvent);
+        }
         CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>> listeners =
                 subscribers.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>());
         listeners.add(events);
