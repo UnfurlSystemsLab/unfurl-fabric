@@ -1,10 +1,12 @@
 package com.unfurl.fabric.studio;
 
+import java.nio.file.Path;
+
 public final class StudioServerLauncher {
 
     public static void main(String[] args) throws Exception {
-        Options options = Options.parse(args);
-        StudioServer server = new StudioServer(options.bindAddress(), options.port());
+        StudioMicroserviceConfig options = Options.parse(args);
+        StudioServer server = new StudioServer(options);
         if (server.nonLoopbackBindWarningRequired()) {
             System.err.println("StudioServer is now reachable from non-loopback addresses; "
                     + "no authentication is configured; this is intended for dev only.");
@@ -16,18 +18,39 @@ public final class StudioServerLauncher {
         Thread.currentThread().join();
     }
 
-    record Options(String bindAddress, int port) {
-        static Options parse(String[] args) {
+    static final class Options {
+        static StudioMicroserviceConfig parse(String[] args) {
             String bind = StudioServer.DEFAULT_BIND_ADDRESS;
             int port = StudioServer.DEFAULT_PORT;
+            Path statePath = StudioStateStore.defaultPath();
+            Path assetRoot = null;
+            String eventBus = null;
+            String redisUrl = null;
+            String kafkaBootstrapServers = null;
+            String kafkaTopic = null;
             for (int i = 0; i < args.length; i++) {
                 switch (args[i]) {
                     case "--bind" -> bind = value(args, ++i, "--bind");
                     case "--port" -> port = Integer.parseInt(value(args, ++i, "--port"));
+                    case "--state-path" -> statePath = Path.of(value(args, ++i, "--state-path"));
+                    case "--asset-root" -> assetRoot = Path.of(value(args, ++i, "--asset-root"));
+                    case "--event-bus" -> eventBus = value(args, ++i, "--event-bus");
+                    case "--redis-url" -> redisUrl = value(args, ++i, "--redis-url");
+                    case "--kafka-bootstrap-servers" ->
+                            kafkaBootstrapServers = value(args, ++i, "--kafka-bootstrap-servers");
+                    case "--kafka-topic" -> kafkaTopic = value(args, ++i, "--kafka-topic");
                     default -> throw new IllegalArgumentException("unknown option: " + args[i]);
                 }
             }
-            return new Options(bind, port);
+            return new StudioMicroserviceConfig(
+                    bind,
+                    port,
+                    statePath,
+                    assetRoot,
+                    eventBus,
+                    redisUrl,
+                    kafkaBootstrapServers,
+                    kafkaTopic);
         }
 
         private static String value(String[] args, int index, String flag) {

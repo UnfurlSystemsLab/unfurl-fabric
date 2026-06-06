@@ -15,19 +15,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.LinkedBlockingQueue;
 
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
-    private final Map<String, CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>>> sessionEventSubscribers = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
+    private final StudioSessionEventBus eventBus;
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
 
     public StudioCatalogService() {
@@ -39,8 +36,13 @@ public final class StudioCatalogService {
     }
 
     public StudioCatalogService(StudioStateStore store, Path assetRoot) {
+        this(store, assetRoot, new InMemoryStudioSessionEventBus());
+    }
+
+    public StudioCatalogService(StudioStateStore store, Path assetRoot, StudioSessionEventBus eventBus) {
         this.store = store;
         this.assetRoot = assetRoot == null ? null : assetRoot.toAbsolutePath().normalize();
+        this.eventBus = eventBus == null ? new InMemoryStudioSessionEventBus() : eventBus;
         if (store != null) {
             StudioStateStore.State state = store.load();
             entriesByTenant.putAll(state.entriesByTenant());
@@ -398,12 +400,11 @@ public final class StudioCatalogService {
     public StudioSessionEventSubscription subscribeSessionEvents(String tenantId, String assemblyId, String sessionId) {
         StudioSessionEvent initial = sessionEvent(tenantId, assemblyId, sessionId);
         String key = sessionEventKey(initial.session().tenantId(), initial.session().assemblyId(), initial.session().sessionId());
-        BlockingQueue<StudioSessionEvent> events = new LinkedBlockingQueue<>();
-        events.offer(initial);
-        CopyOnWriteArrayList<BlockingQueue<StudioSessionEvent>> subscribers =
-                sessionEventSubscribers.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>());
-        subscribers.add(events);
-        return new StudioSessionEventSubscription(key, events, () -> subscribers.remove(events));
+        return eventBus.subscribe(key, initial);
+    }
+
+    public StudioEventBusHealth eventBusHealth() {
+        return eventBus.health();
     }
 
     private StudioSessionEvent eventForSession(StudioDraftSession session) {
@@ -855,14 +856,7 @@ public final class StudioCatalogService {
 
     private void publishSessionEvent(StudioDraftSession session) {
         StudioSessionEvent event = eventForSession(session);
-        List<BlockingQueue<StudioSessionEvent>> subscribers = sessionEventSubscribers.get(
-                sessionEventKey(session.tenantId(), session.assemblyId(), session.sessionId()));
-        if (subscribers == null || subscribers.isEmpty()) {
-            return;
-        }
-        for (BlockingQueue<StudioSessionEvent> subscriber : subscribers) {
-            subscriber.offer(event);
-        }
+        eventBus.publish(sessionEventKey(session.tenantId(), session.assemblyId(), session.sessionId()), event);
     }
 
     private StudioDraftSession pruneCollaborators(StudioDraftSession session) {

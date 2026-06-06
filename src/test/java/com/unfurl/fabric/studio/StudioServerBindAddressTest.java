@@ -28,10 +28,23 @@ class StudioServerBindAddressTest {
 
     @Test
     void launcherParsesBindAndPort() {
-        StudioServerLauncher.Options options = StudioServerLauncher.Options.parse(
+        StudioMicroserviceConfig options = StudioServerLauncher.Options.parse(
                 new String[]{"--bind", "0.0.0.0", "--port", "9000"});
 
         assertThat(options.bindAddress()).isEqualTo("0.0.0.0");
         assertThat(options.port()).isEqualTo(9000);
+    }
+
+    @Test
+    void launcherParsesEventBusOptions() {
+        StudioMicroserviceConfig options = StudioServerLauncher.Options.parse(new String[]{
+                "--event-bus", "kafka",
+                "--kafka-bootstrap-servers", "broker-a:9092",
+                "--kafka-topic", "studio.events"
+        });
+
+        assertThat(options.eventBus()).isEqualTo("kafka");
+        assertThat(options.kafkaBootstrapServers()).isEqualTo("broker-a:9092");
+        assertThat(options.kafkaTopic()).isEqualTo("studio.events");
     }
 }

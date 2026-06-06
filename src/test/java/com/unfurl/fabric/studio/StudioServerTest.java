@@ -26,7 +26,10 @@ class StudioServerTest {
         try (StudioServer server = started()) {
             HttpResponse<String> health = get(server, "/health");
             assertThat(health.statusCode()).isEqualTo(200);
-            assertThat(health.body()).contains("\"UP\"", "unfurl-fabric-studio");
+            assertThat(health.body()).contains("\"UP\"", "unfurl-fabric-studio", "\"eventBus\"");
+            HttpResponse<String> ready = get(server, "/ready");
+            assertThat(ready.statusCode()).isEqualTo(200);
+            assertThat(ready.body()).contains("\"READY\"", "\"provider\":\"in-memory\"");
 
             HttpResponse<String> resolved = post(server, "/studio/deployment/resolve", """
                     {

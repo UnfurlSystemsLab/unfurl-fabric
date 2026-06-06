@@ -19,6 +19,8 @@
         <jakarta.validation.version>3.1.0</jakarta.validation.version>
         <hibernate.validator.version>8.0.1.Final</hibernate.validator.version>
         <semver4j.version>3.1.0</semver4j.version>
+        <jedis.version>5.2.0</jedis.version>
+        <kafka.clients.version>3.8.0</kafka.clients.version>
         <junit.version>5.10.3</junit.version>
         <assertj.version>3.26.3</assertj.version>
         <jqwik.version>1.9.0</jqwik.version>
@@ -101,6 +103,16 @@
                 <version>${semver4j.version}</version>
             </dependency>
             <dependency>
+                <groupId>redis.clients</groupId>
+                <artifactId>jedis</artifactId>
+                <version>${jedis.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.kafka</groupId>
+                <artifactId>kafka-clients</artifactId>
+                <version>${kafka.clients.version}</version>
+            </dependency>
+            <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>${junit.version}</version>
@@ -179,6 +191,14 @@
         <dependency>
             <groupId>com.vdurmont</groupId>
             <artifactId>semver4j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

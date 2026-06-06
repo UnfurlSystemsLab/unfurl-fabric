@@ -31,6 +31,7 @@ public final class StudioServer implements AutoCloseable {
     private final ObjectMapper mapper;
     private final String bindAddress;
     private final StudioCatalogService catalogService;
+    private final StudioSessionEventBus eventBus;
 
     public StudioServer() throws IOException {
         this(DEFAULT_BIND_ADDRESS, DEFAULT_PORT);
@@ -47,6 +48,20 @@ public final class StudioServer implements AutoCloseable {
         this.catalogService = catalogService == null
                 ? new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath()))
                 : catalogService;
+        this.eventBus = null;
+        routes();
+    }
+
+    public StudioServer(StudioMicroserviceConfig config) throws IOException {
+        StudioMicroserviceConfig safe = config == null ? StudioMicroserviceConfig.defaults() : config;
+        this.bindAddress = safe.bindAddress();
+        this.server = HttpServer.create(new InetSocketAddress(this.bindAddress, safe.port()), 0);
+        this.mapper = StudioJson.mapper();
+        this.eventBus = StudioEventBusFactory.create(safe);
+        this.catalogService = new StudioCatalogService(
+                new StudioStateStore(safe.statePath()),
+                safe.assetRoot(),
+                eventBus);
         routes();
     }
 
@@ -69,6 +84,9 @@ public final class StudioServer implements AutoCloseable {
     @Override
     public void close() {
         server.stop(0);
+        if (eventBus != null) {
+            eventBus.close();
+        }
     }
 
     private void routes() {
@@ -77,7 +95,28 @@ public final class StudioServer implements AutoCloseable {
                 write(exchange, 405, Map.of("error", "method not allowed: " + exchange.getRequestMethod()));
                 return;
             }
-            write(exchange, 200, Map.of("status", "UP", "service", "unfurl-fabric-studio"));
+            write(exchange, 200, Map.of(
+                    "status", "UP",
+                    "service", "unfurl-fabric-studio",
+                    "eventBus", catalogService.eventBusHealth()));
+        }));
+        server.createContext("/live", withCors(exchange -> {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                write(exchange, 405, Map.of("error", "method not allowed: " + exchange.getRequestMethod()));
+                return;
+            }
+            write(exchange, 200, Map.of("status", "UP"));
+        }));
+        server.createContext("/ready", withCors(exchange -> {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                write(exchange, 405, Map.of("error", "method not allowed: " + exchange.getRequestMethod()));
+                return;
+            }
+            StudioEventBusHealth eventBusHealth = catalogService.eventBusHealth();
+            int status = "UP".equals(eventBusHealth.status()) ? 200 : 503;
+            write(exchange, status, Map.of(
+                    "status", status == 200 ? "READY" : "NOT_READY",
+                    "eventBus", eventBusHealth));
         }));
         ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(new StudioDeploymentService(), mapper);
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
