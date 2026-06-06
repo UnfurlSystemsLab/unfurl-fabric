@@ -62,17 +62,19 @@ public final class StudioStateStore {
     public record State(
             Map<String, List<StudioVisualCatalogEntry>> entriesByTenant,
             Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant,
-            Map<String, Map<String, StudioLayoutState>> layoutsByTenant
+            Map<String, Map<String, StudioLayoutState>> layoutsByTenant,
+            Map<String, Map<String, StudioDraftSession>> sessionsByTenant
     ) {
         public static State empty() {
-            return new State(Map.of(), Map.of(), Map.of());
+            return new State(Map.of(), Map.of(), Map.of(), Map.of());
         }
 
         public State normalized() {
             return new State(
                     entriesByTenant == null ? Map.of() : copyEntries(entriesByTenant),
                     assembliesByTenant == null ? Map.of() : copyAssemblies(assembliesByTenant),
-                    layoutsByTenant == null ? Map.of() : copyLayouts(layoutsByTenant));
+                    layoutsByTenant == null ? Map.of() : copyLayouts(layoutsByTenant),
+                    sessionsByTenant == null ? Map.of() : copySessions(sessionsByTenant));
         }
 
         private static Map<String, List<StudioVisualCatalogEntry>> copyEntries(
@@ -96,6 +98,14 @@ public final class StudioStateStore {
         ) {
             Map<String, Map<String, StudioLayoutState>> copy = new HashMap<>();
             source.forEach((tenant, layouts) -> copy.put(tenant, layouts == null ? Map.of() : Map.copyOf(layouts)));
+            return copy;
+        }
+
+        private static Map<String, Map<String, StudioDraftSession>> copySessions(
+                Map<String, Map<String, StudioDraftSession>> source
+        ) {
+            Map<String, Map<String, StudioDraftSession>> copy = new HashMap<>();
+            source.forEach((tenant, sessions) -> copy.put(tenant, sessions == null ? Map.of() : Map.copyOf(sessions)));
             return copy;
         }
     }

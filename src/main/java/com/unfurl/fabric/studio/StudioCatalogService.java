@@ -1,27 +1,41 @@
 package com.unfurl.fabric.studio;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
     private final StudioStateStore store;
+    private final Path assetRoot;
 
     public StudioCatalogService() {
-        this(null);
+        this(null, defaultAssetRoot());
     }
 
     public StudioCatalogService(StudioStateStore store) {
+        this(store, defaultAssetRoot());
+    }
+
+    public StudioCatalogService(StudioStateStore store, Path assetRoot) {
         this.store = store;
+        this.assetRoot = assetRoot == null ? null : assetRoot.toAbsolutePath().normalize();
         if (store != null) {
             StudioStateStore.State state = store.load();
             entriesByTenant.putAll(state.entriesByTenant());
@@ -29,6 +43,8 @@ public final class StudioCatalogService {
                     assembliesByTenant.put(tenant, new ConcurrentHashMap<>(assemblies)));
             state.layoutsByTenant().forEach((tenant, layouts) ->
                     layoutsByTenant.put(tenant, new ConcurrentHashMap<>(layouts)));
+            state.sessionsByTenant().forEach((tenant, sessions) ->
+                    sessionsByTenant.put(tenant, new ConcurrentHashMap<>(sessions)));
         }
     }
 
@@ -327,6 +343,155 @@ public final class StudioCatalogService {
         return state;
     }
 
+    public synchronized StudioCreateDraftCompositionResponse createDraftSession(
+            String tenantId,
+            String assemblyId,
+            StudioCreateDraftCompositionRequest request
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = normalizeAssembly(assemblyId);
+        StudioCreateDraftCompositionRequest safe = request == null
+                ? new StudioCreateDraftCompositionRequest(tenant, assembly, "", "", "", "", "", "")
+                : request;
+        String sessionId = "studio-session-" + UUID.randomUUID();
+        StudioDraftSession session = new StudioDraftSession(
+                tenant,
+                assembly,
+                sessionId,
+                stringValue(safe.baseCatalogHash(), response(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries)).catalogHash()),
+                "DYNAMIC",
+                safe.needsId(),
+                safe.trustPolicyId(),
+                safe.initialCandidateId(),
+                0,
+                List.of(),
+                List.of(collaborator(safe.collaboratorId(), safe.collaboratorName(), "")),
+                List.of());
+        sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
+        persist();
+        return new StudioCreateDraftCompositionResponse(session);
+    }
+
+    public synchronized StudioDraftSession draftSession(String tenantId, String assemblyId, String sessionId) {
+        String tenant = normalizeTenant(tenantId);
+        String key = sessionKey(normalizeAssembly(assemblyId), sessionId);
+        StudioDraftSession session = sessionsByTenant
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                .get(key);
+        if (session == null) {
+            throw new IllegalArgumentException("Studio draft session not found: " + sessionId);
+        }
+        return pruneCollaborators(session);
+    }
+
+    public synchronized StudioIntentResponse applyIntent(String tenantId, String assemblyId, String sessionId, StudioIntentRequest request) {
+        StudioDraftSession current = draftSession(tenantId, assemblyId, sessionId);
+        if (request == null || request.type == null || request.type.isBlank()) {
+            return StudioIntentResponse.invalid("intent type is required", "Studio intents must name a governed operation");
+        }
+        if (request.baseRevision != current.sceneRevision()) {
+            return StudioIntentResponse.stale(current.sceneRevision(), request.baseRevision, current);
+        }
+
+        long revision = current.sceneRevision() + 1;
+        Map<String, Object> payload = new LinkedHashMap<>(request.payload());
+        String candidateId = candidateAfterIntent(current.currentCandidateId(), request, payload);
+        StudioIntentRecord record = new StudioIntentRecord(
+                revision,
+                collaboratorId(request.collaboratorId),
+                request.type,
+                payload,
+                Instant.now());
+        List<StudioIntentRecord> intentLog = new ArrayList<>(current.intentLog());
+        intentLog.add(record);
+        StudioDraftSession updated = new StudioDraftSession(
+                current.tenantId(),
+                current.assemblyId(),
+                current.sessionId(),
+                current.baseCatalogHash(),
+                current.compositionMode(),
+                current.needsId(),
+                current.trustPolicyId(),
+                candidateId,
+                revision,
+                current.warnings(),
+                upsertCollaborator(current.collaborators(), request.collaboratorId, request.collaboratorName, stringValue(payload.get("selectedSurface"), "")),
+                intentLog);
+        putSession(updated);
+        updateAssemblyRevision(updated);
+        persist();
+        return StudioIntentResponse.valid(revision, candidateId, updated);
+    }
+
+    public synchronized StudioDraftSession heartbeat(
+            String tenantId,
+            String assemblyId,
+            String sessionId,
+            StudioCollaborator collaborator
+    ) {
+        StudioDraftSession current = draftSession(tenantId, assemblyId, sessionId);
+        StudioDraftSession updated = new StudioDraftSession(
+                current.tenantId(),
+                current.assemblyId(),
+                current.sessionId(),
+                current.baseCatalogHash(),
+                current.compositionMode(),
+                current.needsId(),
+                current.trustPolicyId(),
+                current.currentCandidateId(),
+                current.sceneRevision(),
+                current.warnings(),
+                upsertCollaborator(current.collaborators(), collaborator.collaboratorId(), collaborator.displayName(), collaborator.selectedSurface()),
+                current.intentLog());
+        putSession(updated);
+        persist();
+        return updated;
+    }
+
+    public synchronized StudioCompileDraftCandidateResponse compileCandidate(
+            String tenantId,
+            String assemblyId,
+            String sessionId,
+            StudioCompileDraftCandidateRequest request
+    ) {
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        long expected = request == null ? session.sceneRevision() : request.expectedRevision();
+        if (expected != session.sceneRevision()) {
+            return new StudioCompileDraftCandidateResponse(
+                    "STALE_REVISION",
+                    "",
+                    null,
+                    null,
+                    null,
+                    List.of(),
+                    "",
+                    "",
+                    session.sceneRevision(),
+                    expected);
+        }
+        String candidateId = session.currentCandidateId().isBlank()
+                ? "cand-" + slug(session.assemblyId()) + "-" + session.sceneRevision()
+                : session.currentCandidateId();
+        StudioExportArtifact contract = artifact("contract-" + session.sessionId(), "application/yaml");
+        StudioExportArtifact profile = artifact("substrate-profile-" + session.sessionId(), "application/yaml");
+        StudioExportArtifact signed = request != null && request.sign()
+                ? artifact("signed-contract-" + session.sessionId(), "application/jose+json")
+                : null;
+        return new StudioCompileDraftCandidateResponse(
+                "COMPILED",
+                candidateId,
+                contract,
+                profile,
+                signed,
+                session.collaborators().size() > 1
+                        ? List.of("compiled shared session with " + session.collaborators().size() + " active collaborators")
+                        : List.of(),
+                "",
+                "",
+                0,
+                0);
+    }
+
     public StudioVisualAsset visualAsset(String tenantId, String assetId) {
         String tenant = normalizeTenant(tenantId);
         String normalizedAssetId = assetId == null ? "" : assetId.trim();
@@ -359,6 +524,30 @@ public final class StudioCatalogService {
                 "asset is not present in the tenant visual catalog");
     }
 
+    public Optional<StudioAssetContent> visualAssetContent(String tenantId, String assetId, String requestedSha256) {
+        StudioVisualAsset asset = visualAsset(tenantId, assetId);
+        if (!"HASH_PINNED".equals(asset.status()) || assetRoot == null || asset.path().isBlank()) {
+            return Optional.empty();
+        }
+        if (requestedSha256 != null && !requestedSha256.isBlank() && !asset.sha256().equals(requestedSha256)) {
+            return Optional.empty();
+        }
+        Path target = assetRoot.resolve(asset.path()).normalize();
+        if (!target.startsWith(assetRoot) || !Files.isRegularFile(target)) {
+            return Optional.empty();
+        }
+        try {
+            byte[] bytes = Files.readAllBytes(target);
+            String actual = sha256(bytes);
+            if (!asset.sha256().equals(actual)) {
+                return Optional.empty();
+            }
+            return Optional.of(new StudioAssetContent(bytes, asset.mediaType(), actual));
+        } catch (Exception ex) {
+            return Optional.empty();
+        }
+    }
+
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
@@ -372,7 +561,8 @@ public final class StudioCatalogService {
         store.save(new StudioStateStore.State(
                 Map.copyOf(entriesByTenant),
                 Map.copyOf(assembliesByTenant),
-                Map.copyOf(layoutsByTenant)));
+                Map.copyOf(layoutsByTenant),
+                Map.copyOf(sessionsByTenant)));
     }
 
     private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
@@ -588,6 +778,119 @@ public final class StudioCatalogService {
         return tenantId.trim();
     }
 
+    private String normalizeAssembly(String assemblyId) {
+        return assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+    }
+
+    private String sessionKey(String assemblyId, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("session id is required");
+        }
+        return normalizeAssembly(assemblyId) + "/" + sessionId;
+    }
+
+    private void putSession(StudioDraftSession session) {
+        sessionsByTenant
+                .computeIfAbsent(session.tenantId(), ignored -> new ConcurrentHashMap<>())
+                .put(sessionKey(session.assemblyId(), session.sessionId()), session);
+    }
+
+    private StudioDraftSession pruneCollaborators(StudioDraftSession session) {
+        Instant cutoff = Instant.now().minus(Duration.ofSeconds(90));
+        List<StudioCollaborator> active = session.collaborators().stream()
+                .filter(collaborator -> collaborator.lastSeenAt().isAfter(cutoff))
+                .sorted(Comparator.comparing(StudioCollaborator::collaboratorId))
+                .toList();
+        if (active.size() == session.collaborators().size()) {
+            return session;
+        }
+        StudioDraftSession pruned = new StudioDraftSession(
+                session.tenantId(),
+                session.assemblyId(),
+                session.sessionId(),
+                session.baseCatalogHash(),
+                session.compositionMode(),
+                session.needsId(),
+                session.trustPolicyId(),
+                session.currentCandidateId(),
+                session.sceneRevision(),
+                session.warnings(),
+                active,
+                session.intentLog());
+        putSession(pruned);
+        persist();
+        return pruned;
+    }
+
+    private List<StudioCollaborator> upsertCollaborator(
+            List<StudioCollaborator> collaborators,
+            String collaboratorId,
+            String displayName,
+            String selectedSurface
+    ) {
+        String id = collaboratorId(collaboratorId);
+        List<StudioCollaborator> updated = new ArrayList<>(collaborators == null ? List.of() : collaborators);
+        updated.removeIf(existing -> existing.collaboratorId().equals(id));
+        updated.add(collaborator(id, displayName, selectedSurface));
+        return updated.stream()
+                .sorted(Comparator.comparing(StudioCollaborator::collaboratorId))
+                .toList();
+    }
+
+    private StudioCollaborator collaborator(String collaboratorId, String displayName, String selectedSurface) {
+        String id = collaboratorId(collaboratorId);
+        return new StudioCollaborator(
+                id,
+                displayName == null || displayName.isBlank() ? id : displayName,
+                selectedSurface,
+                Instant.now());
+    }
+
+    private String collaboratorId(String collaboratorId) {
+        return collaboratorId == null || collaboratorId.isBlank() ? "anonymous" : collaboratorId.trim();
+    }
+
+    private String candidateAfterIntent(String currentCandidateId, StudioIntentRequest request, Map<String, Object> payload) {
+        if ("REPLACE_COMPONENT".equals(request.type)) {
+            return stringValue(payload.get("newCatalogEntryId"), currentCandidateId);
+        }
+        if ("ADD_COMPONENT".equals(request.type)) {
+            return stringValue(payload.get("catalogEntryId"), currentCandidateId);
+        }
+        return currentCandidateId == null ? "" : currentCandidateId;
+    }
+
+    private void updateAssemblyRevision(StudioDraftSession session) {
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(session.tenantId(), this::fixtureAssemblies);
+        StudioAssemblySummary previous = assemblies.getOrDefault(session.assemblyId(), fixtureAssemblies(session.tenantId()).get("assembly-demo"));
+        assemblies.put(session.assemblyId(), new StudioAssemblySummary(
+                session.tenantId(),
+                session.assemblyId(),
+                previous == null ? "" : previous.targetApplicationName(),
+                previous == null ? "" : previous.defaultDeploymentTarget(),
+                session.needsId(),
+                previous == null ? "CONTAINERIZED_SERVICE" : previous.deploymentShape(),
+                session.currentCandidateId(),
+                Math.toIntExact(session.sceneRevision())));
+    }
+
+    private StudioExportArtifact artifact(String artifactId, String mediaType) {
+        String sha = sha256("artifact:" + artifactId);
+        return new StudioExportArtifact(
+                artifactId,
+                mediaType,
+                sha,
+                "/studio/exports/" + artifactId + "?sha256=" + sha);
+    }
+
+    private static Path defaultAssetRoot() {
+        String configured = System.getProperty("unfurl.studio.asset.root");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getenv("UNFURL_STUDIO_ASSET_ROOT");
+        }
+        return configured == null || configured.isBlank() ? null : Path.of(configured);
+    }
+
     private String slug(String value) {
         String slug = value.toLowerCase()
                 .replaceAll("[^a-z0-9]+", "-")
@@ -599,6 +902,15 @@ public final class StudioCatalogService {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return "sha256:" + HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return "sha256:" + HexFormat.of().formatHex(digest.digest(bytes));
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }

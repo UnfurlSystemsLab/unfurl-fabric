@@ -5,6 +5,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.util.List;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -186,5 +188,72 @@ class StudioCatalogServiceTest {
         assertThat(asset.url()).contains("sha256=");
         assertThat(missing.status()).isEqualTo("FALLBACK_REQUIRED");
         assertThat(missing.warning()).contains("not present");
+    }
+
+    @Test
+    void coordinatesCollaborativeSessionsWithOptimisticRevisions() {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-demo",
+                        "sha256:catalog",
+                        "needs-checkout",
+                        "trust-prod",
+                        "cand-initial",
+                        "alice",
+                        "Alice"));
+
+        StudioIntentRequest alice = new StudioIntentRequest();
+        alice.tenantId = "tenant-a";
+        alice.assemblyId = "assembly-demo";
+        alice.sessionId = created.session().sessionId();
+        alice.baseRevision = 0;
+        alice.type = "REPLACE_COMPONENT";
+        alice.collaboratorId = "alice";
+        alice.put("newCatalogEntryId", "com.unfurl:customer-policy-validator:1.2.0");
+
+        StudioIntentRequest bob = new StudioIntentRequest();
+        bob.tenantId = "tenant-a";
+        bob.assemblyId = "assembly-demo";
+        bob.sessionId = created.session().sessionId();
+        bob.baseRevision = 0;
+        bob.type = "CONNECT";
+        bob.collaboratorId = "bob";
+
+        StudioIntentResponse accepted = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), alice);
+        StudioIntentResponse stale = service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), bob);
+
+        assertThat(accepted.status()).isEqualTo("VALID");
+        assertThat(accepted.newRevision()).isEqualTo(1);
+        assertThat(accepted.session().intentLog()).singleElement()
+                .extracting(StudioIntentRecord::collaboratorId)
+                .isEqualTo("alice");
+        assertThat(stale.status()).isEqualTo("STALE_REVISION");
+        assertThat(stale.expectedRevision()).isEqualTo(1);
+        assertThat(stale.receivedRevision()).isEqualTo(0);
+    }
+
+    @Test
+    void servesBinaryAssetOnlyWhenPinnedHashMatches(@TempDir Path dir) throws Exception {
+        Path asset = dir.resolve("META-INF/visual/validation-service.glb");
+        Files.createDirectories(asset.getParent());
+        Files.writeString(
+                asset,
+                "asset:validation-service:META-INF/visual/validation-service.glb",
+                StandardCharsets.UTF_8);
+        StudioCatalogService service = new StudioCatalogService(null, dir);
+        StudioVisualAsset metadata = service.visualAsset("tenant-a", "validation-service-model");
+
+        assertThat(service.visualAssetContent("tenant-a", "validation-service-model", metadata.sha256()))
+                .hasValueSatisfying(content -> {
+                    assertThat(content.mediaType()).isEqualTo("model/gltf-binary");
+                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
+                            .isEqualTo("asset:validation-service:META-INF/visual/validation-service.glb");
+                });
+        assertThat(service.visualAssetContent("tenant-a", "validation-service-model", "sha256:wrong"))
+                .isEmpty();
     }
 }

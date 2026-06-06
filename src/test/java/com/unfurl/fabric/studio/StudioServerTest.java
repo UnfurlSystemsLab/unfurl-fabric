@@ -171,8 +171,93 @@ class StudioServerTest {
         }
     }
 
+    @Test
+    void servesCollaborativeSessionsAndVerifiedAssetContent(@TempDir Path dir) throws Exception {
+        Path asset = dir.resolve("META-INF/visual/validation-service.glb");
+        Files.createDirectories(asset.getParent());
+        Files.writeString(
+                asset,
+                "asset:validation-service:META-INF/visual/validation-service.glb",
+                StandardCharsets.UTF_8);
+
+        try (StudioServer server = started(new StudioCatalogService(null, dir))) {
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
+                    {
+                      "baseCatalogHash": "sha256:catalog",
+                      "needsId": "needs-checkout",
+                      "initialCandidateId": "cand-initial",
+                      "collaboratorId": "alice",
+                      "collaboratorName": "Alice"
+                    }
+                    """);
+            assertThat(created.statusCode()).isEqualTo(200);
+            StudioCreateDraftCompositionResponse createdBody = StudioJson.mapper()
+                    .readValue(created.body(), StudioCreateDraftCompositionResponse.class);
+
+            HttpResponse<String> intent = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
+                            + createdBody.session().sessionId()
+                            + "/intents",
+                    """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "sessionId": "%s",
+                      "baseRevision": 0,
+                      "type": "REPLACE_COMPONENT",
+                      "collaboratorId": "bob",
+                      "collaboratorName": "Bob",
+                      "newCatalogEntryId": "com.unfurl:customer-policy-validator:1.2.0"
+                    }
+                    """.formatted(createdBody.session().sessionId()));
+            assertThat(intent.statusCode()).isEqualTo(200);
+            assertThat(intent.body())
+                    .contains("\"status\":\"VALID\"")
+                    .contains("\"newRevision\":1")
+                    .contains("\"collaboratorId\":\"bob\"");
+
+            HttpResponse<String> stale = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
+                            + createdBody.session().sessionId()
+                            + "/intents",
+                    """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "sessionId": "%s",
+                      "baseRevision": 0,
+                      "type": "CONNECT",
+                      "collaboratorId": "alice"
+                    }
+                    """.formatted(createdBody.session().sessionId()));
+            assertThat(stale.body())
+                    .contains("\"status\":\"STALE_REVISION\"")
+                    .contains("\"expectedRevision\":1")
+                    .contains("\"receivedRevision\":0");
+
+            HttpResponse<String> metadata = get(server, "/studio/tenants/tenant-a/assets/validation-service-model");
+            StudioVisualAsset visualAsset = StudioJson.mapper().readValue(metadata.body(), StudioVisualAsset.class);
+            HttpResponse<byte[]> content = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(uri(server, "/studio/tenants/tenant-a/assets/validation-service-model/content?sha256=" + visualAsset.sha256()))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+
+            assertThat(content.statusCode()).isEqualTo(200);
+            assertThat(content.headers().firstValue("Content-Type")).contains("model/gltf-binary");
+            assertThat(new String(content.body(), StandardCharsets.UTF_8))
+                    .isEqualTo("asset:validation-service:META-INF/visual/validation-service.glb");
+        }
+    }
+
     private StudioServer started() throws Exception {
-        StudioServer server = new StudioServer("127.0.0.1", 0, new StudioCatalogService());
+        return started(new StudioCatalogService());
+    }
+
+    private StudioServer started(StudioCatalogService service) throws Exception {
+        StudioServer server = new StudioServer("127.0.0.1", 0, service);
         server.start();
         return server;
     }

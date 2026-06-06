@@ -5,7 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.unfurl.fabric.studio.StudioCatalogAdmissionRequest;
 import com.unfurl.fabric.studio.StudioCatalogService;
+import com.unfurl.fabric.studio.StudioCollaborator;
+import com.unfurl.fabric.studio.StudioCompileDraftCandidateRequest;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
+import com.unfurl.fabric.studio.StudioCreateDraftCompositionRequest;
+import com.unfurl.fabric.studio.StudioIntentRequest;
 import com.unfurl.fabric.studio.StudioLayoutStateRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
@@ -43,6 +47,25 @@ public final class StudioTenantHandler {
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.asset()) {
                 write(exchange, 200, service.visualAsset(route.tenantId(), route.assetId()));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.assetContent()) {
+                service.visualAssetContent(route.tenantId(), route.assetId(), queryParam(exchange, "sha256"))
+                        .ifPresentOrElse(
+                                content -> {
+                                    try {
+                                        writeBinary(exchange, 200, content.mediaType(), content.bytes());
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                },
+                                () -> {
+                                    try {
+                                        write(exchange, 404, Map.of("error", "asset content is unavailable or hash verification failed"));
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                });
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod()) && route.catalogAdmission()) {
@@ -99,9 +122,43 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.saveLayout(route.tenantId(), route.assemblyId(), request));
                 return;
             }
+            if ("POST".equals(exchange.getRequestMethod()) && route.sessions()) {
+                StudioCreateDraftCompositionRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioCreateDraftCompositionRequest.class);
+                write(exchange, 200, service.createDraftSession(route.tenantId(), route.assemblyId(), request));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.session()) {
+                write(exchange, 200, service.draftSession(route.tenantId(), route.assemblyId(), route.sessionId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.sessionHeartbeat()) {
+                StudioCollaborator request = mapper.readValue(exchange.getRequestBody(), StudioCollaborator.class);
+                write(exchange, 200, service.heartbeat(route.tenantId(), route.assemblyId(), route.sessionId(), request));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.sessionIntents()) {
+                StudioIntentRequest request = mapper.readValue(exchange.getRequestBody(), StudioIntentRequest.class);
+                write(exchange, 200, service.applyIntent(route.tenantId(), route.assemblyId(), route.sessionId(), request));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.sessionCompile()) {
+                StudioCompileDraftCandidateRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioCompileDraftCandidateRequest.class);
+                write(exchange, 200, service.compileCandidate(route.tenantId(), route.assemblyId(), route.sessionId(), request));
+                return;
+            }
             write(exchange, 404, Map.of("error", "unknown Studio tenant route"));
         } catch (JsonProcessingException ex) {
             write(exchange, 400, Map.of("error", "malformed json body"));
+        } catch (IllegalStateException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof IOException io) {
+                throw io;
+            }
+            write(exchange, 500, Map.of("error", ex.getMessage()));
         } catch (IllegalArgumentException ex) {
             write(exchange, 400, Map.of("error", ex.getMessage()));
         } catch (RuntimeException ex) {
@@ -112,6 +169,14 @@ public final class StudioTenantHandler {
     private void write(HttpExchange exchange, int status, Object body) throws IOException {
         byte[] bytes = mapper.writeValueAsBytes(body);
         exchange.getResponseHeaders().set("Content-Type", "application/json");
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+        exchange.close();
+    }
+
+    private void writeBinary(HttpExchange exchange, int status, String mediaType, byte[] bytes) throws IOException {
+        exchange.getResponseHeaders().set("Content-Type", mediaType);
+        exchange.getResponseHeaders().set("Cache-Control", "public, immutable");
         exchange.sendResponseHeaders(status, bytes.length);
         exchange.getResponseBody().write(bytes);
         exchange.close();
@@ -133,7 +198,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String sessionId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -148,6 +213,7 @@ public final class StudioTenantHandler {
             String tail = remainder.substring(slash + 1);
             String assembly = "";
             String assetId = "";
+            String sessionId = "";
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
                 String assemblyRemainder = tail.substring(assemblyPrefix.length());
@@ -166,7 +232,16 @@ public final class StudioTenantHandler {
                         ? assetPrefix + "{assetId}/" + assetRemainder.substring(assetSlash + 1)
                         : assetPrefix + "{assetId}";
             }
-            return new Route(tenant, assembly, assetId, tail);
+            String sessionPrefix = "assemblies/{assemblyId}/sessions/";
+            if (tail.startsWith(sessionPrefix)) {
+                String sessionRemainder = tail.substring(sessionPrefix.length());
+                int sessionSlash = sessionRemainder.indexOf('/');
+                sessionId = decode(sessionSlash >= 0 ? sessionRemainder.substring(0, sessionSlash) : sessionRemainder);
+                tail = sessionSlash >= 0
+                        ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
+                        : sessionPrefix + "{sessionId}";
+            }
+            return new Route(tenant, assembly, assetId, sessionId, tail);
         }
 
         boolean catalogList() {
@@ -179,6 +254,10 @@ public final class StudioTenantHandler {
 
         boolean asset() {
             return "assets/{assetId}".equals(tail);
+        }
+
+        boolean assetContent() {
+            return "assets/{assetId}/content".equals(tail);
         }
 
         boolean needsExtraction() {
@@ -207,6 +286,26 @@ public final class StudioTenantHandler {
 
         boolean layout() {
             return "assemblies/{assemblyId}/layout".equals(tail);
+        }
+
+        boolean sessions() {
+            return "assemblies/{assemblyId}/sessions".equals(tail);
+        }
+
+        boolean session() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}".equals(tail);
+        }
+
+        boolean sessionHeartbeat() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/collaborators/heartbeat".equals(tail);
+        }
+
+        boolean sessionIntents() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/intents".equals(tail);
+        }
+
+        boolean sessionCompile() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/compile".equals(tail);
         }
 
         private static String decode(String value) {
