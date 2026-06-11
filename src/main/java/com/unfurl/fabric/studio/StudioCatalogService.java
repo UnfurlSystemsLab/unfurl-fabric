@@ -277,6 +277,186 @@ public final class StudioCatalogService {
                 List.of());
     }
 
+    /**
+     * Hover-preview compatibility surface for the Studio palette.
+     *
+     * <p>Given a candidate catalog entry the operator is hovering, walks
+     * the current draft projection and reports two kinds of edge:
+     * <ul>
+     *   <li><b>connection</b> — an OFFER↔DEPENDENCY pairing between the
+     *       candidate and an existing draft node. Direction is
+     *       {@code CANDIDATE_OFFERS} when the candidate's offer satisfies
+     *       a draft node's dependency, {@code CANDIDATE_NEEDS} when a
+     *       draft node's offer satisfies the candidate's dependency.</li>
+     *   <li><b>replacement</b> — the candidate appears in some draft
+     *       node's {@code compatibleDescendants}, so it could substitute
+     *       that slot wholesale instead of plugging into it.</li>
+     * </ul>
+     *
+     * <p>Self-edges (candidate already in the draft) are suppressed. An
+     * unknown candidate id is reported as an empty response with a
+     * warning rather than thrown — same pattern as
+     * {@link #replacementCandidates(String, String, String)} so the UI's
+     * hover handler doesn't have to special-case 4xx flows.
+     */
+    public StudioConnectionCandidatesResponse connectionCandidates(
+            String tenantId,
+            String assemblyId,
+            String catalogEntryId
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        String candidateId = catalogEntryId == null ? "" : catalogEntryId.trim();
+        if (candidateId.isBlank()) {
+            return new StudioConnectionCandidatesResponse(
+                    tenant, assembly, "",
+                    List.of(), List.of(),
+                    List.of("catalogEntryId is required"));
+        }
+
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        StudioVisualCatalogEntry candidate = entries.stream()
+                .filter(entry -> candidateId.equals(entry.catalogEntryId()))
+                .findFirst()
+                .orElse(null);
+        if (candidate == null) {
+            return new StudioConnectionCandidatesResponse(
+                    tenant, assembly, candidateId,
+                    List.of(), List.of(),
+                    List.of("catalogEntryId " + candidateId + " is not in the tenant catalog"));
+        }
+
+        StudioDynamicDcpProjection projection = dynamicDcpProjection(tenant, assembly);
+        Map<String, StudioVisualCatalogEntry> entriesById = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            entriesById.put(entry.catalogEntryId(), entry);
+        }
+        List<PortDescriptor> candidateOffers = portsOfKind(candidate.visualManifest(), "OFFER");
+        List<PortDescriptor> candidateNeeds = portsOfKind(candidate.visualManifest(), "DEPENDENCY");
+
+        List<StudioConnectionEdge> connections = new ArrayList<>();
+        for (StudioDynamicDcpNode node : projection.nodes()) {
+            if (!"COMPONENT".equals(node.dcpType())) {
+                continue;
+            }
+            if (candidateId.equals(node.catalogEntryId())) {
+                continue;
+            }
+            StudioVisualCatalogEntry draftEntry = entriesById.get(node.catalogEntryId());
+            if (draftEntry == null) {
+                continue;
+            }
+            List<PortDescriptor> draftOffers = portsOfKind(draftEntry.visualManifest(), "OFFER");
+            List<PortDescriptor> draftNeeds = portsOfKind(draftEntry.visualManifest(), "DEPENDENCY");
+
+            // Candidate offers vs draft needs.
+            for (PortDescriptor offer : candidateOffers) {
+                for (PortDescriptor need : draftNeeds) {
+                    if (offer.capability.equals(need.capability)) {
+                        connections.add(new StudioConnectionEdge(
+                                node.nodeId(),
+                                need.id,
+                                offer.id,
+                                "CANDIDATE_OFFERS",
+                                "ALLOWED",
+                                "candidate offers " + offer.capability
+                                        + " required by " + node.label()));
+                    }
+                }
+            }
+            // Candidate needs vs draft offers.
+            for (PortDescriptor need : candidateNeeds) {
+                for (PortDescriptor offer : draftOffers) {
+                    if (need.capability.equals(offer.capability)) {
+                        connections.add(new StudioConnectionEdge(
+                                node.nodeId(),
+                                offer.id,
+                                need.id,
+                                "CANDIDATE_NEEDS",
+                                "ALLOWED",
+                                node.label() + " offers " + offer.capability
+                                        + " required by candidate"));
+                    }
+                }
+            }
+        }
+        connections.sort(Comparator
+                .comparing(StudioConnectionEdge::targetNodeId)
+                .thenComparing(StudioConnectionEdge::targetPortId)
+                .thenComparing(StudioConnectionEdge::candidatePortId));
+
+        // Replacement edges: a draft node whose compatibleDescendants list
+        // contains the candidate's derived nodeId could be substituted by
+        // the candidate. The derived nodeId mirrors nodeIdForEntry's slug
+        // convention so the comparison is symmetric with the existing
+        // dynamicNodeForEntry projection.
+        String candidateNodeId = nodeIdForEntry(candidateId);
+        List<StudioReplacementEdge> replacements = new ArrayList<>();
+        for (StudioDynamicDcpNode node : projection.nodes()) {
+            if (!"COMPONENT".equals(node.dcpType())) {
+                continue;
+            }
+            if (candidateId.equals(node.catalogEntryId())) {
+                continue;
+            }
+            if (node.compatibleDescendants().contains(candidateNodeId)) {
+                replacements.add(new StudioReplacementEdge(
+                        node.nodeId(),
+                        "ALLOWED",
+                        node.label() + " lists candidate as a compatible descendant"));
+            }
+        }
+        replacements.sort(Comparator.comparing(StudioReplacementEdge::targetNodeId));
+
+        return new StudioConnectionCandidatesResponse(
+                tenant, assembly, candidateId,
+                connections, replacements,
+                List.of());
+    }
+
+    /**
+     * Pull ports of a given {@code kind} ("OFFER" or "DEPENDENCY") off a
+     * visual manifest's raw {@code ports} list, projecting each into a
+     * tiny descriptor record. The capability name is derived from
+     * {@code mapsTo} by stripping the {@code claim.offers.} / {@code
+     * claim.dependencies.} prefix written by {@link #visual} — that
+     * keeps this method symmetric with the projection side without
+     * needing a separate capability accessor on the port map.
+     */
+    private List<PortDescriptor> portsOfKind(Map<String, Object> visualManifest, String kind) {
+        if (visualManifest == null) {
+            return List.of();
+        }
+        Object ports = visualManifest.get("ports");
+        if (!(ports instanceof List<?> list)) {
+            return List.of();
+        }
+        String prefix = "OFFER".equals(kind) ? "claim.offers." : "claim.dependencies.";
+        List<PortDescriptor> out = new ArrayList<>();
+        for (Object portObj : list) {
+            if (!(portObj instanceof Map<?, ?> port)) {
+                continue;
+            }
+            if (!kind.equals(stringValue(port.get("kind"), ""))) {
+                continue;
+            }
+            String id = stringValue(port.get("id"), "");
+            String mapsTo = stringValue(port.get("mapsTo"), "");
+            if (id.isBlank() || !mapsTo.startsWith(prefix)) {
+                continue;
+            }
+            String capability = mapsTo.substring(prefix.length());
+            if (capability.isBlank()) {
+                continue;
+            }
+            out.add(new PortDescriptor(id, capability));
+        }
+        return out;
+    }
+
+    private record PortDescriptor(String id, String capability) {
+    }
+
     public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
         String tenant = normalizeTenant(tenantId);
         if (request == null) {
@@ -693,6 +873,7 @@ public final class StudioCatalogService {
         List<String> capabilities = claim.offers() == null
                 ? List.of()
                 : claim.offers().stream().map(Offer::capability).toList();
+        List<String> requiredCapabilities = requiredCapabilitiesFromClaim(claim);
         String category = entry.optionalComponentShapeProfile()
                 .map(profile -> profile.defaultShape().name())
                 .orElseGet(() -> claim.identity() == null || claim.identity().kind() == null
@@ -705,10 +886,49 @@ public final class StudioCatalogService {
                 entry.artifact().coordinates(),
                 entry.claimDescriptor().claimHash(),
                 entry.artifact().sha256(),
-                visual(category, fallbackKind, capabilities),
+                visual(category, fallbackKind, capabilities, requiredCapabilities),
                 Map.of(),
                 Map.of(),
                 List.of());
+    }
+
+    /**
+     * Parses {@code claim.dependencies.needs} strings (format
+     * {@code <cap>[@<version>][?<params>]}) into bare capability names so
+     * the visual manifest can emit DEPENDENCY ports alongside its OFFER
+     * ports. Mirrors the parser in
+     * {@code com.unfurl.fabric.matcher.CandidateValidator.capabilityNameFromDependencyUri}
+     * (which is private to that class — duplicating the 8-line trim here
+     * is cheaper than widening that class's API for this one caller).
+     * Customer-controlled / host-owned dependencies stay in the list
+     * because the hover-preview wants to surface them as connection
+     * candidates even when fabric's resolver would skip them.
+     */
+    private List<String> requiredCapabilitiesFromClaim(Claim claim) {
+        if (claim == null || claim.dependencies() == null || claim.dependencies().needs() == null) {
+            return List.of();
+        }
+        return claim.dependencies().needs().stream()
+                .map(StudioCatalogService::capabilityNameFromDependencyUri)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private static String capabilityNameFromDependencyUri(String dep) {
+        if (dep == null) {
+            return null;
+        }
+        String trimmed = dep;
+        int q = trimmed.indexOf('?');
+        if (q >= 0) {
+            trimmed = trimmed.substring(0, q);
+        }
+        int at = trimmed.indexOf('@');
+        if (at >= 0) {
+            trimmed = trimmed.substring(0, at);
+        }
+        return trimmed.isBlank() ? null : trimmed;
     }
 
     private List<StudioVisualCatalogEntry> bundledFixtureEntries(String tenantId) {
@@ -763,16 +983,44 @@ public final class StudioCatalogService {
      * a hand-authored {@code .glb} model.
      */
     private Map<String, Object> visual(String category, String fallbackKind, List<String> offeredCapabilities) {
+        return visual(category, fallbackKind, offeredCapabilities, List.of());
+    }
+
+    /**
+     * Build a visual descriptor that emits one port per offered AND one
+     * per required capability. OFFER ports anchor to the right ({@code
+     * SQUARE_SOCKET}); DEPENDENCY ports anchor to the left ({@code
+     * SQUARE_PLUG}) so the renderer naturally separates "what I provide"
+     * from "what I need" along opposite faces of the component group.
+     * Both lists feed the hover-preview compatibility matcher in
+     * {@link #connectionCandidates}.
+     */
+    private Map<String, Object> visual(
+            String category,
+            String fallbackKind,
+            List<String> offeredCapabilities,
+            List<String> requiredCapabilities
+    ) {
+        List<Map<String, Object>> ports = new ArrayList<>();
+        for (String capability : offeredCapabilities) {
+            ports.add(Map.of(
+                    "id", capability.replace('.', '-'),
+                    "mapsTo", "claim.offers." + capability,
+                    "kind", "OFFER",
+                    "anchor", "right",
+                    "connectorShape", "SQUARE_SOCKET"));
+        }
+        for (String capability : requiredCapabilities) {
+            ports.add(Map.of(
+                    "id", "need-" + capability.replace('.', '-'),
+                    "mapsTo", "claim.dependencies." + capability,
+                    "kind", "DEPENDENCY",
+                    "anchor", "left",
+                    "connectorShape", "SQUARE_PLUG"));
+        }
         return Map.of(
                 "fallbackShape", Map.of("kind", fallbackKind, "category", category),
-                "ports", offeredCapabilities.stream()
-                        .map(capability -> Map.of(
-                                "id", capability.replace('.', '-'),
-                                "mapsTo", "claim.offers." + capability,
-                                "kind", "OFFER",
-                                "anchor", "right",
-                                "connectorShape", "SQUARE_SOCKET"))
-                        .toList(),
+                "ports", List.copyOf(ports),
                 "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
     }
 

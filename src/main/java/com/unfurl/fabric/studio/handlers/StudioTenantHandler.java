@@ -108,6 +108,13 @@ public final class StudioTenantHandler {
                         queryParam(exchange, "componentNodeId")));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.connectionCandidates()) {
+                write(exchange, 200, service.connectionCandidates(
+                        route.tenantId(),
+                        route.assemblyId(),
+                        queryParam(exchange, "catalogEntryId")));
+                return;
+            }
             if ("POST".equals(exchange.getRequestMethod()) && route.assemblyCreate()) {
                 StudioCreateAssemblyRequest request = mapper.readValue(
                         exchange.getRequestBody(),
@@ -338,6 +345,10 @@ public final class StudioTenantHandler {
 
         boolean replacementCandidates() {
             return "assemblies/{assemblyId}/dynamic-dcp/replacements".equals(tail);
+        }
+
+        boolean connectionCandidates() {
+            return "assemblies/{assemblyId}/dynamic-dcp/connection-candidates".equals(tail);
         }
 
         boolean saveDraft() {
