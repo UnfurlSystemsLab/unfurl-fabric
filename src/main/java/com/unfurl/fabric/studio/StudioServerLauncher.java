@@ -23,7 +23,13 @@ public final class StudioServerLauncher {
             String bind = StudioServer.DEFAULT_BIND_ADDRESS;
             int port = StudioServer.DEFAULT_PORT;
             Path statePath = StudioStateStore.defaultPath();
-            Path assetRoot = null;
+            // Asset-root default resolution: -D system property first, env
+            // var second, null otherwise (constructor will then fall back to
+            // the bundled fixture root). The --asset-root CLI flag overrides
+            // both. Mirrors StudioCatalogService.defaultAssetRoot() so the
+            // same env/property convention works regardless of who is
+            // constructing the catalog service.
+            Path assetRoot = resolveDefaultAssetRoot();
             String eventBus = null;
             String redisUrl = null;
             String kafkaBootstrapServers = null;
@@ -58,6 +64,14 @@ public final class StudioServerLauncher {
                 throw new IllegalArgumentException(flag + " requires a value");
             }
             return args[index];
+        }
+
+        private static Path resolveDefaultAssetRoot() {
+            String configured = System.getProperty("unfurl.studio.asset.root");
+            if (configured == null || configured.isBlank()) {
+                configured = System.getenv("UNFURL_STUDIO_ASSET_ROOT");
+            }
+            return configured == null || configured.isBlank() ? null : Path.of(configured);
         }
     }
 

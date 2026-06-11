@@ -1,5 +1,11 @@
 package com.unfurl.fabric.studio;
 
+import com.unfurl.dcp.claim.Claim;
+import com.unfurl.dcp.claim.Offer;
+import com.unfurl.fabric.catalog.CatalogEntry;
+import com.unfurl.fabric.catalog.CatalogScanReport;
+import com.unfurl.fabric.catalog.CatalogScanner;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -433,6 +439,13 @@ public final class StudioCatalogService {
 
         long revision = current.sceneRevision() + 1;
         Map<String, Object> payload = new LinkedHashMap<>(request.payload());
+        // Defence-in-depth: only components present in the tenant's catalog
+        // are assemblable. Mirrors the UI guard in DraftWorkspacePanel.
+        Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
+                current.tenantId(), request.type, payload);
+        if (rejection.isPresent()) {
+            return rejection.get();
+        }
         String candidateId = candidateAfterIntent(current.currentCandidateId(), request, payload);
         StudioIntentRecord record = new StudioIntentRecord(
                 revision,
@@ -606,18 +619,96 @@ public final class StudioCatalogService {
     }
 
     private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
+        // Fall-through order:
+        //   1. Real META-INF/unfurl-catalog.yaml entries via fabric's CatalogScanner
+        //      (production format used by the portfolio JARs)
+        //   2. META-INF/unfurl-studio-visuals.json entries via StudioPackageVisualAssets
+        //      (legacy visual-only fixtures: validation-service.glb, storage-s3.glb)
+        //   3. Hardcoded bundledFixtureEntries (final fallback when nothing else is staged)
+        List<StudioVisualCatalogEntry> manifestEntries = scanCatalogManifests();
         List<StudioVisualCatalogEntry> packageEntries = packageVisualAssets.scan(assetRoot);
-        if (packageEntries.isEmpty()) {
+        if (manifestEntries.isEmpty() && packageEntries.isEmpty()) {
             return bundledFixtureEntries(tenantId);
         }
         Map<String, StudioVisualCatalogEntry> entries = new LinkedHashMap<>();
-        for (StudioVisualCatalogEntry entry : packageEntries) {
+        for (StudioVisualCatalogEntry entry : manifestEntries) {
             entries.put(entry.catalogEntryId(), entry);
+        }
+        for (StudioVisualCatalogEntry entry : packageEntries) {
+            entries.putIfAbsent(entry.catalogEntryId(), entry);
         }
         for (StudioVisualCatalogEntry entry : bundledFixtureEntries(tenantId)) {
             entries.putIfAbsent(entry.catalogEntryId(), entry);
         }
         return List.copyOf(entries.values());
+    }
+
+    /**
+     * Scans the asset root for portfolio JARs that ship a
+     * {@code META-INF/unfurl-catalog.yaml} manifest. Returns the resulting
+     * catalog entries projected into Studio's visual catalog shape.
+     *
+     * <p>Catalog-scanner errors are swallowed and treated as "no entries"
+     * so that a malformed JAR cannot bring down the Studio backend; the
+     * other fall-through sources still run.
+     */
+    private List<StudioVisualCatalogEntry> scanCatalogManifests() {
+        if (assetRoot == null) {
+            System.err.println("[studio] catalog scan: assetRoot is null — no real catalog");
+            return List.of();
+        }
+        if (!Files.isDirectory(assetRoot)) {
+            System.err.println("[studio] catalog scan: assetRoot is not a directory: " + assetRoot);
+            return List.of();
+        }
+        try {
+            CatalogScanReport report = new CatalogScanner().scan(assetRoot);
+            System.err.println("[studio] catalog scan at " + assetRoot
+                    + " produced " + report.catalog().entries().size() + " entries, "
+                    + report.skippedEntries().size() + " skipped");
+            for (var skipped : report.skippedEntries()) {
+                System.err.println("[studio] catalog scan skipped " + skipped.jarPath()
+                        + ": " + skipped.reason() + " (" + skipped.detail() + ")");
+            }
+            return report.catalog().entries().stream()
+                    .map(this::toVisualEntry)
+                    .toList();
+        } catch (RuntimeException ex) {
+            System.err.println("[studio] catalog scan failed for " + assetRoot + ": " + ex);
+            ex.printStackTrace();
+            return List.of();
+        }
+    }
+
+    /**
+     * Project a fabric {@link CatalogEntry} into the Studio's
+     * {@link StudioVisualCatalogEntry} shape. The catalogEntryId is the
+     * artifact coordinates (e.g. {@code com.unfurl.flow:unfurl-flow:0.1.0}).
+     * The visual palette gets a synthetic shape descriptor derived from
+     * the entry's {@code componentShapeProfile.defaultShape} so each real
+     * component shows the right shape badge without needing a {@code .glb}.
+     */
+    private StudioVisualCatalogEntry toVisualEntry(CatalogEntry entry) {
+        Claim claim = entry.claimDescriptor().claim();
+        List<String> capabilities = claim.offers() == null
+                ? List.of()
+                : claim.offers().stream().map(Offer::capability).toList();
+        String category = entry.optionalComponentShapeProfile()
+                .map(profile -> profile.defaultShape().name())
+                .orElseGet(() -> claim.identity() == null || claim.identity().kind() == null
+                        ? "COMPONENT"
+                        : claim.identity().kind().toString());
+        String fallbackKind = entry.optionalComponentShapeProfile()
+                .map(profile -> fallbackShapeKindFor(profile.defaultShape().name()))
+                .orElse("CUBE");
+        return new StudioVisualCatalogEntry(
+                entry.artifact().coordinates(),
+                entry.claimDescriptor().claimHash(),
+                entry.artifact().sha256(),
+                visual(category, fallbackKind, capabilities),
+                Map.of(),
+                Map.of(),
+                List.of());
     }
 
     private List<StudioVisualCatalogEntry> bundledFixtureEntries(String tenantId) {
@@ -660,8 +751,20 @@ public final class StudioCatalogService {
     }
 
     private Map<String, Object> visual(String category, List<String> offeredCapabilities) {
+        return visual(category, "CUBE", offeredCapabilities);
+    }
+
+    /**
+     * Build a visual descriptor with a caller-chosen fallback primitive
+     * {@code kind}. The renderer supports five kinds: CUBE, SPHERE,
+     * CYLINDER, SHIELD, GEAR (see {@code three-renderer/index.ts}).
+     * Picking a kind that reflects the component's deployment shape gives
+     * each real-catalog entry a visually distinct badge without needing
+     * a hand-authored {@code .glb} model.
+     */
+    private Map<String, Object> visual(String category, String fallbackKind, List<String> offeredCapabilities) {
         return Map.of(
-                "fallbackShape", Map.of("kind", "CUBE", "category", category),
+                "fallbackShape", Map.of("kind", fallbackKind, "category", category),
                 "ports", offeredCapabilities.stream()
                         .map(capability -> Map.of(
                                 "id", capability.replace('.', '-'),
@@ -671,6 +774,32 @@ public final class StudioCatalogService {
                                 "connectorShape", "SQUARE_SOCKET"))
                         .toList(),
                 "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
+    }
+
+    /**
+     * Map a {@code componentShapeProfile.defaultShape} to one of the
+     * renderer's supported primitive kinds. The mapping favours visual
+     * distinction over fidelity:
+     * <ul>
+     *   <li>{@code IN_PROCESS_LIBRARY}, {@code MODULAR_MONOLITH_MODULE} → CUBE</li>
+     *   <li>{@code STANDALONE_JAVA_APP}, {@code SPRING_BOOT_SERVICE} → CYLINDER</li>
+     *   <li>{@code REMOTE_MICROSERVICE} → SPHERE</li>
+     *   <li>{@code CONTAINERIZED_SERVICE} → GEAR</li>
+     *   <li>{@code MANAGED_EXTERNAL_ADAPTER} → SHIELD</li>
+     * </ul>
+     */
+    private static String fallbackShapeKindFor(String deploymentShapeName) {
+        if (deploymentShapeName == null) {
+            return "CUBE";
+        }
+        return switch (deploymentShapeName) {
+            case "IN_PROCESS_LIBRARY", "MODULAR_MONOLITH_MODULE" -> "CUBE";
+            case "STANDALONE_JAVA_APP", "SPRING_BOOT_SERVICE" -> "CYLINDER";
+            case "REMOTE_MICROSERVICE" -> "SPHERE";
+            case "CONTAINERIZED_SERVICE" -> "GEAR";
+            case "MANAGED_EXTERNAL_ADAPTER" -> "SHIELD";
+            default -> "CUBE";
+        };
     }
 
     private Map<String, Object> dynamicComposition(String dcpType, List<String> compatibleDescendants) {
@@ -929,6 +1058,46 @@ public final class StudioCatalogService {
             return stringValue(payload.get("catalogEntryId"), currentCandidateId);
         }
         return currentCandidateId == null ? "" : currentCandidateId;
+    }
+
+    /**
+     * Reject intents that reference a catalog entry id not present in the
+     * tenant's catalog. Returns {@code Optional.empty()} when the intent is
+     * acceptable to proceed; otherwise an {@code invalid} response naming
+     * the offending entry id.
+     *
+     * <p>Validation surface: {@code ADD_COMPONENT} (payload key
+     * {@code catalogEntryId}) and {@code REPLACE_COMPONENT} (payload key
+     * {@code newCatalogEntryId}). Other intent types are not gated against
+     * the catalog.
+     */
+    private Optional<StudioIntentResponse> rejectIntentAgainstCatalog(
+            String tenantId, String intentType, Map<String, Object> payload) {
+        String key;
+        if ("ADD_COMPONENT".equals(intentType)) {
+            key = "catalogEntryId";
+        } else if ("REPLACE_COMPONENT".equals(intentType)) {
+            key = "newCatalogEntryId";
+        } else {
+            return Optional.empty();
+        }
+        String requestedEntryId = stringValue(payload.get(key), "");
+        if (requestedEntryId.isBlank()) {
+            return Optional.of(StudioIntentResponse.invalid(
+                    "CATALOG_ENTRY_REQUIRED",
+                    intentType + " requires a non-blank " + key));
+        }
+        String tenant = normalizeTenant(tenantId);
+        List<StudioVisualCatalogEntry> entries =
+                entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        boolean known = entries.stream()
+                .anyMatch(entry -> requestedEntryId.equals(entry.catalogEntryId()));
+        if (!known) {
+            return Optional.of(StudioIntentResponse.invalid(
+                    "CATALOG_ENTRY_NOT_FOUND",
+                    "catalog entry '" + requestedEntryId + "' is not registered in tenant '" + tenant + "'"));
+        }
+        return Optional.empty();
     }
 
     private void updateAssemblyRevision(StudioDraftSession session) {

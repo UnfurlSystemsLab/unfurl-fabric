@@ -282,7 +282,7 @@ class StudioCatalogServiceTest {
         alice.baseRevision = 0;
         alice.type = "REPLACE_COMPONENT";
         alice.collaboratorId = "alice";
-        alice.put("newCatalogEntryId", "com.unfurl:customer-policy-validator:1.2.0");
+        alice.put("newCatalogEntryId", "com.unfurl:validation-service:1.1.0");
 
         StudioIntentRequest bob = new StudioIntentRequest();
         bob.tenantId = "tenant-a";
@@ -352,7 +352,7 @@ class StudioCatalogServiceTest {
             intent.baseRevision = 0;
             intent.type = "REPLACE_COMPONENT";
             intent.collaboratorId = "alice";
-            intent.put("newCatalogEntryId", "com.unfurl:customer-policy-validator:1.2.0");
+            intent.put("newCatalogEntryId", "com.unfurl:storage-s3:1.2.0");
             writer.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), intent);
 
             StudioSessionEvent event = subscription.poll(1, TimeUnit.SECONDS);

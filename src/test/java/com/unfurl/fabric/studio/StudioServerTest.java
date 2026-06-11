@@ -211,7 +211,7 @@ class StudioServerTest {
                       "type": "REPLACE_COMPONENT",
                       "collaboratorId": "bob",
                       "collaboratorName": "Bob",
-                      "newCatalogEntryId": "com.unfurl:customer-policy-validator:1.2.0"
+                      "newCatalogEntryId": "com.unfurl:validation-service:1.1.0"
                     }
                     """.formatted(createdBody.session().sessionId()));
             assertThat(intent.statusCode()).isEqualTo(200);
