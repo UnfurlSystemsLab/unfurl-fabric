@@ -5,6 +5,7 @@ public record StudioCompileDraftCandidateRequest(
         String assemblyId,
         String sessionId,
         long expectedRevision,
-        boolean sign
+        boolean sign,
+        StudioDeploymentPolicyDraft deploymentPolicy
 ) {
 }

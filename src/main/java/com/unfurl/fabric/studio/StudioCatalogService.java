@@ -17,9 +17,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -166,7 +168,7 @@ public final class StudioCatalogService {
         Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
         StudioAssemblySummary summary = assemblies.getOrDefault(assembly, fixtureAssemblies(tenant).get("assembly-demo"));
         String target = summary == null || summary.targetApplicationName().isBlank()
-                ? "E-Commerce Platform"
+                ? "unfurl-flow"
                 : summary.targetApplicationName();
         String rootNodeId = "company:" + slug(target);
         String focusNodeId = "assembly:" + slug(assembly);
@@ -198,7 +200,7 @@ public final class StudioCatalogService {
         nodes.add(new StudioDynamicDcpNode(
                 focusNodeId,
                 summary == null || summary.targetApplicationName().isBlank()
-                        ? "Checkout Assembly"
+                        ? "Unfurl Flow Assembly"
                         : summary.targetApplicationName() + " Assembly",
                 "MODULE",
                 "ASSEMBLY",
@@ -208,6 +210,8 @@ public final class StudioCatalogService {
                 false));
         nodes.addAll(childNodes);
 
+        List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries);
+
         return new StudioDynamicDcpProjection(
                 tenant,
                 assembly,
@@ -216,7 +220,141 @@ public final class StudioCatalogService {
                 focusNodeId,
                 nodes,
                 edges,
+                connections,
                 List.of());
+    }
+
+    /**
+     * Walk every pair of draft child nodes and emit a
+     * {@link StudioPortConnectionEdge} whenever an OFFER port on one
+     * node satisfies a DEPENDENCY port on another. Host-owned and
+     * fabric-owned needs are external to the draft surface and stay
+     * out of the resulting edge list (they would render as pipes that
+     * dangle off-scene; the host's Spring context or the fabric framework
+     * is what supplies them).
+     *
+     * <p>The matcher shares its capability-equality heuristic with
+     * {@link #connectionCandidates} — both code paths consult the same
+     * port descriptors and check {@code offer.capability.equals(need.capability)}.
+     * Pairwise complexity is N² over draft component count, but the
+     * draft is fixture-sized in practice (≤10 nodes) so the inner work
+     * is negligible.
+     */
+    private List<StudioPortConnectionEdge> derivePortConnections(
+            List<StudioDynamicDcpNode> childNodes,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        Map<String, StudioVisualCatalogEntry> entriesById = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            entriesById.put(entry.catalogEntryId(), entry);
+        }
+        // Pre-compute each node's ports so the inner loop doesn't re-walk
+        // the visual manifest N times.
+        Map<String, List<PortDescriptor>> offersByNodeId = new LinkedHashMap<>();
+        Map<String, List<PortDescriptor>> needsByNodeId = new LinkedHashMap<>();
+        Map<String, List<String>> rawNeedsByNodeId = new LinkedHashMap<>();
+        for (StudioDynamicDcpNode node : childNodes) {
+            StudioVisualCatalogEntry entry = entriesById.get(node.catalogEntryId());
+            if (entry == null) {
+                continue;
+            }
+            offersByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "OFFER"));
+            needsByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "DEPENDENCY"));
+            rawNeedsByNodeId.put(node.nodeId(), rawDependencyStrings(entry));
+        }
+        Map<String, String> labelByNodeId = new LinkedHashMap<>();
+        for (StudioDynamicDcpNode node : childNodes) {
+            labelByNodeId.put(node.nodeId(), node.label());
+        }
+
+        List<StudioPortConnectionEdge> connections = new ArrayList<>();
+        for (StudioDynamicDcpNode consumer : childNodes) {
+            List<PortDescriptor> needs = needsByNodeId.getOrDefault(consumer.nodeId(), List.of());
+            if (needs.isEmpty()) {
+                continue;
+            }
+            Set<String> externalNeeds = externallyOwnedNeeds(
+                    rawNeedsByNodeId.getOrDefault(consumer.nodeId(), List.of()));
+            for (PortDescriptor need : needs) {
+                if (externalNeeds.contains(need.capability())) {
+                    continue;
+                }
+                for (StudioDynamicDcpNode provider : childNodes) {
+                    if (provider.nodeId().equals(consumer.nodeId())) {
+                        continue;
+                    }
+                    List<PortDescriptor> offers = offersByNodeId.getOrDefault(provider.nodeId(), List.of());
+                    for (PortDescriptor offer : offers) {
+                        if (offer.capability().equals(need.capability())) {
+                            connections.add(new StudioPortConnectionEdge(
+                                    provider.nodeId(),
+                                    offer.id(),
+                                    consumer.nodeId(),
+                                    need.id(),
+                                    offer.capability(),
+                                    "ALLOWED",
+                                    labelByNodeId.getOrDefault(provider.nodeId(), provider.nodeId())
+                                            + " offers " + offer.capability()
+                                            + " required by "
+                                            + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
+                        }
+                    }
+                }
+            }
+        }
+        connections.sort(Comparator
+                .comparing(StudioPortConnectionEdge::sourceNodeId)
+                .thenComparing(StudioPortConnectionEdge::sourcePortId)
+                .thenComparing(StudioPortConnectionEdge::targetNodeId)
+                .thenComparing(StudioPortConnectionEdge::targetPortId));
+        return connections;
+    }
+
+    /**
+     * Pull the raw {@code claim.dependencies.needs[]} strings off a
+     * catalog entry — we need the unparsed form to detect the
+     * {@code ?owner=host} / {@code ?owner=fabric} markers that the
+     * derived port matcher skips. The fixture catalog stores the claim
+     * inside the visual manifest's metadata only for entries scanned
+     * from real manifests; bundled fixtures don't carry the raw needs,
+     * which is fine because they don't declare any.
+     */
+    private List<String> rawDependencyStrings(StudioVisualCatalogEntry entry) {
+        Map<String, Object> dynamicComposition = entry.dynamicComposition();
+        if (dynamicComposition == null) {
+            return List.of();
+        }
+        Object rawNeeds = dynamicComposition.get("rawNeeds");
+        if (rawNeeds instanceof List<?> list) {
+            return list.stream()
+                    .filter(String.class::isInstance)
+                    .map(String.class::cast)
+                    .toList();
+        }
+        return List.of();
+    }
+
+    /**
+     * Return the set of capability names whose declared {@code needs}
+     * carry an {@code ?owner=host} or {@code ?owner=fabric} marker —
+     * these are external dependencies and should not surface as in-scene
+     * pipes. Detection mirrors the same skip logic in
+     * {@link com.unfurl.fabric.matcher.CandidateValidator}.
+     */
+    private Set<String> externallyOwnedNeeds(List<String> rawDeps) {
+        Set<String> external = new LinkedHashSet<>();
+        for (String dep : rawDeps) {
+            if (dep == null) {
+                continue;
+            }
+            if (dep.contains("owner=host") || dep.contains("owner=fabric")) {
+                String cap = capabilityNameFromDependencyUri(dep);
+                if (cap != null) {
+                    external.add(cap);
+                }
+            }
+        }
+        return external;
     }
 
     public StudioReplacementCandidatesResponse replacementCandidates(
@@ -874,6 +1012,13 @@ public final class StudioCatalogService {
                 ? List.of()
                 : claim.offers().stream().map(Offer::capability).toList();
         List<String> requiredCapabilities = requiredCapabilitiesFromClaim(claim);
+        // Preserve the raw needs strings (with ?owner= markers intact) so
+        // the projection's port-edge matcher can skip host- / fabric-owned
+        // dependencies — those are external and shouldn't render as
+        // in-scene pipes.
+        List<String> rawNeeds = claim == null || claim.dependencies() == null || claim.dependencies().needs() == null
+                ? List.of()
+                : List.copyOf(claim.dependencies().needs());
         String category = entry.optionalComponentShapeProfile()
                 .map(profile -> profile.defaultShape().name())
                 .orElseGet(() -> claim.identity() == null || claim.identity().kind() == null
@@ -882,12 +1027,15 @@ public final class StudioCatalogService {
         String fallbackKind = entry.optionalComponentShapeProfile()
                 .map(profile -> fallbackShapeKindFor(profile.defaultShape().name()))
                 .orElse("CUBE");
+        Map<String, Object> dynamicComposition = rawNeeds.isEmpty()
+                ? Map.of()
+                : Map.of("rawNeeds", rawNeeds);
         return new StudioVisualCatalogEntry(
                 entry.artifact().coordinates(),
                 entry.claimDescriptor().claimHash(),
                 entry.artifact().sha256(),
                 visual(category, fallbackKind, capabilities, requiredCapabilities),
-                Map.of(),
+                dynamicComposition,
                 Map.of(),
                 List.of());
     }
@@ -955,8 +1103,8 @@ public final class StudioCatalogService {
         return new ConcurrentHashMap<>(Map.of("assembly-demo", new StudioAssemblySummary(
                 tenantId,
                 "assembly-demo",
-                "E-Commerce Platform",
-                "On-Prem Cluster",
+                "unfurl-flow",
+                "Customer Runtime Substrate",
                 "",
                 "CONTAINERIZED_SERVICE",
                 "",
