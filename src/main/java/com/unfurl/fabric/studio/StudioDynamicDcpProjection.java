@@ -10,9 +10,14 @@ public record StudioDynamicDcpProjection(
         String focusNodeId,
         List<StudioDynamicDcpNode> nodes,
         List<StudioDynamicDcpEdge> edges,
+        // Runtime capabilities exposed by the selected Unfurl
+        // substrate. Component needs marked ?substrate=true or
+        // ?owner=substrate bind to these ports.
+        List<StudioSubstratePort> substratePorts,
         // Port-level wirings resolved by walking every draft node's
-        // OFFER ports against every other draft node's DEPENDENCY ports.
-        // Drives the Studio 3D scene's pipe rendering; ?owner=host and
+        // OFFER ports against every other draft node's DEPENDENCY ports,
+        // plus substrate-port bindings for substrate-owned needs. Drives
+        // the Studio 3D scene's pipe rendering; ?owner=host and
         // ?owner=fabric needs are skipped (they're external to the draft).
         List<StudioPortConnectionEdge> connections,
         List<String> warnings
@@ -25,6 +30,7 @@ public record StudioDynamicDcpProjection(
         focusNodeId = focusNodeId == null || focusNodeId.isBlank() ? rootNodeId : focusNodeId;
         nodes = nodes == null ? List.of() : List.copyOf(nodes);
         edges = edges == null ? List.of() : List.copyOf(edges);
+        substratePorts = substratePorts == null ? List.of() : List.copyOf(substratePorts);
         connections = connections == null ? List.of() : List.copyOf(connections);
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
     }
@@ -46,6 +52,21 @@ public record StudioDynamicDcpProjection(
             List<String> warnings
     ) {
         this(tenantId, assemblyId, compositionMode, rootNodeId, focusNodeId,
-                nodes, edges, List.of(), warnings);
+                nodes, edges, List.of(), List.of(), warnings);
+    }
+
+    public StudioDynamicDcpProjection(
+            String tenantId,
+            String assemblyId,
+            String compositionMode,
+            String rootNodeId,
+            String focusNodeId,
+            List<StudioDynamicDcpNode> nodes,
+            List<StudioDynamicDcpEdge> edges,
+            List<StudioPortConnectionEdge> connections,
+            List<String> warnings
+    ) {
+        this(tenantId, assemblyId, compositionMode, rootNodeId, focusNodeId,
+                nodes, edges, List.of(), connections, warnings);
     }
 }

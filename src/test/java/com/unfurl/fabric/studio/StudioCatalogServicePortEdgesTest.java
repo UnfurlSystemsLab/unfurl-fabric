@@ -153,6 +153,90 @@ class StudioCatalogServicePortEdgesTest {
                 shapeRuntime: {}
             """;
 
+    private static final String SUBSTRATE_OWNED_CONSUMER_MANIFEST = """
+            claim:
+              identity:
+                uri: urn:unfurl:test:substrate-owned-consumer
+                name: substrate-owned-consumer
+                kind: COMPONENT
+                version: 0.1.0
+                publisher: Unfurl
+              domain:
+                summary: Consumer whose state store is supplied by the Unfurl substrate
+                concerns:
+                  - concern: app.checkout
+                    description: checkout
+                boundaryPrinciples:
+                  - "deterministic boundary"
+              refusals: []
+              dependencies:
+                needs:
+                  - "state-store@^1?substrate=true&provider=postgres"
+              offers:
+                - capability: app.checkout
+                  description: checkout
+                  consumerAccess: ANY
+                  stability: STABLE
+                  version: 0.1.0
+                  metered: false
+            catalog:
+              lifecycle:
+                status: ACTIVE
+              artifact:
+                coordinates: com.unfurl.test:substrate-owned-consumer:0.1.0
+                packaging: jar
+                source: catalog
+              binding:
+                defaultMode: IN_PROCESS
+                supportedModes: [IN_PROCESS]
+              componentShapeProfile:
+                defaultShape: IN_PROCESS_LIBRARY
+                supportedShapes: [IN_PROCESS_LIBRARY]
+                shapeRuntime: {}
+            """;
+
+    private static final String UNTAGGED_UNFURL_SUBSTRATE_CONSUMER_MANIFEST = """
+            claim:
+              identity:
+                uri: urn:unfurl:test:untagged-substrate-consumer
+                name: untagged-substrate-consumer
+                kind: COMPONENT
+                version: 0.1.0
+                publisher: Unfurl
+              domain:
+                summary: Consumer whose Spring AI client is supplied by the runtime substrate
+                concerns:
+                  - concern: app.agent
+                    description: agent
+                boundaryPrinciples:
+                  - "deterministic boundary"
+              refusals: []
+              dependencies:
+                needs:
+                  - "spring-ai.chat-client@^1"
+              offers:
+                - capability: app.agent
+                  description: agent
+                  consumerAccess: ANY
+                  stability: STABLE
+                  version: 0.1.0
+                  metered: false
+            catalog:
+              lifecycle:
+                status: ACTIVE
+              artifact:
+                coordinates: com.unfurl.test:untagged-substrate-consumer:0.1.0
+                packaging: jar
+                source: catalog
+              binding:
+                defaultMode: IN_PROCESS
+                supportedModes: [IN_PROCESS]
+              componentShapeProfile:
+                defaultShape: IN_PROCESS_LIBRARY
+                supportedShapes: [IN_PROCESS_LIBRARY]
+                shapeRuntime: {}
+            """;
+
     /**
      * Consumer that needs TWO distinct capabilities. When both are
      * satisfied by the same provider (which offers both), the matcher
@@ -290,6 +374,55 @@ class StudioCatalogServicePortEdgesTest {
         assertThat(anyEdgeToHostOwnedConsumer)
                 .as("?owner=host needs must not produce peer edges")
                 .isFalse();
+    }
+
+    @Test
+    void substrateOwnedNeedSurfacesAsSubstratePortAndConnection(@TempDir Path assetRoot) throws Exception {
+        writeManifestJar(assetRoot, "substrate-owned-consumer.jar", SUBSTRATE_OWNED_CONSUMER_MANIFEST);
+        StudioCatalogService service = new StudioCatalogService(null, assetRoot);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection(
+                "tenant-substrate-owned-test", "assembly-demo");
+
+        assertThat(projection.substratePorts())
+                .extracting(StudioSubstratePort::capability)
+                .contains("state-store");
+        StudioSubstratePort port = projection.substratePorts().stream()
+                .filter(candidate -> candidate.capability().equals("state-store"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(port.portId()).isEqualTo("substrate:state-store");
+        assertThat(port.provider()).isEqualTo("postgres");
+
+        List<StudioPortConnectionEdge> substrateEdges = projection.connections().stream()
+                .filter(edge -> edge.sourceNodeId().equals("substrate:runtime")
+                        && edge.targetNodeId().contains("substrate-owned-consumer"))
+                .toList();
+        assertThat(substrateEdges).hasSize(1);
+        StudioPortConnectionEdge edge = substrateEdges.get(0);
+        assertThat(edge.sourcePortId()).isEqualTo("substrate:state-store");
+        assertThat(edge.targetPortId()).isEqualTo("need-state-store");
+        assertThat(edge.capability()).isEqualTo("state-store");
+    }
+
+    @Test
+    void knownUnfurlRuntimeNeedFallsBackToSubstrateWhenNoComponentOffersIt(@TempDir Path assetRoot) throws Exception {
+        writeManifestJar(assetRoot, "untagged-substrate-consumer.jar", UNTAGGED_UNFURL_SUBSTRATE_CONSUMER_MANIFEST);
+        StudioCatalogService service = new StudioCatalogService(null, assetRoot);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection(
+                "tenant-substrate-fallback-test", "assembly-demo");
+
+        assertThat(projection.substratePorts())
+                .extracting(StudioSubstratePort::capability)
+                .contains("spring-ai.chat-client");
+        assertThat(projection.connections())
+                .anySatisfy(edge -> {
+                    assertThat(edge.sourceNodeId()).isEqualTo("substrate:runtime");
+                    assertThat(edge.sourcePortId()).isEqualTo("substrate:spring-ai-chat-client");
+                    assertThat(edge.targetNodeId()).contains("untagged-substrate-consumer");
+                    assertThat(edge.capability()).isEqualTo("spring-ai.chat-client");
+                });
     }
 
     @Test

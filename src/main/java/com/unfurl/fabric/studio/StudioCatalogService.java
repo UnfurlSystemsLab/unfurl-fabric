@@ -210,7 +210,8 @@ public final class StudioCatalogService {
                 false));
         nodes.addAll(childNodes);
 
-        List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries);
+        List<StudioSubstratePort> substratePorts = deriveSubstratePorts(childNodes, entries);
+        List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries, substratePorts);
 
         return new StudioDynamicDcpProjection(
                 tenant,
@@ -220,6 +221,7 @@ public final class StudioCatalogService {
                 focusNodeId,
                 nodes,
                 edges,
+                substratePorts,
                 connections,
                 List.of());
     }
@@ -242,7 +244,8 @@ public final class StudioCatalogService {
      */
     private List<StudioPortConnectionEdge> derivePortConnections(
             List<StudioDynamicDcpNode> childNodes,
-            List<StudioVisualCatalogEntry> entries
+            List<StudioVisualCatalogEntry> entries,
+            List<StudioSubstratePort> substratePorts
     ) {
         Map<String, StudioVisualCatalogEntry> entriesById = new LinkedHashMap<>();
         for (StudioVisualCatalogEntry entry : entries) {
@@ -266,6 +269,12 @@ public final class StudioCatalogService {
         for (StudioDynamicDcpNode node : childNodes) {
             labelByNodeId.put(node.nodeId(), node.label());
         }
+        Set<String> substrateCapabilities = new LinkedHashSet<>();
+        Map<String, StudioSubstratePort> substrateByCapability = new LinkedHashMap<>();
+        for (StudioSubstratePort port : substratePorts) {
+            substrateCapabilities.add(port.capability());
+            substrateByCapability.put(port.capability(), port);
+        }
 
         List<StudioPortConnectionEdge> connections = new ArrayList<>();
         for (StudioDynamicDcpNode consumer : childNodes) {
@@ -276,6 +285,20 @@ public final class StudioCatalogService {
             Set<String> externalNeeds = externallyOwnedNeeds(
                     rawNeedsByNodeId.getOrDefault(consumer.nodeId(), List.of()));
             for (PortDescriptor need : needs) {
+                if (substrateCapabilities.contains(need.capability())) {
+                    StudioSubstratePort substrate = substrateByCapability.get(need.capability());
+                    connections.add(new StudioPortConnectionEdge(
+                            "substrate:runtime",
+                            substrate.portId(),
+                            consumer.nodeId(),
+                            need.id(),
+                            need.capability(),
+                            "ALLOWED",
+                            "Unfurl substrate offers " + need.capability()
+                                    + " required by "
+                                    + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
+                    continue;
+                }
                 if (externalNeeds.contains(need.capability())) {
                     continue;
                 }
@@ -308,6 +331,80 @@ public final class StudioCatalogService {
                 .thenComparing(StudioPortConnectionEdge::targetNodeId)
                 .thenComparing(StudioPortConnectionEdge::targetPortId));
         return connections;
+    }
+
+    private List<StudioSubstratePort> deriveSubstratePorts(
+            List<StudioDynamicDcpNode> childNodes,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        Map<String, StudioVisualCatalogEntry> entriesById = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            entriesById.put(entry.catalogEntryId(), entry);
+        }
+        Set<String> offeredCapabilities = new LinkedHashSet<>();
+        for (StudioDynamicDcpNode node : childNodes) {
+            StudioVisualCatalogEntry entry = entriesById.get(node.catalogEntryId());
+            if (entry == null) {
+                continue;
+            }
+            for (PortDescriptor offer : portsOfKind(entry.visualManifest(), "OFFER")) {
+                offeredCapabilities.add(offer.capability());
+            }
+        }
+        Map<String, StudioSubstratePort> ports = new LinkedHashMap<>();
+        for (StudioDynamicDcpNode node : childNodes) {
+            StudioVisualCatalogEntry entry = entriesById.get(node.catalogEntryId());
+            if (entry == null) {
+                continue;
+            }
+            Map<String, String> rawNeedsByCapability = rawNeedsByCapability(entry);
+            for (String rawNeed : rawDependencyStrings(entry)) {
+                String capability = capabilityNameFromDependencyUri(rawNeed);
+                if (capability == null || capability.isBlank()) {
+                    continue;
+                }
+                if (!isSubstrateOwned(rawNeed)
+                        && (offeredCapabilities.contains(capability)
+                        || !isUnfurlSubstrateCapability(capability))) {
+                    continue;
+                }
+                String portId = "substrate:" + capability.replace('.', '-');
+                ports.putIfAbsent(capability, new StudioSubstratePort(
+                        portId,
+                        capability,
+                        substrateLabel(capability),
+                        queryParam(rawNeed, "provider", "unfurl-substrate"),
+                        "AVAILABLE"));
+            }
+            for (PortDescriptor need : portsOfKind(entry.visualManifest(), "DEPENDENCY")) {
+                if (offeredCapabilities.contains(need.capability())
+                        || !isUnfurlSubstrateCapability(need.capability())) {
+                    continue;
+                }
+                String rawNeed = rawNeedsByCapability.get(need.capability());
+                String portId = "substrate:" + need.capability().replace('.', '-');
+                ports.putIfAbsent(need.capability(), new StudioSubstratePort(
+                        portId,
+                        need.capability(),
+                        substrateLabel(need.capability()),
+                        queryParam(rawNeed, "provider", "unfurl-substrate"),
+                        "AVAILABLE"));
+            }
+        }
+        return ports.values().stream()
+                .sorted(Comparator.comparing(StudioSubstratePort::capability))
+                .toList();
+    }
+
+    private Map<String, String> rawNeedsByCapability(StudioVisualCatalogEntry entry) {
+        Map<String, String> raw = new LinkedHashMap<>();
+        for (String need : rawDependencyStrings(entry)) {
+            String capability = capabilityNameFromDependencyUri(need);
+            if (capability != null && !capability.isBlank()) {
+                raw.putIfAbsent(capability, need);
+            }
+        }
+        return raw;
     }
 
     /**
@@ -355,6 +452,23 @@ public final class StudioCatalogService {
             }
         }
         return external;
+    }
+
+    private static boolean isSubstrateOwned(String dep) {
+        return dep != null && (dep.contains("substrate=true") || dep.contains("owner=substrate"));
+    }
+
+    private static boolean isUnfurlSubstrateCapability(String capability) {
+        return capability != null && (
+                capability.startsWith("substrate.")
+                        || capability.startsWith("spring-ai.")
+                        || capability.startsWith("workflow.contract.")
+                        || capability.equals("rag.corpus")
+                        || capability.equals("tool.implementation")
+                        || capability.equals("state-store")
+                        || capability.equals("event-sink")
+                        || capability.equals("secrets.provider")
+                        || capability.equals("telemetry.otel"));
     }
 
     public StudioReplacementCandidatesResponse replacementCandidates(
@@ -1077,6 +1191,38 @@ public final class StudioCatalogService {
             trimmed = trimmed.substring(0, at);
         }
         return trimmed.isBlank() ? null : trimmed;
+    }
+
+    private static String queryParam(String dep, String key, String fallback) {
+        if (dep == null || key == null || key.isBlank()) {
+            return fallback;
+        }
+        int queryStart = dep.indexOf('?');
+        if (queryStart < 0 || queryStart == dep.length() - 1) {
+            return fallback;
+        }
+        String prefix = key + "=";
+        for (String pair : dep.substring(queryStart + 1).split("&")) {
+            if (pair.startsWith(prefix)) {
+                String value = pair.substring(prefix.length());
+                return value.isBlank() ? fallback : value;
+            }
+        }
+        return fallback;
+    }
+
+    private static String substrateLabel(String capability) {
+        if (capability == null || capability.isBlank()) {
+            return "Substrate Port";
+        }
+        String[] parts = capability.replace('-', '.').split("\\.");
+        List<String> words = new ArrayList<>();
+        for (String part : parts) {
+            if (!part.isBlank()) {
+                words.add(part.substring(0, 1).toUpperCase() + part.substring(1));
+            }
+        }
+        return words.isEmpty() ? capability : String.join(" ", words);
     }
 
     private List<StudioVisualCatalogEntry> bundledFixtureEntries(String tenantId) {
