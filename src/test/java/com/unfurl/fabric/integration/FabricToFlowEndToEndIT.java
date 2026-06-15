@@ -136,7 +136,7 @@ class FabricToFlowEndToEndIT {
             assertThat(flow.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(flow.exitValue()).isNotZero();
             assertThat(Files.readString(tempDir.resolve("flow.log"), StandardCharsets.UTF_8))
-                    .contains("deployment shape CONTAINERIZED_SERVICE is not supported by substrate");
+                    .contains("deployment shape is not supported: CONTAINERIZED_SERVICE");
         } finally {
             flow.destroyForcibly();
         }

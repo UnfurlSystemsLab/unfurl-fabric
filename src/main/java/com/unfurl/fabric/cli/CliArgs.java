@@ -22,7 +22,7 @@ final class CliArgs {
             if (key.isBlank()) {
                 throw FabricCliException.usage("blank flag");
             }
-            if ("auto-select-best".equals(key)) {
+            if ("auto-select-best".equals(key) || "dry-run".equals(key) || "apply".equals(key)) {
                 values.put(key, "true");
                 continue;
             }

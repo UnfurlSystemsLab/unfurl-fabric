@@ -23,6 +23,9 @@ public final class FabricCli {
                 case "dry-run" -> new DryRunCommand().run(rest, out, err);
                 case "sign" -> new SignCommand().run(rest, out);
                 case "verify" -> new VerifyCommand().run(rest, out, err);
+                case "emit" -> new EmitCommand().run(rest, out);
+                case "apply" -> new ApplyCommand().run(rest, out);
+                case "deploy" -> new DeployCommand().run(rest, out);
                 case "explain" -> new ExplainCommand().run(rest, out);
                 case "explain-substrate" -> new ExplainSubstrateCommand().run(rest, out);
                 case "explain-deployment" -> new ExplainDeploymentCommand().run(rest, out);

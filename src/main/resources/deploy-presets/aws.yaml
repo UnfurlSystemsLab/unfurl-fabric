@@ -1,0 +1,6 @@
+kind: k8s
+environment: aws
+region: us-east-1
+options:
+  rendering: helm
+  provider: aws

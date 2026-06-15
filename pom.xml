@@ -28,6 +28,7 @@
         <dcp.version>0.1.0-SNAPSHOT</dcp.version>
         <substrate-api.version>0.1.0-SNAPSHOT</substrate-api.version>
         <deployment.version>0.1.0-SNAPSHOT</deployment.version>
+        <deploy-emitter.version>0.1.0-SNAPSHOT</deploy-emitter.version>
     </properties>
 
     <dependencyManagement>
@@ -66,6 +67,16 @@
                 <groupId>com.unfurl.deployment</groupId>
                 <artifactId>deployment-serialization</artifactId>
                 <version>${deployment.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.deploy</groupId>
+                <artifactId>emitter-spi</artifactId>
+                <version>${deploy-emitter.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.deploy</groupId>
+                <artifactId>emitter-core</artifactId>
+                <version>${deploy-emitter.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
@@ -163,6 +174,14 @@
         <dependency>
             <groupId>com.unfurl.deployment</groupId>
             <artifactId>deployment-serialization</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.deploy</groupId>
+            <artifactId>emitter-spi</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.deploy</groupId>
+            <artifactId>emitter-core</artifactId>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

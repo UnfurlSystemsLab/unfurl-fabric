@@ -138,7 +138,7 @@ final class CliTestFixtures {
         Path trustKeys = dir.resolve("trust-keys");
         Files.createDirectories(trustKeys);
         SigningTestFixtures.writePublicKeyPem(trustKeys, "pub.pem", pair.getPublic());
-        return new SignedPaths(catalog, needs, compiled, signed, trustKeys);
+        return new SignedPaths(catalog, needs, compiled, CliSupport.defaultProfilePath(compiled), signed, trustKeys);
     }
 
     static CompiledContract readCompiled(Path path) throws IOException {
@@ -208,7 +208,7 @@ final class CliTestFixtures {
     record CliRun(int exitCode, String stdout, String stderr) {
     }
 
-    record SignedPaths(Path catalog, Path needs, Path compiled, Path signed, Path trustKeys) {
+    record SignedPaths(Path catalog, Path needs, Path compiled, Path profile, Path signed, Path trustKeys) {
     }
 
     private CliTestFixtures() {
