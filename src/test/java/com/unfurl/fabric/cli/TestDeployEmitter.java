@@ -34,7 +34,10 @@ final class TestDeployEmitter implements DeployEmitter {
         try {
             Files.createDirectories(request.outDir());
             Path path = request.outDir().resolve(config.target().kind() + "-artifact.txt");
-            Files.writeString(path, "target=" + config.target().kind() + "\n", StandardCharsets.UTF_8);
+            StringBuilder content = new StringBuilder("target=" + config.target().kind() + "\n");
+            appendOption(content, "fabricContractPath");
+            appendOption(content, "substrateProfilePath");
+            Files.writeString(path, content.toString(), StandardCharsets.UTF_8);
             EmittedArtifact artifact = new EmittedArtifact(
                     request.outDir().relativize(path),
                     sha256(Files.readAllBytes(path)),
@@ -81,6 +84,13 @@ final class TestDeployEmitter implements DeployEmitter {
                     DeploymentShape.MANAGED_EXTERNAL_ADAPTER);
             default -> EnumSet.noneOf(DeploymentShape.class);
         };
+    }
+
+    private void appendOption(StringBuilder sb, String key) {
+        String value = config.target().options().get(key);
+        if (value != null) {
+            sb.append(key).append('=').append(value).append('\n');
+        }
     }
 
     private static String sha256(byte[] data) {

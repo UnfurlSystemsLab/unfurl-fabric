@@ -28,19 +28,23 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 
 final class DeployCliSupport {
 
     static EmitOutcome emit(CliArgs args) {
         Path outDir = args.requiredPath("out");
-        DeploymentTarget target = loadTarget(args.get("target"));
+        Path contractPath = args.requiredPath("contract");
+        Path profilePath = args.requiredPath("profile");
+        DeploymentTarget target = withComposeRuntimePaths(loadTarget(args.get("target")), contractPath, profilePath);
         EmitterConfig config = new EmitterConfig(target, target.options(), true);
         DeployEmitter backend = new EmitterBootstrap().create(config);
         EmitRequest request = new EmitRequest(
-                readSigned(args.requiredPath("contract")),
-                readProfile(args.requiredPath("profile")),
+                readSigned(contractPath),
+                readProfile(profilePath),
                 target,
                 outDir);
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
@@ -50,15 +54,41 @@ final class DeployCliSupport {
 
     static StitchOutcome stitch(CliArgs args) {
         Path outDir = args.requiredPath("out");
-        List<DeploymentTarget> targets = loadTargets(args.get("targets"));
+        Path contractPath = args.requiredPath("contract");
+        Path profilePath = args.requiredPath("profile");
+        List<DeploymentTarget> targets = loadTargets(args.get("targets")).stream()
+                .map(target -> withComposeRuntimePaths(target, contractPath, profilePath))
+                .toList();
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
         StitchResult result = new StitchDriver().stitch(new StitchRequest(
-                readSigned(args.requiredPath("contract")),
-                readProfile(args.requiredPath("profile")),
+                readSigned(contractPath),
+                readProfile(profilePath),
                 targets,
                 outDir),
                 keys);
         return new StitchOutcome(outDir, result);
+    }
+
+    /**
+     * Threads the operator's signed-contract and substrate-profile paths into a
+     * {@code local-compose} target's options so the compose backend emits a
+     * STRICT (closed-world) flow runtime profile rather than LEGACY_OPEN_WORLD.
+     * Explicit values in the target file win ({@code putIfAbsent}).
+     */
+    private static DeploymentTarget withComposeRuntimePaths(DeploymentTarget target, Path contract, Path profile) {
+        if (!"local-compose".equals(target.kind())) {
+            return target;
+        }
+        Map<String, String> options = new LinkedHashMap<>(target.options());
+        options.putIfAbsent("fabricContractPath", contract.toAbsolutePath().toString());
+        options.putIfAbsent("substrateProfilePath", profile.toAbsolutePath().toString());
+        return new DeploymentTarget(
+                target.kind(),
+                target.environment(),
+                target.region(),
+                target.endpoint(),
+                options,
+                target.credentialRefs());
     }
 
     static ApplyResult apply(Path planDir, DeploymentTarget target, boolean dryRun) {
