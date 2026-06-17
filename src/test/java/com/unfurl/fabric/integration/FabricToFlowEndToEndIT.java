@@ -37,6 +37,10 @@ class FabricToFlowEndToEndIT {
     @TempDir
     Path tempDir;
 
+    // flow.log lives OUTSIDE @TempDir: the spawned flow process can hold its handle
+    // briefly after exit on Windows, which would race @TempDir cleanup.
+    private Path flowLog;
+
     @Test
     void fabricSignedContractAndSubstrateProfileBootFlowInStrictMode() throws Exception {
         Path flowJar = flowJar();
@@ -92,6 +96,7 @@ class FabricToFlowEndToEndIT {
             flow.destroy();
             if (!flow.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
                 flow.destroyForcibly();
+                flow.waitFor();
             }
         }
     }
@@ -135,21 +140,23 @@ class FabricToFlowEndToEndIT {
         try {
             assertThat(flow.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(flow.exitValue()).isNotZero();
-            assertThat(Files.readString(tempDir.resolve("flow.log"), StandardCharsets.UTF_8))
+            assertThat(Files.readString(flowLog, StandardCharsets.UTF_8))
                     .contains("deployment shape is not supported: CONTAINERIZED_SERVICE");
         } finally {
             flow.destroyForcibly();
+            flow.waitFor();
         }
     }
 
     private Process startFlow(Path flowJar, Path runtimeProfile, int port) throws IOException {
+        flowLog = Files.createTempFile("unfurl-flow-", ".log");
         return new ProcessBuilder(
                 javaExecutable().toString(),
                 "-Dunfurl.flow.port=" + port,
                 "-jar", flowJar.toString(),
                 "--profile", runtimeProfile.toString())
                 .redirectErrorStream(true)
-                .redirectOutput(tempDir.resolve("flow.log").toFile())
+                .redirectOutput(flowLog.toFile())
                 .start();
     }
 
@@ -171,7 +178,7 @@ class FabricToFlowEndToEndIT {
             Thread.sleep(100);
         }
         throw new AssertionError("flow did not become healthy; log:\n"
-                + Files.readString(tempDir.resolve("flow.log"), StandardCharsets.UTF_8));
+                + Files.readString(flowLog, StandardCharsets.UTF_8));
     }
 
     private String get(int port, String path) throws Exception {
