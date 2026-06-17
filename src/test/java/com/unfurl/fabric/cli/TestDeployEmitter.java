@@ -67,7 +67,20 @@ final class TestDeployEmitter implements DeployEmitter {
 
     @Override
     public Set<DeploymentShape> supportedShapes() {
-        return EnumSet.allOf(DeploymentShape.class);
+        return switch (config.target().kind()) {
+            case "local-compose" -> Set.of(
+                    DeploymentShape.IN_PROCESS_LIBRARY,
+                    DeploymentShape.MODULAR_MONOLITH_MODULE,
+                    DeploymentShape.STANDALONE_JAVA_APP,
+                    DeploymentShape.SPRING_BOOT_SERVICE);
+            case "k8s" -> Set.of(
+                    DeploymentShape.CONTAINERIZED_SERVICE,
+                    DeploymentShape.SPRING_BOOT_SERVICE);
+            case "remote" -> Set.of(
+                    DeploymentShape.REMOTE_MICROSERVICE,
+                    DeploymentShape.MANAGED_EXTERNAL_ADAPTER);
+            default -> EnumSet.noneOf(DeploymentShape.class);
+        };
     }
 
     private static String sha256(byte[] data) {

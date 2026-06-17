@@ -3,6 +3,9 @@ package com.unfurl.fabric.cli;
 import com.unfurl.dcp.trust.VerificationKeySet;
 import com.unfurl.deploy.core.EmitPipeline;
 import com.unfurl.deploy.core.EmitterBootstrap;
+import com.unfurl.deploy.core.StitchDriver;
+import com.unfurl.deploy.core.StitchRequest;
+import com.unfurl.deploy.core.StitchResult;
 import com.unfurl.deploy.spi.ApplyRequest;
 import com.unfurl.deploy.spi.ApplyResult;
 import com.unfurl.deploy.spi.DeployEmitter;
@@ -24,6 +27,8 @@ import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
+import java.util.List;
 
 
 final class DeployCliSupport {
@@ -41,6 +46,19 @@ final class DeployCliSupport {
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
         EmitResult result = new EmitPipeline().emit(request, backend, keys);
         return new EmitOutcome(outDir, target, backend, result);
+    }
+
+    static StitchOutcome stitch(CliArgs args) {
+        Path outDir = args.requiredPath("out");
+        List<DeploymentTarget> targets = loadTargets(args.get("targets"));
+        VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
+        StitchResult result = new StitchDriver().stitch(new StitchRequest(
+                readSigned(args.requiredPath("contract")),
+                readProfile(args.requiredPath("profile")),
+                targets,
+                outDir),
+                keys);
+        return new StitchOutcome(outDir, result);
     }
 
     static ApplyResult apply(Path planDir, DeploymentTarget target, boolean dryRun) {
@@ -63,6 +81,17 @@ final class DeployCliSupport {
         }
     }
 
+    static List<DeploymentTarget> loadTargets(String value) {
+        if (value == null || value.isBlank()) {
+            throw FabricCliException.usage("missing required --targets");
+        }
+        return Arrays.stream(value.split(","))
+                .map(String::trim)
+                .filter(token -> !token.isEmpty())
+                .map(DeployCliSupport::loadTarget)
+                .toList();
+    }
+
     static void printEmit(EmitOutcome outcome, PrintStream out) {
         out.println("emitted=" + outcome.outDir());
         out.println("targetKind=" + outcome.target().kind());
@@ -76,6 +105,18 @@ final class DeployCliSupport {
         EmitResult.Unsupported unsupported = (EmitResult.Unsupported) outcome.result();
         out.println("unsupportedShapes=" + unsupported.shapes());
         out.println("detail=" + unsupported.detail());
+    }
+
+    static void printStitch(StitchOutcome outcome, PrintStream out) {
+        out.println("stitched=" + outcome.outDir());
+        out.println("targets=" + outcome.result().manifest().targets().size());
+        outcome.result().manifest().targets().forEach(target -> out.println(
+                "targetKind=" + target.kind()
+                        + " dir=" + target.dir()
+                        + " ownedShapes=" + target.ownedShapes()
+                        + " subManifestSha256=" + target.subManifestSha256()));
+        out.println("coverage=" + outcome.result().manifest().coverage().size());
+        out.println("stitchSha256=" + outcome.result().manifest().stitchSha256());
     }
 
     static void printApply(ApplyResult result, PrintStream out) {
@@ -126,6 +167,9 @@ final class DeployCliSupport {
     }
 
     record EmitOutcome(Path outDir, DeploymentTarget target, DeployEmitter backend, EmitResult result) {
+    }
+
+    record StitchOutcome(Path outDir, StitchResult result) {
     }
 
     private DeployCliSupport() {

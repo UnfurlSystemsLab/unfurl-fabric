@@ -8,6 +8,13 @@ import java.io.PrintStream;
 final class DeployCommand {
     int run(String[] argv, PrintStream out) {
         CliArgs args = CliArgs.parse(argv);
+        if (args.has("targets")) {
+            DeployCliSupport.StitchOutcome outcome = DeployCliSupport.stitch(args);
+            DeployCliSupport.printStitch(outcome, out);
+            out.println("apply=skipped");
+            out.println("reason=stitched apply orchestration is not wired");
+            return 0;
+        }
         DeployCliSupport.EmitOutcome outcome = DeployCliSupport.emit(args);
         DeployCliSupport.printEmit(outcome, out);
         if (!(outcome.result() instanceof EmitResult.Ok)) {

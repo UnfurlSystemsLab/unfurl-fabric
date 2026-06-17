@@ -126,10 +126,99 @@ final class CliTestFixtures {
             throw new AssertionError(compile.stderr());
         }
 
+        return sign(dir, catalog, needs, compiled);
+    }
+
+    static SignedPaths compileAndSignShape(Path dir, String shape) throws IOException {
+        Path catalog = dir.resolve("catalog-" + shape.toLowerCase(java.util.Locale.ROOT));
+        writeCatalogJarWithShapeProfile(
+                catalog,
+                "storage.jar",
+                "storage-" + shape.toLowerCase(java.util.Locale.ROOT),
+                "storage.put",
+                """
+                          componentShapeProfile:
+                            defaultShape: %s
+                            supportedShapes: [%s]
+                            shapeRuntime: {}
+                        """.formatted(shape, shape));
+        Path needs = writeNeeds(dir, "storage.put");
+        Path policy = dir.resolve("deployment-policy-" + shape.toLowerCase(java.util.Locale.ROOT) + ".yaml");
+        Files.writeString(policy, """
+                preferredShapes: [%s]
+                disallowedShapes: []
+                requireIsolationForCapabilityPatterns: []
+                runtime:
+                  springBoot: true
+                  kubernetes: true
+                  serviceMesh: true
+                """.formatted(shape), StandardCharsets.UTF_8);
+        Path compiled = dir.resolve("compiled-" + shape.toLowerCase(java.util.Locale.ROOT) + ".yaml");
+        CliRun compile = run("compile",
+                "--catalog", catalog.toString(),
+                "--needs", needs.toString(),
+                "--deployment-policy", policy.toString(),
+                "--out", compiled.toString());
+        if (compile.exitCode() != 0) {
+            throw new AssertionError(compile.stderr());
+        }
+        return sign(dir, catalog, needs, compiled);
+    }
+
+    static SignedPaths compileAndSignMixedShapes(Path dir) throws IOException {
+        Path catalog = dir.resolve("catalog-mixed");
+        writeCatalogJarWithShapeProfile(catalog, "local.jar", "local-lib", "local.cap",
+                shapeProfile("IN_PROCESS_LIBRARY"));
+        writeCatalogJarWithShapeProfile(catalog, "api.jar", "api-service", "api.cap",
+                shapeProfile("CONTAINERIZED_SERVICE"));
+        writeCatalogJarWithShapeProfile(catalog, "adapter.jar", "remote-adapter", "remote.cap",
+                shapeProfile("MANAGED_EXTERNAL_ADAPTER"));
+        Path needs = dir.resolve("needs-mixed.yaml");
+        Files.writeString(needs, """
+                requiredCapabilities:
+                  - capability: local.cap
+                    capabilityVersion: ^1
+                  - capability: api.cap
+                    capabilityVersion: ^1
+                  - capability: remote.cap
+                    capabilityVersion: ^1
+                """, StandardCharsets.UTF_8);
+        Path policy = dir.resolve("deployment-policy-mixed.yaml");
+        Files.writeString(policy, """
+                preferredShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE, MANAGED_EXTERNAL_ADAPTER]
+                disallowedShapes: []
+                requireIsolationForCapabilityPatterns: []
+                runtime:
+                  springBoot: true
+                  kubernetes: true
+                  serviceMesh: true
+                """, StandardCharsets.UTF_8);
+        Path compiled = dir.resolve("compiled-mixed.yaml");
+        CliRun compile = run("compile",
+                "--catalog", catalog.toString(),
+                "--needs", needs.toString(),
+                "--deployment-policy", policy.toString(),
+                "--out", compiled.toString());
+        if (compile.exitCode() != 0) {
+            throw new AssertionError(compile.stderr());
+        }
+        return sign(dir, catalog, needs, compiled);
+    }
+
+    private static String shapeProfile(String shape) {
+        return """
+                  componentShapeProfile:
+                    defaultShape: %s
+                    supportedShapes: [%s]
+                    shapeRuntime: {}
+                """.formatted(shape, shape);
+    }
+
+    private static SignedPaths sign(Path dir, Path catalog, Path needs, Path compiled) throws IOException {
         KeyPair pair = SigningTestFixtures.generateEcKeyPair();
         Path privateKey = SigningTestFixtures.writePrivateKeyPem(dir, "key.pem", pair.getPrivate());
         Path publicKey = SigningTestFixtures.writePublicKeyPem(dir, "pub.pem", pair.getPublic());
-        Path signed = dir.resolve("signed.yaml");
+        Path signed = dir.resolve("signed-" + compiled.getFileName());
         CliRun sign = run("sign", "--contract", compiled.toString(), "--key", privateKey.toString(),
                 "--public-key", publicKey.toString(), "--out", signed.toString());
         if (sign.exitCode() != 0) {

@@ -12,7 +12,7 @@ class FabricCliDeployCloudHandsOffTest {
 
     @Test
     void deployCloudPresetStopsAtEmitUnlessApplyFlagIsPresent(@TempDir Path dir) throws Exception {
-        CliTestFixtures.SignedPaths paths = CliTestFixtures.compileAndSign(dir);
+        CliTestFixtures.SignedPaths paths = CliTestFixtures.compileAndSignShape(dir, "CONTAINERIZED_SERVICE");
         Path out = dir.resolve("deploy");
 
         CliTestFixtures.CliRun result = CliTestFixtures.run(

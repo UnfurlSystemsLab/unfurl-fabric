@@ -1,2 +1,3 @@
 com.unfurl.fabric.cli.TestLocalComposeEmitterProvider
 com.unfurl.fabric.cli.TestK8sEmitterProvider
+com.unfurl.fabric.cli.TestRemoteEmitterProvider
