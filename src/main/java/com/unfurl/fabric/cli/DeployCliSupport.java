@@ -1,6 +1,7 @@
 package com.unfurl.fabric.cli;
 
 import com.unfurl.dcp.trust.VerificationKeySet;
+import com.unfurl.deploy.core.ApplyDriver;
 import com.unfurl.deploy.core.EmitPipeline;
 import com.unfurl.deploy.core.EmitterBootstrap;
 import com.unfurl.deploy.core.StitchDriver;
@@ -92,8 +93,7 @@ final class DeployCliSupport {
     }
 
     static ApplyResult apply(Path planDir, DeploymentTarget target, boolean dryRun) {
-        DeployEmitter backend = new EmitterBootstrap().create(new EmitterConfig(target, target.options(), true));
-        return backend.apply(new ApplyRequest(planDir, target, dryRun));
+        return new ApplyDriver().apply(planDir, target, dryRun);
     }
 
     static DeploymentTarget loadTarget(String value) {
