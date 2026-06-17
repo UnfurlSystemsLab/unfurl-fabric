@@ -1,5 +1,6 @@
 package com.unfurl.fabric.cli;
 
+import com.unfurl.deploy.core.StitchApplyResult;
 import com.unfurl.deploy.spi.ApplyResult;
 import com.unfurl.deploy.spi.EmitResult;
 
@@ -11,8 +12,13 @@ final class DeployCommand {
         if (args.has("targets")) {
             DeployCliSupport.StitchOutcome outcome = DeployCliSupport.stitch(args);
             DeployCliSupport.printStitch(outcome, out);
+            if (args.has("apply") || args.has("dry-run")) {
+                StitchApplyResult applied = DeployCliSupport.applyStitched(outcome, args.has("dry-run"));
+                DeployCliSupport.printStitchApply(applied, out);
+                return applied.ok() ? 0 : 1;
+            }
             out.println("apply=skipped");
-            out.println("reason=stitched apply orchestration is not wired");
+            out.println("reason=stitched apply requires --apply or --dry-run");
             return 0;
         }
         DeployCliSupport.EmitOutcome outcome = DeployCliSupport.emit(args);

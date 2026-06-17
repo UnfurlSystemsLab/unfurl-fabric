@@ -4,6 +4,8 @@ import com.unfurl.dcp.trust.VerificationKeySet;
 import com.unfurl.deploy.core.ApplyDriver;
 import com.unfurl.deploy.core.EmitPipeline;
 import com.unfurl.deploy.core.EmitterBootstrap;
+import com.unfurl.deploy.core.StitchApplyDriver;
+import com.unfurl.deploy.core.StitchApplyResult;
 import com.unfurl.deploy.core.StitchDriver;
 import com.unfurl.deploy.core.StitchRequest;
 import com.unfurl.deploy.core.StitchResult;
@@ -67,7 +69,12 @@ final class DeployCliSupport {
                 targets,
                 outDir),
                 keys);
-        return new StitchOutcome(outDir, result);
+        return new StitchOutcome(outDir, targets, result);
+    }
+
+    static StitchApplyResult applyStitched(StitchOutcome outcome, boolean dryRun) {
+        return new StitchApplyDriver().apply(
+                outcome.outDir(), outcome.targets(), outcome.result().manifest(), dryRun);
     }
 
     /**
@@ -149,6 +156,18 @@ final class DeployCliSupport {
         out.println("stitchSha256=" + outcome.result().manifest().stitchSha256());
     }
 
+    static void printStitchApply(StitchApplyResult result, PrintStream out) {
+        out.println("stitchedApply=" + (result.ok() ? "ok" : "failed"));
+        for (StitchApplyResult.TargetApply target : result.targets()) {
+            if (target.result() instanceof ApplyResult.Ok ok) {
+                out.println("apply target=" + target.kind() + " status=ok dryRun=" + ok.dryRun());
+            } else {
+                out.println("apply target=" + target.kind() + " status=failed detail="
+                        + ((ApplyResult.Failed) target.result()).detail());
+            }
+        }
+    }
+
     static void printApply(ApplyResult result, PrintStream out) {
         if (result instanceof ApplyResult.Ok ok) {
             out.println("apply=ok");
@@ -199,7 +218,7 @@ final class DeployCliSupport {
     record EmitOutcome(Path outDir, DeploymentTarget target, DeployEmitter backend, EmitResult result) {
     }
 
-    record StitchOutcome(Path outDir, StitchResult result) {
+    record StitchOutcome(Path outDir, List<DeploymentTarget> targets, StitchResult result) {
     }
 
     private DeployCliSupport() {
