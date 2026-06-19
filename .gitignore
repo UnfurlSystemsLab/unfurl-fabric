@@ -47,3 +47,8 @@ desktop.ini
 
 # Maven wrapper that might escape
 .mvn/wrapper/maven-wrapper.jar
+
+# Generated / tooling scratch output (java-upgrade modernizer, dep dumps, stray $outfile)
+**/.github/modernize/
+dep*.txt
+$outfile
