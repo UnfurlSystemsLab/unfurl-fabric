@@ -20,7 +20,7 @@
         <hibernate.validator.version>8.0.1.Final</hibernate.validator.version>
         <semver4j.version>3.1.0</semver4j.version>
         <jedis.version>5.2.0</jedis.version>
-        <kafka.clients.version>3.8.0</kafka.clients.version>
+        <kafka.clients.version>3.9.2</kafka.clients.version>
         <junit.version>5.10.3</junit.version>
         <assertj.version>3.26.3</assertj.version>
         <jqwik.version>1.9.0</jqwik.version>
