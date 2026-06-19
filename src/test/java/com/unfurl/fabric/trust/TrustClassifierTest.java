@@ -54,16 +54,17 @@ class TrustClassifierTest {
 
         assertThat(classification.allowedEntries()).isEmpty();
         assertThat(classification.rejectedEntries()).hasSize(1);
-        assertThat(classification.rejectedEntries().get(0).reasons())
-                .extracting(Object::getClass)
-                .contains(
-                        RejectionReason.VendorNotTrusted.class,
-                        RejectionReason.ArtifactGroupNotAllowed.class,
-                        RejectionReason.LifecycleNotAllowed.class,
-                        RejectionReason.UnsignedClaim.class,
-                        RejectionReason.CapabilityDenied.class,
-                        RejectionReason.CapabilityNotAllowed.class,
-                        RejectionReason.StabilityBelowFloor.class);
+        List<Class<?>> rejectionReasonTypes = classification.rejectedEntries().get(0).reasons().stream()
+                .<Class<?>>map(reason -> reason.getClass())
+                .toList();
+        assertThat(rejectionReasonTypes).contains(
+                RejectionReason.VendorNotTrusted.class,
+                RejectionReason.ArtifactGroupNotAllowed.class,
+                RejectionReason.LifecycleNotAllowed.class,
+                RejectionReason.UnsignedClaim.class,
+                RejectionReason.CapabilityDenied.class,
+                RejectionReason.CapabilityNotAllowed.class,
+                RejectionReason.StabilityBelowFloor.class);
     }
 
     @Test
