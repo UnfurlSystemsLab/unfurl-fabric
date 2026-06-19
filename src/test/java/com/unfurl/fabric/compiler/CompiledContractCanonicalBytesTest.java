@@ -1,5 +1,6 @@
 package com.unfurl.fabric.compiler;
 
+import com.unfurl.fabric.compile.ContractCompiler;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.testing.FabricTestFixtures;
 import org.junit.jupiter.api.Test;

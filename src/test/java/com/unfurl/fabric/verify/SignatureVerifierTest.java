@@ -1,5 +1,7 @@
 package com.unfurl.fabric.verify;
 
+import com.unfurl.fabric.signing.SignatureVerificationResult;
+import com.unfurl.fabric.signing.SignatureVerifier;
 import com.unfurl.dcp.trust.VerificationKey;
 import com.unfurl.dcp.trust.VerificationKeySet;
 import com.unfurl.fabric.compiler.CompiledContract;

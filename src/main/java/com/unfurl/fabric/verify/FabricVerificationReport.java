@@ -1,5 +1,7 @@
 package com.unfurl.fabric.verify;
 
+import com.unfurl.fabric.signing.SignatureVerificationResult;
+
 import java.util.Optional;
 
 /**

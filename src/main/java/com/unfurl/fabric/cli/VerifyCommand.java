@@ -7,8 +7,8 @@ import com.unfurl.fabric.signing.SignedFabricContractCodec;
 import com.unfurl.fabric.verify.CatalogDriftChecker;
 import com.unfurl.fabric.verify.CatalogDriftReport;
 import com.unfurl.fabric.verify.FabricVerificationReport;
-import com.unfurl.fabric.verify.SignatureVerificationResult;
-import com.unfurl.fabric.verify.SignatureVerifier;
+import com.unfurl.fabric.signing.SignatureVerificationResult;
+import com.unfurl.fabric.signing.SignatureVerifier;
 import com.unfurl.fabric.verify.TrustKeyDirectoryLoader;
 
 import java.io.IOException;

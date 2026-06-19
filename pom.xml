@@ -44,6 +44,11 @@
                 <version>${substrate-api.version}</version>
             </dependency>
             <dependency>
+                <groupId>com.unfurl.fabric</groupId>
+                <artifactId>fabric-contract</artifactId>
+                <version>0.1.0-SNAPSHOT</version>
+            </dependency>
+            <dependency>
                 <groupId>com.unfurl.deployment</groupId>
                 <artifactId>deployment-domain</artifactId>
                 <version>${deployment.version}</version>
@@ -154,6 +159,10 @@
         <dependency>
             <groupId>com.unfurl.substrate</groupId>
             <artifactId>unfurl-substrate-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.fabric</groupId>
+            <artifactId>fabric-contract</artifactId>
         </dependency>
         <dependency>
             <groupId>com.unfurl.deployment</groupId>

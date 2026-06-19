@@ -1,5 +1,7 @@
 package com.unfurl.fabric.compiler;
 
+import com.unfurl.fabric.compile.ContractCompiler;
+import com.unfurl.fabric.compile.HostOwnerMeta;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.matcher.CandidateScore;
 import com.unfurl.fabric.matcher.CompositionCandidate;

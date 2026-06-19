@@ -1,6 +1,6 @@
 package com.unfurl.fabric.verify;
 
-import com.unfurl.fabric.catalog.ArtifactDescriptor;
+import com.unfurl.fabric.artifact.ArtifactDescriptor;
 import com.unfurl.fabric.catalog.Catalog;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.compiler.CompiledContract;

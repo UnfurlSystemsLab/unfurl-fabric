@@ -1,4 +1,4 @@
-package com.unfurl.fabric.compiler;
+package com.unfurl.fabric.compile;
 
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.contract.Binding;
@@ -16,6 +16,10 @@ import com.unfurl.dcp.contract.Transport;
 import com.unfurl.dcp.contract.TransportKind;
 import com.unfurl.dcp.contract.Trust;
 import com.unfurl.dcp.trust.TrustTier;
+import com.unfurl.fabric.compiler.CompiledContract;
+import com.unfurl.fabric.compiler.ContractCompileException;
+import com.unfurl.fabric.compiler.DecisionAudit;
+import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.matcher.CandidateScore;
 import com.unfurl.fabric.matcher.CompositionCandidate;

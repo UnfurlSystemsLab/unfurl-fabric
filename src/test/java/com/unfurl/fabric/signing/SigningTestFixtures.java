@@ -1,8 +1,8 @@
 package com.unfurl.fabric.signing;
 
+import com.unfurl.fabric.compile.ContractCompiler;
+import com.unfurl.fabric.compile.HostOwnerMeta;
 import com.unfurl.fabric.compiler.CompiledContract;
-import com.unfurl.fabric.compiler.ContractCompiler;
-import com.unfurl.fabric.compiler.HostOwnerMeta;
 import com.unfurl.fabric.matcher.CandidateScore;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.PlanningWarning;

@@ -1,6 +1,7 @@
 package com.unfurl.fabric.compiler;
 
 import com.unfurl.dcp.contract.ContractValidator;
+import com.unfurl.fabric.compile.ContractCompiler;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import org.junit.jupiter.api.Test;
 

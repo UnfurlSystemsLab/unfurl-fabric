@@ -1,4 +1,4 @@
-package com.unfurl.fabric.compiler;
+package com.unfurl.fabric.compile;
 
 import java.net.URI;
 

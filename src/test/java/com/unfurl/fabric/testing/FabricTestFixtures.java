@@ -10,7 +10,7 @@ import com.unfurl.dcp.claim.Identity;
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.claim.Refusal;
 import com.unfurl.dcp.claim.Stability;
-import com.unfurl.fabric.catalog.ArtifactDescriptor;
+import com.unfurl.fabric.artifact.ArtifactDescriptor;
 import com.unfurl.fabric.catalog.BindingDescriptor;
 import com.unfurl.fabric.catalog.Catalog;
 import com.unfurl.fabric.catalog.CatalogEntry;

@@ -1,5 +1,7 @@
 package com.unfurl.fabric.catalog;
 
+import com.unfurl.fabric.artifact.ArtifactDescriptor;
+
 /**
  * Author-supplied artifact metadata as it appears inside {@code META-INF/unfurl-catalog.yaml}.
  * The scanner enriches this with a computed SHA-256 to produce the final {@link ArtifactDescriptor}

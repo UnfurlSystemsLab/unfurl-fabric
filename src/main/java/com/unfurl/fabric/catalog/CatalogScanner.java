@@ -1,5 +1,7 @@
 package com.unfurl.fabric.catalog;
 
+import com.unfurl.fabric.artifact.ArtifactDescriptor;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.DirectoryStream;

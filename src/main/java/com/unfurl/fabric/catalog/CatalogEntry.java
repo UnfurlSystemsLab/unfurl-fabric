@@ -2,6 +2,7 @@ package com.unfurl.fabric.catalog;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.unfurl.deployment.domain.ComponentShapeProfile;
+import com.unfurl.fabric.artifact.ArtifactDescriptor;
 
 import java.nio.file.Path;
 import java.util.Comparator;
