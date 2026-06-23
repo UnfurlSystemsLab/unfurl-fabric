@@ -2,6 +2,12 @@
 
 `unfurl-fabric` is the design-time compiler for Unfurl. It scans component catalogs, matches operator needs, resolves deployment shapes, derives the substrate profile, compiles an unsigned contract, signs it, and verifies signed output.
 
+It also hosts the **Fabric Studio API** (`StudioServer`), including the conversational
+`POST /studio/authoring/converse` endpoint. Authoring AI is **not** run here: Fabric delegates
+to `unfurl-foundry` over DCP `agent.run` (via `DcpAuthoringClient`, configured from
+`UNFURL_FOUNDRY_DCP_ENDPOINT`), falling back to a deterministic bridge when no endpoint is set.
+See `unfurl-ui/docs/REPO-ai-contract-authoring-build-spec.md`.
+
 ## Build
 
 ```bash
