@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import com.unfurl.fabric.studio.handlers.ResolveDeploymentHandler;
+import com.unfurl.fabric.studio.handlers.StudioAuthoringHandler;
 import com.unfurl.fabric.studio.handlers.StudioTenantHandler;
 
 import java.io.IOException;
@@ -120,6 +121,8 @@ public final class StudioServer implements AutoCloseable {
         }));
         ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(new StudioDeploymentService(), mapper);
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
+        StudioAuthoringHandler authoringHandler = new StudioAuthoringHandler(catalogService, mapper);
+        server.createContext("/studio/authoring", withCors(authoringHandler::handle));
         StudioTenantHandler tenantHandler = new StudioTenantHandler(catalogService, mapper);
         server.createContext("/studio/tenants", withCors(tenantHandler::handle));
     }

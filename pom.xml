@@ -27,6 +27,7 @@
         <archunit.version>1.3.0</archunit.version>
         <dcp.version>0.1.0-SNAPSHOT</dcp.version>
         <substrate-api.version>0.1.0-SNAPSHOT</substrate-api.version>
+        <foundry-substrate.version>0.1.0-SNAPSHOT</foundry-substrate.version>
         <deployment.version>0.1.0-SNAPSHOT</deployment.version>
         <deploy-emitter.version>0.1.0-SNAPSHOT</deploy-emitter.version>
     </properties>
@@ -42,6 +43,31 @@
                 <groupId>com.unfurl.substrate</groupId>
                 <artifactId>unfurl-substrate-api</artifactId>
                 <version>${substrate-api.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.substrate</groupId>
+                <artifactId>substrate-composition-api</artifactId>
+                <version>${substrate-api.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.foundry.substrate</groupId>
+                <artifactId>foundry-substrate-ports</artifactId>
+                <version>${foundry-substrate.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.foundry.substrate</groupId>
+                <artifactId>foundry-substrate-domain</artifactId>
+                <version>${foundry-substrate.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.foundry.substrate</groupId>
+                <artifactId>foundry-substrate-engine</artifactId>
+                <version>${foundry-substrate.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.foundry.substrate</groupId>
+                <artifactId>foundry-substrate-offers</artifactId>
+                <version>${foundry-substrate.version}</version>
             </dependency>
             <dependency>
                 <groupId>com.unfurl.fabric</groupId>
@@ -159,6 +185,26 @@
         <dependency>
             <groupId>com.unfurl.substrate</groupId>
             <artifactId>unfurl-substrate-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.substrate</groupId>
+            <artifactId>substrate-composition-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.foundry.substrate</groupId>
+            <artifactId>foundry-substrate-ports</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.foundry.substrate</groupId>
+            <artifactId>foundry-substrate-domain</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.foundry.substrate</groupId>
+            <artifactId>foundry-substrate-engine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.foundry.substrate</groupId>
+            <artifactId>foundry-substrate-offers</artifactId>
         </dependency>
         <dependency>
             <groupId>com.unfurl.fabric</groupId>

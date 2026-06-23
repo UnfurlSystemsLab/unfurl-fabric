@@ -5,6 +5,10 @@ import com.unfurl.dcp.claim.Offer;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogScanReport;
 import com.unfurl.fabric.catalog.CatalogScanner;
+import com.unfurl.substrate.composition.ContractInvocable;
+import com.unfurl.substrate.composition.ContractInvocation;
+import com.unfurl.substrate.composition.ContractInvocationResult;
+import com.unfurl.substrate.policy.ExecutionContext;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -34,6 +38,14 @@ public final class StudioCatalogService {
     private final Path assetRoot;
     private final StudioSessionEventBus eventBus;
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
+
+    /**
+     * Optional DCP authoring proposer. When a host injects a foundry-backed
+     * {@link ContractInvocable} (the {@code unfurl-foundry} authoring agent over {@code agent.run}),
+     * {@code converseAuthoring} routes through it; otherwise it uses the deterministic in-Fabric
+     * bridge. Fabric depends only on the neutral composition types, never on foundry.
+     */
+    private ContractInvocable authoringInvocable;
 
     public StudioCatalogService() {
         this(null, defaultAssetRoot());
@@ -152,6 +164,231 @@ public final class StudioCatalogService {
                 yaml,
                 safeRequest.defaultDeploymentTarget(),
                 warnings);
+    }
+
+    public synchronized StudioAuthoringConverseResponse converseAuthoring(StudioAuthoringConverseRequest request) {
+        StudioAuthoringConverseRequest safe = request == null
+                ? new StudioAuthoringConverseRequest("tenant-local", "assembly-demo", "", List.of(), "")
+                : request;
+        String tenant = normalizeTenant(safe.tenantId());
+        String assembly = normalizeAssembly(safe.assemblyId());
+        StudioDraftSession session = authoringSession(tenant, assembly, safe.sessionId());
+
+        if (authoringInvocable != null) {
+            return converseViaDcp(safe, tenant, assembly, session);
+        }
+
+        String prompt = safe.userMessage().trim();
+        String lowered = prompt.toLowerCase();
+
+        if (prompt.length() < 12 || lowered.matches("^(build|make|create|app|service|contract)\\s*$")) {
+            return StudioAuthoringConverseResponse.clarify(
+                    session.sessionId(),
+                    "I need a little more detail before I can propose a Fabric contract.",
+                    List.of(
+                            new StudioAuthoringQuestion(
+                                    "capability",
+                                    "What capability should the application provide?",
+                                    "TEXT",
+                                    List.of()),
+                            new StudioAuthoringQuestion(
+                                    "deploymentTarget",
+                                    "Where should this run?",
+                                    "SINGLE_SELECT",
+                                    List.of("Customer Runtime Substrate", "Kubernetes production", "Local development"))));
+        }
+
+        if (lowered.contains("uncatalogued")
+                || lowered.contains("uncataloged")
+                || lowered.contains("not in catalog")
+                || lowered.contains("quantum")) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "I could not find an admitted catalog component for that capability.",
+                    List.of("uncatalogued.capability"));
+        }
+
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        if (entries.isEmpty()) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "This tenant does not have admitted catalog components to compose from.",
+                    List.of("catalog.empty"));
+        }
+
+        StudioVisualCatalogEntry selected = entries.stream()
+                .filter(entry -> promptMentionsEntry(prompt, entry))
+                .findFirst()
+                .orElse(entries.get(0));
+        String capability = firstOfferedCapability(selected).orElse(slug(selected.catalogEntryId()).replace('-', '.'));
+        String targetName = authoringTargetName(prompt);
+        String needsYaml = """
+                requiredCapabilities:
+                  - capability: %s
+                    capabilityVersion: ^1
+                """.formatted(capability);
+
+        Map<String, Object> addIntent = new LinkedHashMap<>();
+        addIntent.put("type", "ADD_COMPONENT");
+        addIntent.put("catalogEntryId", selected.catalogEntryId());
+
+        List<Map<String, Object>> intents = List.of(addIntent);
+        List<String> warnings = new ArrayList<>();
+        Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
+                tenant,
+                "ADD_COMPONENT",
+                Map.of("catalogEntryId", selected.catalogEntryId()));
+        if (rejection.isPresent()) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "The selected component is not currently admitted for this tenant.",
+                    List.of(selected.catalogEntryId()));
+        }
+        if (safe.conversation().isEmpty()) {
+            warnings.add("proposal generated from a single prompt; review before accepting");
+        }
+
+        StudioDeploymentPolicyDraft deploymentPolicy = new StudioDeploymentPolicyDraft(
+                List.of("CONTAINERIZED_SERVICE"),
+                List.of(),
+                List.of(),
+                new StudioDeploymentRuntimeDraft(null, null, true, null, null));
+        StudioAuthoringProposal proposal = new StudioAuthoringProposal(
+                needsYaml,
+                intents,
+                deploymentPolicy,
+                warnings);
+        return StudioAuthoringConverseResponse.proposal(
+                session.sessionId(),
+                "I found an admitted catalog component and prepared a reviewable Fabric proposal for " + targetName + ".",
+                proposal);
+    }
+
+    /**
+     * Inject the DCP authoring proposer (the foundry agent over {@code agent.run}, wired by a host).
+     * When set, {@code converseAuthoring} routes through it instead of the deterministic bridge.
+     */
+    public StudioCatalogService useAuthoringInvocable(ContractInvocable invocable) {
+        this.authoringInvocable = invocable;
+        return this;
+    }
+
+    private StudioAuthoringConverseResponse converseViaDcp(
+            StudioAuthoringConverseRequest request, String tenant, String assembly, StudioDraftSession session) {
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<Map<String, Object>> catalog = new ArrayList<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            List<String> capabilities = portsOfKind(entry.visualManifest(), "OFFER").stream()
+                    .map(PortDescriptor::capability)
+                    .toList();
+            Map<String, Object> entryMap = new LinkedHashMap<>();
+            entryMap.put("catalogEntryId", entry.catalogEntryId());
+            entryMap.put("displayName", entry.catalogEntryId());
+            entryMap.put("offeredCapabilities", capabilities);
+            catalog.add(entryMap);
+        }
+        List<Map<String, Object>> conversation = new ArrayList<>();
+        for (StudioAuthoringConversationMessage message : request.conversation()) {
+            conversation.add(Map.of("role", message.role(), "content", message.content()));
+        }
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("tenantId", tenant);
+        input.put("assemblyId", assembly);
+        input.put("sessionId", session.sessionId());
+        input.put("userMessage", request.userMessage());
+        input.put("conversation", conversation);
+        input.put("catalog", catalog);
+
+        ContractInvocation invocation = new ContractInvocation(
+                "urn:unfurl:fabric:authoring", "agent.run", "unfurl-fabric", "unfurl-foundry",
+                input, session.sessionId(), Map.of(), null, Map.of());
+        ContractInvocationResult result = authoringInvocable.invoke(invocation, ExecutionContext.empty());
+        if (!result.success()) {
+            return StudioAuthoringConverseResponse.gap(session.sessionId(),
+                    result.errorMessage() == null ? "the authoring agent could not respond." : result.errorMessage(),
+                    List.of());
+        }
+        return mapAuthoringOutput(tenant, session.sessionId(), result.output());
+    }
+
+    private StudioAuthoringConverseResponse mapAuthoringOutput(String tenant, String sessionId, Map<String, Object> output) {
+        String kind = String.valueOf(output.getOrDefault("kind", "clarify"));
+        String message = output.get("assistantMessage") == null ? "" : String.valueOf(output.get("assistantMessage"));
+        switch (kind) {
+            case "proposal" -> {
+                Map<String, Object> proposalMap = asMap(output.get("proposal"));
+                String needsYaml = proposalMap.get("needsYaml") == null ? "" : String.valueOf(proposalMap.get("needsYaml"));
+                List<Map<String, Object>> intents = asListOfMap(proposalMap.get("intents"));
+                // Grounding guard: Fabric re-validates every proposed component against the admitted
+                // catalog, regardless of what the agent/tools produced. An unadmitted component is a gap.
+                for (Map<String, Object> intent : intents) {
+                    Object entryId = intent.get("catalogEntryId");
+                    if (entryId == null) {
+                        continue;
+                    }
+                    String type = intent.get("type") == null ? "ADD_COMPONENT" : String.valueOf(intent.get("type"));
+                    Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
+                            tenant, type, Map.of("catalogEntryId", String.valueOf(entryId)));
+                    if (rejection.isPresent()) {
+                        return StudioAuthoringConverseResponse.gap(sessionId,
+                                "A proposed component is not admitted in this tenant's catalog.",
+                                List.of(String.valueOf(entryId)));
+                    }
+                }
+                StudioAuthoringProposal proposal = new StudioAuthoringProposal(
+                        needsYaml,
+                        intents,
+                        new StudioDeploymentPolicyDraft(
+                                List.of("CONTAINERIZED_SERVICE"), List.of(), List.of(),
+                                new StudioDeploymentRuntimeDraft(null, null, true, null, null)),
+                        List.of("proposal generated by the foundry authoring agent; review before accepting"));
+                return StudioAuthoringConverseResponse.proposal(sessionId, message, proposal);
+            }
+            case "gap" -> {
+                return StudioAuthoringConverseResponse.gap(sessionId, message, asStringList(output.get("unmet")));
+            }
+            default -> {
+                List<StudioAuthoringQuestion> questions = new ArrayList<>();
+                for (Map<String, Object> q : asListOfMap(output.get("questions"))) {
+                    questions.add(new StudioAuthoringQuestion(
+                            asString(q.get("id")),
+                            asString(q.get("prompt")),
+                            q.get("kind") == null ? "TEXT" : String.valueOf(q.get("kind")),
+                            asStringList(q.get("options"))));
+                }
+                return StudioAuthoringConverseResponse.clarify(sessionId, message, questions);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asMap(Object value) {
+        return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> asListOfMap(Object value) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    result.add((Map<String, Object>) map);
+                }
+            }
+        }
+        return result;
+    }
+
+    private static List<String> asStringList(Object value) {
+        List<String> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            list.forEach(item -> result.add(asString(item)));
+        }
+        return result;
+    }
+
+    private static String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     public StudioAssemblyListResponse listAssemblies(String tenantId) {
@@ -1502,6 +1739,59 @@ public final class StudioCatalogService {
             }
         }
         return words.isEmpty() ? "Dynamic Component" : String.join(" ", words);
+    }
+
+    private StudioDraftSession authoringSession(String tenantId, String assemblyId, String sessionId) {
+        if (sessionId != null && !sessionId.isBlank()) {
+            try {
+                return draftSession(tenantId, assemblyId, sessionId);
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to a fresh governed draft session; the response
+                // carries the canonical session id back to the UI.
+            }
+        }
+        return createDraftSession(
+                tenantId,
+                assemblyId,
+                new StudioCreateDraftCompositionRequest(
+                        tenantId,
+                        assemblyId,
+                        response(entriesByTenant.computeIfAbsent(normalizeTenant(tenantId), this::fixtureEntries)).catalogHash(),
+                        "",
+                        "",
+                        "",
+                        "authoring-agent",
+                        "Authoring Agent")).session();
+    }
+
+    private boolean promptMentionsEntry(String prompt, StudioVisualCatalogEntry entry) {
+        String lowered = prompt == null ? "" : prompt.toLowerCase();
+        String id = entry.catalogEntryId().toLowerCase();
+        if (lowered.contains(id)) {
+            return true;
+        }
+        String label = labelForCatalogEntry(entry.catalogEntryId()).toLowerCase();
+        if (lowered.contains(label.toLowerCase())) {
+            return true;
+        }
+        return capabilitiesFromVisual(entry.visualManifest()).stream()
+                .anyMatch(capability -> lowered.contains(capability.toLowerCase()));
+    }
+
+    private Optional<String> firstOfferedCapability(StudioVisualCatalogEntry entry) {
+        return capabilitiesFromVisual(entry.visualManifest()).stream().findFirst();
+    }
+
+    private String authoringTargetName(String prompt) {
+        String trimmed = prompt == null ? "" : prompt.trim();
+        if (trimmed.isBlank()) {
+            return "this application";
+        }
+        String withoutCommand = trimmed.replaceFirst("(?i)^(build|make|create|author|compose)\\s+(an?\\s+)?", "");
+        if (withoutCommand.length() > 72) {
+            withoutCommand = withoutCommand.substring(0, 72).trim();
+        }
+        return withoutCommand.isBlank() ? "this application" : withoutCommand;
     }
 
     private String normalizeTenant(String tenantId) {

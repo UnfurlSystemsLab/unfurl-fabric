@@ -269,6 +269,79 @@ class StudioServerTest {
         }
     }
 
+    @Test
+    void servesAuthoringConverseAndReturnedIntentAppliesThroughDraftPath() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
+                    {
+                      "baseCatalogHash": "sha256:catalog",
+                      "needsId": "needs-checkout"
+                    }
+                    """);
+            StudioCreateDraftCompositionResponse createdBody = StudioJson.mapper()
+                    .readValue(created.body(), StudioCreateDraftCompositionResponse.class);
+
+            HttpResponse<String> proposal = post(server, "/studio/authoring/converse", """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "sessionId": "%s",
+                      "conversation": [],
+                      "userMessage": "Build a validation service for checkout payments"
+                    }
+                    """.formatted(createdBody.session().sessionId()));
+
+            assertThat(proposal.statusCode()).isEqualTo(200);
+            assertThat(proposal.body())
+                    .contains("\"kind\":\"proposal\"")
+                    .contains("\"catalogEntryId\":\"com.unfurl:validation-service:1.1.0\"")
+                    .doesNotContain("apiKey", "providerKey", "modelProvider");
+
+            StudioAuthoringConverseResponse response = StudioJson.mapper()
+                    .readValue(proposal.body(), StudioAuthoringConverseResponse.class);
+            assertThat(response.proposal()).isNotNull();
+            assertThat(response.proposal().intents()).hasSize(1);
+
+            String applyBody = StudioJson.mapper().writeValueAsString(response.proposal().intents().get(0))
+                    .replaceFirst("\\{", """
+                            {
+                              "tenantId": "tenant-a",
+                              "assemblyId": "assembly-demo",
+                              "sessionId": "%s",
+                              "baseRevision": 0,
+                            """.formatted(createdBody.session().sessionId()));
+            HttpResponse<String> applied = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
+                            + createdBody.session().sessionId()
+                            + "/intents",
+                    applyBody);
+
+            assertThat(applied.statusCode()).isEqualTo(200);
+            assertThat(applied.body())
+                    .contains("\"status\":\"VALID\"")
+                    .contains("\"newRevision\":1");
+
+            HttpResponse<String> clarify = post(server, "/studio/authoring/converse", """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "userMessage": "Build"
+                    }
+                    """);
+            assertThat(clarify.body()).contains("\"kind\":\"clarify\"", "\"questions\"");
+
+            HttpResponse<String> gap = post(server, "/studio/authoring/converse", """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "userMessage": "Build an uncatalogued capability"
+                    }
+                    """);
+            assertThat(gap.body()).contains("\"kind\":\"gap\"", "uncatalogued.capability");
+        }
+    }
+
     private StudioServer started() throws Exception {
         return started(new StudioCatalogService());
     }
