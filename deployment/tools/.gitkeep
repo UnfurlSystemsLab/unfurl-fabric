@@ -1,2 +1,0 @@
-# Client-supplied authoring tool JARs go here (discovered by reflection via ServiceLoader).
-# See ../README.md for the AuthoringTool SPI contract.

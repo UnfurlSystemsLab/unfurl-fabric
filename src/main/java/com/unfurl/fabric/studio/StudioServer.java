@@ -50,6 +50,7 @@ public final class StudioServer implements AutoCloseable {
                 ? new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath()))
                 : catalogService;
         this.eventBus = null;
+        DcpAuthoringClient.fromEnvironment().ifPresent(this.catalogService::useAuthoringInvocable);
         routes();
     }
 
@@ -63,6 +64,7 @@ public final class StudioServer implements AutoCloseable {
                 new StudioStateStore(safe.statePath()),
                 safe.assetRoot(),
                 eventBus);
+        DcpAuthoringClient.fromEnvironment().ifPresent(catalogService::useAuthoringInvocable);
         routes();
     }
 

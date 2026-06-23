@@ -40,10 +40,10 @@ public final class StudioCatalogService {
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
 
     /**
-     * Optional DCP authoring proposer. When a host injects a foundry-backed
-     * {@link ContractInvocable} (the {@code unfurl-foundry} authoring agent over {@code agent.run}),
-     * {@code converseAuthoring} routes through it; otherwise it uses the deterministic in-Fabric
-     * bridge. Fabric depends only on the neutral composition types, never on foundry.
+     * Optional DCP authoring proposer. When Fabric is configured with a DCP transport to
+     * {@code unfurl-foundry}'s {@code agent.run} endpoint, {@code converseAuthoring} routes through
+     * it; otherwise it uses the deterministic in-Fabric bridge. Fabric depends only on the neutral
+     * composition types, never on foundry.
      */
     private ContractInvocable authoringInvocable;
 

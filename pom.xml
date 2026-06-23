@@ -27,7 +27,6 @@
         <archunit.version>1.3.0</archunit.version>
         <dcp.version>0.1.0-SNAPSHOT</dcp.version>
         <substrate-api.version>0.1.0-SNAPSHOT</substrate-api.version>
-        <foundry-substrate.version>0.1.0-SNAPSHOT</foundry-substrate.version>
         <deployment.version>0.1.0-SNAPSHOT</deployment.version>
         <deploy-emitter.version>0.1.0-SNAPSHOT</deploy-emitter.version>
     </properties>
@@ -50,28 +49,13 @@
                 <version>${substrate-api.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.unfurl.foundry.substrate</groupId>
-                <artifactId>foundry-substrate-ports</artifactId>
-                <version>${foundry-substrate.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.unfurl.foundry.substrate</groupId>
-                <artifactId>foundry-substrate-domain</artifactId>
-                <version>${foundry-substrate.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.unfurl.foundry.substrate</groupId>
-                <artifactId>foundry-substrate-engine</artifactId>
-                <version>${foundry-substrate.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>com.unfurl.foundry.substrate</groupId>
-                <artifactId>foundry-substrate-offers</artifactId>
-                <version>${foundry-substrate.version}</version>
-            </dependency>
-            <dependency>
                 <groupId>com.unfurl.fabric</groupId>
                 <artifactId>fabric-contract</artifactId>
+                <version>0.1.0-SNAPSHOT</version>
+            </dependency>
+            <dependency>
+                <groupId>com.unfurl.foundry</groupId>
+                <artifactId>unfurl-foundry</artifactId>
                 <version>0.1.0-SNAPSHOT</version>
             </dependency>
             <dependency>
@@ -191,24 +175,13 @@
             <artifactId>substrate-composition-api</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.unfurl.foundry.substrate</groupId>
-            <artifactId>foundry-substrate-ports</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.unfurl.foundry.substrate</groupId>
-            <artifactId>foundry-substrate-domain</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.unfurl.foundry.substrate</groupId>
-            <artifactId>foundry-substrate-engine</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.unfurl.foundry.substrate</groupId>
-            <artifactId>foundry-substrate-offers</artifactId>
-        </dependency>
-        <dependency>
             <groupId>com.unfurl.fabric</groupId>
             <artifactId>fabric-contract</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.foundry</groupId>
+            <artifactId>unfurl-foundry</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>com.unfurl.deployment</groupId>
