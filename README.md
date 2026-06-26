@@ -14,6 +14,14 @@ See `unfurl-ui/docs/REPO-ai-contract-authoring-build-spec.md`.
 mvn test
 ```
 
+## Docs
+
+- `docs/HLD-unfurl-fabric.md` - module architecture and invariants.
+- `docs/LLD-fabric-studio-api.md` - Studio HTTP API routes, records, and runtime configuration.
+- `docs/REPO-unfurl-fabric-build-spec.md` - build, test, packaging, and CLI notes.
+- `docs/SECURITY.md` - trust boundaries, Studio exposure, and contract integrity notes.
+- `docs/RELIABILITY.md` - determinism, Studio state, eventing, and recovery notes.
+
 ## Deployment Shape Options
 
 Fabric accepts an optional deployment policy on compile, dry-run, and deployment-resolution commands:

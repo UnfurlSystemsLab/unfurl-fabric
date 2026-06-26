@@ -1,0 +1,64 @@
+# HLD: Unfurl Fabric
+
+`unfurl-fabric` is the design-time compiler and Studio API host for Unfurl. Its job is to turn component claims, operator needs, trust rules, and deployment constraints into a deterministic composition contract that can be signed, verified, explained, and emitted for deployment.
+
+## Responsibilities
+
+- Scan component artifacts into a catalog of DCP-backed claims.
+- Match declared needs against catalog offers and dependencies.
+- Score and select valid composition candidates.
+- Resolve deployment shapes from component claims, substrate support, trust policy, and deployment policy.
+- Derive the substrate profile required by the chosen contract.
+- Compile, sign, verify, diff, explain, and emit contracts.
+- Serve Fabric Studio HTTP endpoints for catalog browsing, authoring, shared draft sessions, layout state, dynamic DCP projection, and deployment resolution.
+
+## Non-Responsibilities
+
+- Running production component workloads.
+- Owning the browser UI; Studio UI lives in `unfurl-ui`.
+- Hosting the AI model runtime for authoring. Fabric delegates authoring to Foundry over DCP when `UNFURL_FOUNDRY_DCP_ENDPOINT` is configured.
+- Treating operator layout as validity. Layout state is presentation state only.
+
+## Main Subsystems
+
+| Package | Purpose |
+|---|---|
+| `com.unfurl.fabric.catalog` | Scans component artifacts and parses catalog manifests. |
+| `com.unfurl.fabric.needs` | Reads operator needs and capability requirements. |
+| `com.unfurl.fabric.matcher` | Builds and scores composition candidates. |
+| `com.unfurl.fabric.compile` | Produces compiled contracts and decision audit metadata. |
+| `com.unfurl.fabric.substrate` | Derives substrate requirements and excludes secret-like material. |
+| `com.unfurl.fabric.trust` | Applies trust policy and rejection classification. |
+| `com.unfurl.fabric.verify` | Checks signed contracts and catalog drift. |
+| `com.unfurl.fabric.cli` | Provides command-line operations for local and CI workflows. |
+| `com.unfurl.fabric.studio` | Hosts Studio state, catalog visuals, session collaboration, and HTTP API records. |
+
+## Core Flow
+
+1. Catalog scan reads component artifacts and produces content-pinned catalog entries.
+2. Needs loading parses the required capabilities and constraints.
+3. Matching creates composition candidates and validates dependency bindings.
+4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
+5. Deployment resolution selects supported runtime shapes and records rejected shapes.
+6. Substrate profile derivation emits the required runtime profile without secret values.
+7. Compilation writes the unsigned contract and profile hash.
+8. Signing wraps the compiled contract in a signed contract artifact.
+9. Verification checks signature, catalog drift, and trust keys.
+
+## Studio Flow
+
+Fabric Studio uses `StudioServer`, `StudioTenantHandler`, `StudioAuthoringHandler`, and `ResolveDeploymentHandler`.
+
+The Studio API is intentionally lightweight and currently built on `com.sun.net.httpserver.HttpServer`, not Spring MVC. Route contracts are represented by Java records in `com.unfurl.fabric.studio` and mirrored in the TypeScript client under `unfurl-ui/packages/fabric-validation-client`.
+
+Studio state is tenant and assembly scoped. Draft sessions support intent history, collaborator heartbeat, compile, layout persistence, and server-sent event updates. Event transport can be in-memory, Redis, or Kafka depending on `StudioMicroserviceConfig`.
+
+## Architectural Invariants
+
+- Contracts are deterministic for the same inputs.
+- Contract validity comes from catalog claims, needs, trust policy, substrate support, and deployment policy.
+- Signed contracts are the handoff artifact; UI state must not change validity.
+- Catalog entries and claims are content pinned.
+- Ambiguous selection requires an explicit operator or CLI choice.
+- Studio endpoints are development-oriented unless surrounded by an authenticated deployment boundary.
+
