@@ -472,6 +472,82 @@ public final class StudioCatalogService {
         nodeIdsByClaimUri.put(assemblyClaimUri, focusNodeId);
         entries.forEach(entry -> nodeIdsByClaimUri.put(claimUriForEntry(entry.catalogEntryId()), nodeIdForEntry(entry.catalogEntryId())));
 
+        return studioProjectionFromDcp(
+                tenant,
+                assembly,
+                rootNodeId,
+                focusNodeId,
+                dcpProjection,
+                nodeIdsByClaimUri,
+                entryByClaimUri,
+                entries);
+    }
+
+    public StudioDynamicDcpProjection dynamicDcpProjection(
+            String tenantId,
+            String assemblyId,
+            StudioDcpProjectionRequest request
+    ) {
+        if (request == null) {
+            throw new IllegalArgumentException("projection request is required");
+        }
+        return dynamicDcpProjection(tenantId, assemblyId, request.rootUri(), request.focusUri(), request.claimMap());
+    }
+
+    public StudioDynamicDcpProjection dynamicDcpProjection(
+            String tenantId,
+            String assemblyId,
+            URI rootClaimUri,
+            URI focusClaimUri,
+            Map<URI, Claim> claims
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        if (rootClaimUri == null) {
+            throw new IllegalArgumentException("rootClaimUri is required");
+        }
+        Map<URI, Claim> claimsByUri = new LinkedHashMap<>();
+        if (claims != null) {
+            claimsByUri.putAll(claims);
+        }
+        Claim rootClaim = claimsByUri.get(rootClaimUri);
+        if (rootClaim == null) {
+            throw new IllegalArgumentException("root claim is not loaded: " + rootClaimUri);
+        }
+        URI focus = focusClaimUri == null ? rootClaimUri : focusClaimUri;
+        DcpProjection dcpProjection = new DcpProjectionProjector().project(new DcpProjectionRequest(
+                rootClaim,
+                claimsByUri,
+                focus,
+                projectionMaxDepth(),
+                projectionMaxNodes()));
+
+        Map<URI, String> nodeIdsByClaimUri = new LinkedHashMap<>();
+        claimsByUri.keySet().stream()
+                .sorted(Comparator.comparing(URI::toString))
+                .forEach(uri -> nodeIdsByClaimUri.put(uri, nodeIdForClaimUri(uri)));
+
+        return studioProjectionFromDcp(
+                tenant,
+                assembly,
+                nodeIdsByClaimUri.getOrDefault(dcpProjection.rootClaimUri(), dcpProjection.rootClaimUri().toString()),
+                nodeIdsByClaimUri.getOrDefault(dcpProjection.focusClaimUri(), dcpProjection.focusClaimUri().toString()),
+                dcpProjection,
+                nodeIdsByClaimUri,
+                Map.of(),
+                List.of());
+    }
+
+    private StudioDynamicDcpProjection studioProjectionFromDcp(
+            String tenant,
+            String assembly,
+            String rootNodeId,
+            String focusNodeId,
+            DcpProjection dcpProjection,
+            Map<URI, String> nodeIdsByClaimUri,
+            Map<URI, StudioVisualCatalogEntry> entryByClaimUri,
+            List<StudioVisualCatalogEntry> entries
+    ) {
         List<StudioDynamicDcpNode> nodes = dcpProjection.nodes().stream()
                 .map(node -> studioNodeFromDcp(node, nodeIdsByClaimUri, entryByClaimUri))
                 .toList();
@@ -620,6 +696,23 @@ public final class StudioCatalogService {
 
     private URI claimUriForEntry(String catalogEntryId) {
         return URI.create("urn:unfurl:catalog:" + slug(catalogEntryId));
+    }
+
+    private String nodeIdForClaimUri(URI claimUri) {
+        String value = claimUri == null ? "" : claimUri.toString();
+        String flowPrefix = "urn:unfurl:flow:";
+        String foundryPrefix = "urn:unfurl:foundry:";
+        if (value.startsWith(flowPrefix)) {
+            return "flow." + slug(value.substring(flowPrefix.length()).replace(':', '.'));
+        }
+        if (value.startsWith(foundryPrefix)) {
+            return "foundry." + slug(value.substring(foundryPrefix.length()).replace(':', '.'));
+        }
+        String urnPrefix = "urn:unfurl:";
+        if (value.startsWith(urnPrefix)) {
+            return "dcp." + slug(value.substring(urnPrefix.length()).replace(':', '.'));
+        }
+        return "dcp." + slug(value);
     }
 
     private StudioDynamicDcpNode studioNodeFromDcp(

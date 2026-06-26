@@ -11,6 +11,7 @@ import com.unfurl.fabric.studio.StudioCollaborator;
 import com.unfurl.fabric.studio.StudioCompileDraftCandidateRequest;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
 import com.unfurl.fabric.studio.StudioCreateDraftCompositionRequest;
+import com.unfurl.fabric.studio.StudioDcpProjectionRequest;
 import com.unfurl.fabric.studio.StudioIntentRequest;
 import com.unfurl.fabric.studio.StudioLayoutStateRequest;
 import com.unfurl.fabric.studio.StudioNeedsExtractionRequest;
@@ -99,6 +100,13 @@ public final class StudioTenantHandler {
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.dynamicDcp()) {
                 write(exchange, 200, service.dynamicDcpProjection(route.tenantId(), route.assemblyId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.dynamicDcpProjection()) {
+                StudioDcpProjectionRequest request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioDcpProjectionRequest.class);
+                write(exchange, 200, service.dynamicDcpProjection(route.tenantId(), route.assemblyId(), request));
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.replacementCandidates()) {
@@ -341,6 +349,10 @@ public final class StudioTenantHandler {
 
         boolean dynamicDcp() {
             return "assemblies/{assemblyId}/dynamic-dcp".equals(tail);
+        }
+
+        boolean dynamicDcpProjection() {
+            return "assemblies/{assemblyId}/dynamic-dcp/project".equals(tail);
         }
 
         boolean replacementCandidates() {

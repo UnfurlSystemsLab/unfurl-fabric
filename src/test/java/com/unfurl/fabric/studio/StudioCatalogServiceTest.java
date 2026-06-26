@@ -1,8 +1,23 @@
 package com.unfurl.fabric.studio;
 
+import com.unfurl.dcp.claim.Claim;
+import com.unfurl.dcp.claim.ClaimMetadata;
+import com.unfurl.dcp.claim.ComponentKind;
+import com.unfurl.dcp.claim.ConsumerAccess;
+import com.unfurl.dcp.claim.Dependencies;
+import com.unfurl.dcp.claim.Identity;
+import com.unfurl.dcp.claim.IntegrationPorts;
+import com.unfurl.dcp.claim.InterfaceKind;
+import com.unfurl.dcp.claim.Offer;
+import com.unfurl.dcp.claim.OfferInterface;
+import com.unfurl.dcp.claim.Stability;
+import com.unfurl.dcp.projection.DcpProjectionProjector;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.URI;
+import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
@@ -183,6 +198,41 @@ class StudioCatalogServiceTest {
         assertThat(projection.edges())
                 .extracting(edge -> edge.fromNodeId() + "->" + edge.toNodeId())
                 .contains(city.nodeId() + "->" + colony.nodeId(), colony.nodeId() + "->" + home.nodeId());
+    }
+
+    @Test
+    void projectsMergedSubstrateDcpClaimsThroughStudioAdapter() {
+        URI workflow = URI.create("urn:unfurl:flow:workflow:order-flow");
+        URI node = URI.create("urn:unfurl:flow:node:order-flow.authoring");
+        URI agent = URI.create("urn:unfurl:foundry:agent:fabric-authoring");
+        URI tool = URI.create("urn:unfurl:foundry:tool:catalog-search");
+        Map<URI, Claim> claims = new LinkedHashMap<>();
+        claims.put(workflow, dcpClaim(workflow, "order-flow", "WORKFLOW", "WORKFLOW", List.of(node), List.of()));
+        claims.put(node, dcpClaim(node, "Authoring", "NODE", "ACTION", List.of(agent), List.of()));
+        claims.put(agent, dcpClaim(agent, "fabric-authoring", "AGENT", "AGENT", List.of(tool), List.of("agent.run")));
+        claims.put(tool, dcpClaim(tool, "catalog-search", "TOOL", "TOOL", List.of(), List.of("tool.call")));
+
+        StudioDynamicDcpProjection projection = new StudioCatalogService().dynamicDcpProjection(
+                "tenant-a", "assembly-flow", workflow, workflow, claims);
+
+        assertThat(projection.nodes())
+                .extracting(StudioDynamicDcpNode::level)
+                .containsExactly("WORKFLOW", "NODE", "AGENT", "TOOL");
+        StudioDynamicDcpNode toolNode = projection.nodes().stream()
+                .filter(item -> "TOOL".equals(item.level()))
+                .findFirst()
+                .orElseThrow();
+        StudioDynamicDcpNode agentNode = projection.nodes().stream()
+                .filter(item -> "AGENT".equals(item.level()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(toolNode.depth()).isEqualTo(3);
+        assertThat(toolNode.parentNodeId()).isEqualTo(agentNode.nodeId());
+        assertThat(agentNode.capabilities()).containsExactly("agent.run");
+        assertThat(projection.edges())
+                .extracting(StudioDynamicDcpEdge::relationship)
+                .containsOnly("CONTAINS");
+        assertThat(projection.warnings()).isEmpty();
     }
 
     @Test
@@ -451,5 +501,39 @@ class StudioCatalogServiceTest {
                 });
         assertThat(service.visualAssetContent("tenant-a", "validation-service-model", "sha256:wrong"))
                 .isEmpty();
+    }
+
+    private Claim dcpClaim(
+            URI uri,
+            String label,
+            String level,
+            String dcpType,
+            List<URI> children,
+            List<String> capabilities
+    ) {
+        Map<String, Object> extensions = new LinkedHashMap<>();
+        extensions.put("level", level);
+        extensions.put("dcpType", dcpType);
+        extensions.put(DcpProjectionProjector.EXT_CONTAINS, children.stream().map(URI::toString).toList());
+        return new Claim(
+                new Identity(uri, label, ComponentKind.COMPONENT, "1.0.0", "Unfurl", URI.create("urn:unfurl")),
+                null,
+                List.of(),
+                new Dependencies(List.of()),
+                capabilities.stream()
+                        .map(capability -> new Offer(
+                                capability,
+                                capability,
+                                ConsumerAccess.ANY,
+                                new OfferInterface(InterfaceKind.IN_PROCESS, Map.of()),
+                                Stability.STABLE,
+                                "1.0.0",
+                                false,
+                                null))
+                        .toList(),
+                null,
+                null,
+                new IntegrationPorts(Map.of()),
+                new ClaimMetadata("0.2.0", "1.0.0", Instant.EPOCH, extensions));
     }
 }
