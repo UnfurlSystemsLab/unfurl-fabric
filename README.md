@@ -19,6 +19,7 @@ mvn test
 - `docs/HLD-unfurl-fabric.md` - module architecture and invariants.
 - `docs/LLD-fabric-studio-api.md` - Studio HTTP API routes, records, and runtime configuration.
 - `docs/REPO-unfurl-fabric-build-spec.md` - build, test, packaging, and CLI notes.
+- `docs/REPO-recursive-dcp-projection-build-spec.md` - backend plan for recursive dynamic DCP projections.
 - `docs/SECURITY.md` - trust boundaries, Studio exposure, and contract integrity notes.
 - `docs/RELIABILITY.md` - determinism, Studio state, eventing, and recovery notes.
 
