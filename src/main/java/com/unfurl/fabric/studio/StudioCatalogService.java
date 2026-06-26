@@ -1,7 +1,21 @@
 package com.unfurl.fabric.studio;
 
 import com.unfurl.dcp.claim.Claim;
+import com.unfurl.dcp.claim.ClaimMetadata;
+import com.unfurl.dcp.claim.ComponentKind;
+import com.unfurl.dcp.claim.ConsumerAccess;
+import com.unfurl.dcp.claim.Dependencies;
+import com.unfurl.dcp.claim.Identity;
+import com.unfurl.dcp.claim.IntegrationPorts;
+import com.unfurl.dcp.claim.InterfaceKind;
 import com.unfurl.dcp.claim.Offer;
+import com.unfurl.dcp.claim.OfferInterface;
+import com.unfurl.dcp.claim.Stability;
+import com.unfurl.dcp.projection.DcpProjection;
+import com.unfurl.dcp.projection.DcpProjectionEdge;
+import com.unfurl.dcp.projection.DcpProjectionNode;
+import com.unfurl.dcp.projection.DcpProjectionProjector;
+import com.unfurl.dcp.projection.DcpProjectionRequest;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogScanReport;
 import com.unfurl.fabric.catalog.CatalogScanner;
@@ -13,6 +27,7 @@ import com.unfurl.substrate.policy.ExecutionContext;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.net.URI;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -410,42 +425,66 @@ public final class StudioCatalogService {
         String rootNodeId = "company:" + slug(target);
         String focusNodeId = "assembly:" + slug(assembly);
         List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
-        List<StudioDynamicDcpNode> childNodes = entries.stream()
-                .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
-                .map(this::dynamicNodeForEntry)
+        Map<URI, StudioVisualCatalogEntry> entryByClaimUri = entries.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        entry -> claimUriForEntry(entry.catalogEntryId()),
+                        entry -> entry,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        URI rootClaimUri = URI.create("urn:unfurl:studio:" + rootNodeId);
+        URI assemblyClaimUri = URI.create("urn:unfurl:studio:" + focusNodeId);
+        Set<URI> nestedEntryClaimUris = new LinkedHashSet<>();
+        entries.forEach(entry -> nestedEntryClaimUris.addAll(childClaimUrisForEntry(entry)));
+        List<URI> assemblyChildClaimUris = entries.stream()
+                .map(entry -> claimUriForEntry(entry.catalogEntryId()))
+                .filter(uri -> !nestedEntryClaimUris.contains(uri))
+                .sorted(Comparator.comparing(URI::toString))
                 .toList();
-        List<String> childNodeIds = childNodes.stream().map(StudioDynamicDcpNode::nodeId).toList();
-        List<StudioDynamicDcpEdge> edges = new ArrayList<>();
-        edges.add(new StudioDynamicDcpEdge(rootNodeId, focusNodeId, "CONTAINS"));
-        for (String childNodeId : childNodeIds) {
-            edges.add(new StudioDynamicDcpEdge(focusNodeId, childNodeId, "CONTAINS"));
+        if (assemblyChildClaimUris.isEmpty()) {
+            assemblyChildClaimUris = entries.stream()
+                    .map(entry -> claimUriForEntry(entry.catalogEntryId()))
+                    .sorted(Comparator.comparing(URI::toString))
+                    .toList();
         }
-        for (int i = 0; i < childNodeIds.size() - 1; i++) {
-            edges.add(new StudioDynamicDcpEdge(childNodeIds.get(i), childNodeIds.get(i + 1), "REQUIRES"));
-        }
-
-        List<StudioDynamicDcpNode> nodes = new ArrayList<>();
-        nodes.add(new StudioDynamicDcpNode(
-                rootNodeId,
-                target,
-                "COMPANY",
-                "PARENT",
-                "",
-                List.of(slug(target).replace('-', '.') + ".compose"),
-                List.of(focusNodeId),
-                false));
-        nodes.add(new StudioDynamicDcpNode(
-                focusNodeId,
+        Map<URI, Claim> claims = new LinkedHashMap<>();
+        claims.put(rootClaimUri, aggregateClaim(rootClaimUri, target, "COMPANY", "PARENT", List.of(assemblyClaimUri)));
+        claims.put(assemblyClaimUri, aggregateClaim(
+                assemblyClaimUri,
                 summary == null || summary.targetApplicationName().isBlank()
                         ? "Unfurl Flow Assembly"
                         : summary.targetApplicationName() + " Assembly",
                 "MODULE",
                 "ASSEMBLY",
-                "",
-                childNodes.stream().flatMap(node -> node.capabilities().stream()).distinct().sorted().toList(),
-                childNodeIds,
-                false));
-        nodes.addAll(childNodes);
+                assemblyChildClaimUris));
+        entries.stream()
+                .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
+                .forEach(entry -> claims.put(claimUriForEntry(entry.catalogEntryId()), claimForEntry(entry)));
+
+        DcpProjection dcpProjection = new DcpProjectionProjector().project(new DcpProjectionRequest(
+                claims.get(rootClaimUri),
+                claims,
+                assemblyClaimUri,
+                projectionMaxDepth(),
+                projectionMaxNodes()));
+
+        Map<URI, String> nodeIdsByClaimUri = new LinkedHashMap<>();
+        nodeIdsByClaimUri.put(rootClaimUri, rootNodeId);
+        nodeIdsByClaimUri.put(assemblyClaimUri, focusNodeId);
+        entries.forEach(entry -> nodeIdsByClaimUri.put(claimUriForEntry(entry.catalogEntryId()), nodeIdForEntry(entry.catalogEntryId())));
+
+        List<StudioDynamicDcpNode> nodes = dcpProjection.nodes().stream()
+                .map(node -> studioNodeFromDcp(node, nodeIdsByClaimUri, entryByClaimUri))
+                .toList();
+        List<StudioDynamicDcpNode> childNodes = nodes.stream()
+                .filter(StudioDynamicDcpNode::replacementAllowed)
+                .toList();
+        List<StudioDynamicDcpEdge> edges = new ArrayList<>(dcpProjection.edges().stream()
+                .map(edge -> studioEdgeFromDcp(edge, nodeIdsByClaimUri))
+                .toList());
+        List<String> childNodeIds = childNodes.stream().map(StudioDynamicDcpNode::nodeId).toList();
+        for (int i = 0; i < childNodeIds.size() - 1; i++) {
+            edges.add(new StudioDynamicDcpEdge(childNodeIds.get(i), childNodeIds.get(i + 1), "REQUIRES"));
+        }
 
         List<StudioSubstratePort> substratePorts = deriveSubstratePorts(childNodes, entries);
         List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries, substratePorts);
@@ -460,7 +499,185 @@ public final class StudioCatalogService {
                 edges,
                 substratePorts,
                 connections,
-                List.of());
+                dcpProjection.warnings());
+    }
+
+    private Claim aggregateClaim(
+            URI claimUri,
+            String label,
+            String dcpType,
+            String level,
+            List<URI> childClaimUris
+    ) {
+        String capability = slug(label).replace('-', '.') + ".compose";
+        return claim(
+                claimUri,
+                label,
+                ComponentKind.INFRASTRUCTURE,
+                dcpType,
+                level,
+                childClaimUris,
+                List.of(capability));
+    }
+
+    private Claim claimForEntry(StudioVisualCatalogEntry entry) {
+        Map<String, Object> dynamic = entry.dynamicComposition();
+        return claim(
+                claimUriForEntry(entry.catalogEntryId()),
+                labelForCatalogEntry(entry.catalogEntryId()),
+                ComponentKind.COMPONENT,
+                stringValue(dynamic.get("dcpType"), "COMPONENT"),
+                stringValue(dynamic.get("level"), "CHILD"),
+                childClaimUrisForEntry(entry),
+                capabilitiesFromVisual(entry.visualManifest()));
+    }
+
+    private Claim claim(
+            URI claimUri,
+            String label,
+            ComponentKind kind,
+            String dcpType,
+            String level,
+            List<URI> childClaimUris,
+            List<String> capabilities
+    ) {
+        Map<String, Object> extensions = new LinkedHashMap<>();
+        extensions.put("dcpType", dcpType);
+        extensions.put("level", level);
+        extensions.put(DcpProjectionProjector.EXT_CONTAINS,
+                childClaimUris.stream().map(URI::toString).sorted().toList());
+        return new Claim(
+                new Identity(claimUri, label, kind, "1.0.0", "Unfurl", URI.create("urn:unfurl")),
+                null,
+                List.of(),
+                new Dependencies(List.of()),
+                capabilities.stream()
+                        .distinct()
+                        .sorted()
+                        .map(capability -> new Offer(
+                                capability,
+                                capability,
+                                ConsumerAccess.ANY,
+                                new OfferInterface(InterfaceKind.IN_PROCESS, Map.of()),
+                                Stability.STABLE,
+                                "1.0.0",
+                                false,
+                                null))
+                        .toList(),
+                null,
+                null,
+                new IntegrationPorts(Map.of()),
+                new ClaimMetadata("0.2.0", "1.0.0", Instant.EPOCH, extensions));
+    }
+
+    private List<URI> childClaimUrisForEntry(StudioVisualCatalogEntry entry) {
+        Map<String, Object> dynamic = entry.dynamicComposition();
+        LinkedHashSet<URI> result = new LinkedHashSet<>();
+        addChildClaimUris(result, dynamic.get("contains"));
+        addChildClaimUris(result, dynamic.get("children"));
+        addChildClaimUris(result, dynamic.get("containsCatalogEntryIds"));
+        addChildClaimUris(result, dynamic.get("childCatalogEntryIds"));
+        addChildClaimUris(result, dynamic.get("containsClaimUris"));
+        addChildClaimUris(result, dynamic.get("childClaimUris"));
+        return result.stream().sorted(Comparator.comparing(URI::toString)).toList();
+    }
+
+    private void addChildClaimUris(Set<URI> result, Object raw) {
+        if (raw instanceof String text && !text.isBlank()) {
+            result.add(claimUriForReference(text));
+            return;
+        }
+        if (!(raw instanceof List<?> list)) {
+            return;
+        }
+        for (Object item : list) {
+            if (item instanceof String text && !text.isBlank()) {
+                result.add(claimUriForReference(text));
+            } else if (item instanceof Map<?, ?> map) {
+                Object value = firstPresent(map, "catalogEntryId", "claimUri", "uri", "ref");
+                if (value instanceof String text && !text.isBlank()) {
+                    result.add(claimUriForReference(text));
+                }
+            }
+        }
+    }
+
+    private Object firstPresent(Map<?, ?> map, String... keys) {
+        for (String key : keys) {
+            if (map.containsKey(key)) {
+                return map.get(key);
+            }
+        }
+        return null;
+    }
+
+    private URI claimUriForReference(String value) {
+        if (value.startsWith("urn:") || value.startsWith("http://") || value.startsWith("https://")) {
+            return URI.create(value);
+        }
+        return claimUriForEntry(value);
+    }
+
+    private URI claimUriForEntry(String catalogEntryId) {
+        return URI.create("urn:unfurl:catalog:" + slug(catalogEntryId));
+    }
+
+    private StudioDynamicDcpNode studioNodeFromDcp(
+            DcpProjectionNode node,
+            Map<URI, String> nodeIdsByClaimUri,
+            Map<URI, StudioVisualCatalogEntry> entryByClaimUri
+    ) {
+        StudioVisualCatalogEntry entry = entryByClaimUri.get(node.claimUri());
+        String catalogEntryId = entry == null ? "" : entry.catalogEntryId();
+        List<String> capabilities = entry == null
+                ? node.offers()
+                : capabilitiesFromVisual(entry.visualManifest());
+        List<String> compatibleDescendants = entry == null
+                ? List.of()
+                : stringList(entry.dynamicComposition().get("compatibleDescendants"));
+        return new StudioDynamicDcpNode(
+                nodeIdsByClaimUri.getOrDefault(node.claimUri(), node.claimUri().toString()),
+                node.label(),
+                node.dcpType(),
+                node.level(),
+                node.parentClaimUri() == null ? null : nodeIdsByClaimUri.getOrDefault(node.parentClaimUri(), node.parentClaimUri().toString()),
+                node.depth(),
+                catalogEntryId,
+                capabilities,
+                compatibleDescendants,
+                entry != null);
+    }
+
+    private StudioDynamicDcpEdge studioEdgeFromDcp(DcpProjectionEdge edge, Map<URI, String> nodeIdsByClaimUri) {
+        return new StudioDynamicDcpEdge(
+                nodeIdsByClaimUri.getOrDefault(edge.fromClaimUri(), edge.fromClaimUri().toString()),
+                nodeIdsByClaimUri.getOrDefault(edge.toClaimUri(), edge.toClaimUri().toString()),
+                edge.relationship());
+    }
+
+    private int projectionMaxDepth() {
+        return intConfig("unfurl.studio.projection.maxDepth", "UNFURL_STUDIO_PROJECTION_MAX_DEPTH",
+                DcpProjectionRequest.DEFAULT_MAX_DEPTH);
+    }
+
+    private int projectionMaxNodes() {
+        return intConfig("unfurl.studio.projection.maxNodes", "UNFURL_STUDIO_PROJECTION_MAX_NODES",
+                DcpProjectionRequest.DEFAULT_MAX_NODES);
+    }
+
+    private int intConfig(String property, String env, int fallback) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(env);
+        }
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
     }
 
     /**

@@ -116,6 +116,76 @@ class StudioCatalogServiceTest {
     }
 
     @Test
+    void projectsRecursiveDcpSubtreeFromDcpClaimMetadata(@TempDir Path assetRoot) throws Exception {
+        Path manifest = assetRoot.resolve("demo/META-INF/unfurl-studio-visuals.json");
+        Files.createDirectories(manifest.getParent());
+        Files.writeString(manifest, """
+                {
+                  "entries": [
+                    {
+                      "catalogEntryId": "com.unfurl:city:1.0.0",
+                      "claimHash": "sha256:city",
+                      "artifactSha256": "sha256:city-artifact",
+                      "visualManifest": {"ports": [{"kind": "OFFER", "mapsTo": "claim.offers.city.run"}]},
+                      "dynamicComposition": {
+                        "dcpType": "CITY",
+                        "level": "CITY",
+                        "containsCatalogEntryIds": ["com.unfurl:colony:1.0.0"]
+                      }
+                    },
+                    {
+                      "catalogEntryId": "com.unfurl:colony:1.0.0",
+                      "claimHash": "sha256:colony",
+                      "artifactSha256": "sha256:colony-artifact",
+                      "visualManifest": {"ports": [{"kind": "OFFER", "mapsTo": "claim.offers.colony.run"}]},
+                      "dynamicComposition": {
+                        "dcpType": "COLONY",
+                        "level": "COLONY",
+                        "containsCatalogEntryIds": ["com.unfurl:home:1.0.0"]
+                      }
+                    },
+                    {
+                      "catalogEntryId": "com.unfurl:home:1.0.0",
+                      "claimHash": "sha256:home",
+                      "artifactSha256": "sha256:home-artifact",
+                      "visualManifest": {"ports": [{"kind": "OFFER", "mapsTo": "claim.offers.home.run"}]},
+                      "dynamicComposition": {
+                        "dcpType": "HOME",
+                        "level": "HOME"
+                      }
+                    }
+                  ]
+                }
+                """, StandardCharsets.UTF_8);
+        StudioCatalogService service = new StudioCatalogService(null, assetRoot);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-city");
+
+        assertThat(projection.nodes())
+                .extracting(StudioDynamicDcpNode::level)
+                .contains("PARENT", "ASSEMBLY", "CITY", "COLONY", "HOME");
+        StudioDynamicDcpNode city = projection.nodes().stream()
+                .filter(node -> "CITY".equals(node.level()))
+                .findFirst()
+                .orElseThrow();
+        StudioDynamicDcpNode colony = projection.nodes().stream()
+                .filter(node -> "COLONY".equals(node.level()))
+                .findFirst()
+                .orElseThrow();
+        StudioDynamicDcpNode home = projection.nodes().stream()
+                .filter(node -> "HOME".equals(node.level()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(city.depth()).isEqualTo(2);
+        assertThat(colony.parentNodeId()).isEqualTo(city.nodeId());
+        assertThat(home.parentNodeId()).isEqualTo(colony.nodeId());
+        assertThat(city.compatibleDescendants()).isEmpty();
+        assertThat(projection.edges())
+                .extracting(edge -> edge.fromNodeId() + "->" + edge.toNodeId())
+                .contains(city.nodeId() + "->" + colony.nodeId(), colony.nodeId() + "->" + home.nodeId());
+    }
+
+    @Test
     void providesReplacementCandidatesFromDynamicDcpProjection() {
         StudioCatalogService service = new StudioCatalogService();
 
