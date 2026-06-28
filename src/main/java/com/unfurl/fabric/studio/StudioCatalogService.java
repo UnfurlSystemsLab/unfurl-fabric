@@ -53,6 +53,7 @@ public final class StudioCatalogService {
     private final Path assetRoot;
     private final StudioSessionEventBus eventBus;
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
+    private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
 
     /**
      * Optional DCP authoring proposer. When Fabric is configured with a DCP transport to
@@ -106,30 +107,47 @@ public final class StudioCatalogService {
 
         for (StudioComponentArtifactDraft artifact : safeRequest.artifacts()) {
             if (artifact.fileName() == null || artifact.fileName().isBlank()) {
-                results.add(new StudioClaimVerificationResult("", "REJECTED", "", "", List.of("fileName is required")));
+                results.add(new StudioClaimVerificationResult("", "REJECTED", "", "", List.of("fileName is required"),
+                        List.of(new StudioDcpDiagnostic("ERROR", "CLAIM_MALFORMED", "fileName", "fileName is required"))));
                 continue;
             }
             if (!artifact.fileName().endsWith(".jar") && !artifact.fileName().endsWith(".yaml") && !artifact.fileName().endsWith(".yml")) {
                 results.add(new StudioClaimVerificationResult(artifact.fileName(), "REJECTED", "", "",
-                        List.of("unsupported artifact type")));
+                        List.of("unsupported artifact type"),
+                        List.of(new StudioDcpDiagnostic(
+                                "ERROR",
+                                "CLAIM_MALFORMED",
+                                "fileName",
+                                "unsupported artifact type"))));
+                continue;
+            }
+            StudioClaimAdmissionValidator.AdmissionValidation validation = claimAdmissionValidator.validate(artifact);
+            if (!validation.verified()) {
+                results.add(new StudioClaimVerificationResult(
+                        artifact.fileName(),
+                        "REJECTED",
+                        "",
+                        "",
+                        diagnosticMessages(validation.diagnostics()),
+                        validation.diagnostics()));
                 continue;
             }
             String entryId = "uploaded:" + artifact.fileName().replace('\\', '/');
-            String claimHash = sha256("claim:" + tenant + ":" + safeRequest.assemblyId() + ":" + artifact.fileName());
+            String claimHash = "sha256:" + new com.unfurl.fabric.catalog.CatalogManifestCodec()
+                    .computeClaimHash(validation.claim());
             String artifactSha = artifact.sha256() == null || artifact.sha256().isBlank()
                     ? sha256("artifact:" + artifact.fileName())
                     : artifact.sha256();
-            StudioVisualCatalogEntry entry = new StudioVisualCatalogEntry(
-                    entryId,
-                    claimHash,
-                    artifactSha,
-                    fallbackVisual("COMPONENT"),
-                    dynamicComposition("COMPONENT", List.of()),
-                    Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
-                    List.of());
+            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, validation.claim(), claimHash, artifactSha);
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
-            results.add(new StudioClaimVerificationResult(artifact.fileName(), "VERIFIED", entryId, claimHash, List.of()));
+            results.add(new StudioClaimVerificationResult(
+                    artifact.fileName(),
+                    "VERIFIED",
+                    entryId,
+                    claimHash,
+                    diagnosticMessages(validation.diagnostics()),
+                    validation.diagnostics()));
         }
 
         entries.sort(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId));
@@ -143,6 +161,47 @@ public final class StudioCatalogService {
                 allVerified ? "VERIFIED" : "REJECTED",
                 results,
                 response(entries));
+    }
+
+    /**
+     * Projector: turns a verified uploaded DCP claim into the Studio visual-catalog shape.
+     * The catalog entry id stays upload-scoped, but ports and dynamic metadata come directly
+     * from the validated claim so Studio reflects the actual DCP surface.
+     */
+    private StudioVisualCatalogEntry admittedVisualEntry(String entryId, Claim claim, String claimHash, String artifactSha) {
+        List<String> capabilities = claim.offers() == null
+                ? List.of()
+                : claim.offers().stream().map(Offer::capability).toList();
+        List<String> requiredCapabilities = requiredCapabilitiesFromClaim(claim);
+        String category = claim.identity() == null || claim.identity().kind() == null
+                ? "COMPONENT"
+                : claim.identity().kind().toString();
+        return new StudioVisualCatalogEntry(
+                entryId,
+                claimHash,
+                artifactSha,
+                visual(category, "CUBE", capabilities, requiredCapabilities),
+                dynamicComposition("COMPONENT", List.of()),
+                Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
+                List.of());
+    }
+
+    /**
+     * Projection helper: keeps the legacy warnings list populated from structured diagnostics
+     * while newer clients consume the richer diagnostics field.
+     */
+    private static List<String> diagnosticMessages(List<StudioDcpDiagnostic> diagnostics) {
+        if (diagnostics == null) {
+            return List.of();
+        }
+        return diagnostics.stream()
+                .map(diagnostic -> {
+                    String path = diagnostic.path() == null || diagnostic.path().isBlank()
+                            ? "claim"
+                            : diagnostic.path();
+                    return path + ": " + diagnostic.message();
+                })
+                .toList();
     }
 
     public StudioNeedsExtractionResponse extractNeeds(

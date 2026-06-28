@@ -52,18 +52,81 @@ class StudioCatalogServiceTest {
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("payment.jar", ""))));
+                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
 
         assertThat(response.status()).isEqualTo("VERIFIED");
         assertThat(response.results()).singleElement()
                 .satisfies(result -> {
                     assertThat(result.status()).isEqualTo("VERIFIED");
-                    assertThat(result.catalogEntryId()).isEqualTo("uploaded:payment.jar");
+                    assertThat(result.catalogEntryId()).isEqualTo("uploaded:payment.yaml");
                     assertThat(result.claimHash()).startsWith("sha256:");
+                    assertThat(result.diagnostics()).isEmpty();
                 });
         assertThat(response.catalog().entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("uploaded:payment.jar");
+                .contains("uploaded:payment.yaml");
+        assertThat(response.catalog().entries().stream()
+                .filter(entry -> "uploaded:payment.yaml".equals(entry.catalogEntryId()))
+                .findFirst()
+                .orElseThrow()
+                .visualManifest().toString())
+                .contains("claim.offers.payment.process");
+    }
+
+    @Test
+    void rejectsAdmissionWhenDcpClaimValidationFails() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("broken.yaml", "", """
+                        identity:
+                          uri: urn:unfurl:test:broken
+                          name: broken
+                          kind: COMPONENT
+                          version: 1.0.0
+                          publisher: Unfurl
+                        metadata:
+                          dcp_version: 0.1.0
+                          claim_version: 1.0.0
+                        """))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> {
+                    assertThat(result.status()).isEqualTo("REJECTED");
+                    assertThat(result.catalogEntryId()).isEmpty();
+                    assertThat(result.diagnostics())
+                            .extracting(StudioDcpDiagnostic::code)
+                            .contains("CLAIM_MALFORMED", "DCP_VERSION_UNSUPPORTED");
+                    assertThat(result.diagnostics())
+                            .extracting(StudioDcpDiagnostic::path)
+                            .contains("domain", "metadata.dcp_version", "refusals");
+                });
+        assertThat(response.catalog().entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .doesNotContain("uploaded:broken.yaml");
+    }
+
+    @Test
+    void rejectsAdmissionWithoutUploadedClaimYaml() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.jar", ""))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> {
+                    assertThat(result.status()).isEqualTo("REJECTED");
+                    assertThat(result.diagnostics()).singleElement()
+                            .satisfies(diagnostic -> {
+                                assertThat(diagnostic.code()).isEqualTo("CLAIM_MALFORMED");
+                                assertThat(diagnostic.path()).isEqualTo("claim");
+                                assertThat(diagnostic.message()).contains("DCP claim YAML is required");
+                            });
+                });
     }
 
     @Test
@@ -266,7 +329,7 @@ class StudioCatalogServiceTest {
 
         first.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("payment.jar", ""))));
+                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
         first.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
                 "assembly-checkout",
                 "Checkout Platform",
@@ -282,7 +345,7 @@ class StudioCatalogServiceTest {
 
         assertThat(second.listCatalogVisuals("tenant-a").entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("uploaded:payment.jar");
+                .contains("uploaded:payment.yaml");
         assertThat(second.listAssemblies("tenant-a").assemblies())
                 .extracting(StudioAssemblySummary::assemblyId)
                 .contains("assembly-checkout");
@@ -535,5 +598,45 @@ class StudioCatalogServiceTest {
                 null,
                 new IntegrationPorts(Map.of()),
                 new ClaimMetadata("0.2.0", "1.0.0", Instant.EPOCH, extensions));
+    }
+
+    private static String validClaimYaml(String name, String capability) {
+        return """
+                identity:
+                  uri: urn:unfurl:test:%s
+                  name: %s
+                  kind: COMPONENT
+                  version: 1.0.0
+                  publisher: Unfurl
+                domain:
+                  summary: %s component
+                  concerns:
+                    - concern: %s
+                      description: Provides %s
+                  boundary_principles:
+                    - owns only the declared capability
+                refusals:
+                  - concern: unrelated.concern
+                    rationale: This component deliberately owns only its declared capability.
+                    owned_by: host
+                dependencies:
+                  needs: []
+                offers:
+                  - capability: %s
+                    description: Provides %s
+                    consumer_access: ANY
+                    offer_interface:
+                      interface_kind: IN_PROCESS
+                      details: {}
+                    stability: STABLE
+                    version: 1.0.0
+                    metered: false
+                integration_ports:
+                  ports: {}
+                metadata:
+                  dcp_version: 0.2.0
+                  claim_version: 1.0.0
+                  created_at: 1970-01-01T00:00:00Z
+                """.formatted(name, name, name, capability, capability, capability, capability);
     }
 }

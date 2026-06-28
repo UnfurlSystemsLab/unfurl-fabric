@@ -48,7 +48,12 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}` | | | `StudioVisualAsset` |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}/content` | `sha256` optional | | Binary asset content |
 
-Catalog admissions accept uploaded component artifact drafts and update the tenant catalog after claim verification.
+Catalog admissions accept uploaded component artifact drafts and update the tenant catalog after DCP claim verification.
+Each draft may carry `claimYaml`, containing either a pure DCP `Claim` YAML document or a catalog manifest with a
+top-level `claim` block. Fabric parses the claim, runs `unfurl-dcp` claim validation, and rejects the artifact when
+validation returns any `ERROR` diagnostic. Admission responses preserve DCP diagnostics as structured records with
+`severity`, `code`, `path`, and `message` so Studio can render actionable claim errors next to the artifact. Warnings
+remain visible on otherwise verified claims.
 
 ## Assemblies
 
@@ -121,4 +126,3 @@ unfurl-ui/packages/fabric-validation-client/src/httpClient.ts
 ```
 
 When changing server routes or record shapes, update the TypeScript client and its tests in the same change.
-

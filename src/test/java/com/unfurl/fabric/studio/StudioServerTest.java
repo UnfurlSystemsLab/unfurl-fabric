@@ -75,14 +75,18 @@ class StudioServerTest {
                     {
                       "assemblyId": "assembly-checkout",
                       "artifacts": [
-                        { "fileName": "payment.jar" }
+                        {
+                          "fileName": "payment.yaml",
+                          "claimYaml": %s
+                        }
                       ]
                     }
-                    """);
+                    """.formatted(jsonString(validClaimYaml("payment", "payment.process"))));
             assertThat(admission.statusCode()).isEqualTo(200);
             assertThat(admission.body())
                     .contains("\"status\":\"VERIFIED\"")
-                    .contains("\"catalogEntryId\":\"uploaded:payment.jar\"");
+                    .contains("\"catalogEntryId\":\"uploaded:payment.yaml\"")
+                    .contains("\"diagnostics\":[]");
 
             HttpResponse<String> needs = post(
                     server,
@@ -435,5 +439,49 @@ class StudioServerTest {
                     supportedShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
                     shapeRuntime: {}
                 """.formatted(artifact, artifact, artifact, capability, capability, capability, capability, artifact);
+    }
+
+    private static String validClaimYaml(String name, String capability) {
+        return """
+                identity:
+                  uri: urn:unfurl:test:%s
+                  name: %s
+                  kind: COMPONENT
+                  version: 1.0.0
+                  publisher: Unfurl
+                domain:
+                  summary: %s component
+                  concerns:
+                    - concern: %s
+                      description: Provides %s
+                  boundary_principles:
+                    - owns only the declared capability
+                refusals:
+                  - concern: unrelated.concern
+                    rationale: This component deliberately owns only its declared capability.
+                    owned_by: host
+                dependencies:
+                  needs: []
+                offers:
+                  - capability: %s
+                    description: Provides %s
+                    consumer_access: ANY
+                    offer_interface:
+                      interface_kind: IN_PROCESS
+                      details: {}
+                    stability: STABLE
+                    version: 1.0.0
+                    metered: false
+                integration_ports:
+                  ports: {}
+                metadata:
+                  dcp_version: 0.2.0
+                  claim_version: 1.0.0
+                  created_at: 1970-01-01T00:00:00Z
+                """.formatted(name, name, name, capability, capability, capability, capability);
+    }
+
+    private static String jsonString(String value) throws Exception {
+        return StudioJson.mapper().writeValueAsString(value);
     }
 }
