@@ -93,6 +93,21 @@ class StudioServerTest {
                     .contains("\"claimBundleArtifact\"");
             StudioCatalogAdmissionResponse admissionBody = StudioJson.mapper()
                     .readValue(admission.body(), StudioCatalogAdmissionResponse.class);
+            assertThat(admissionBody.diagnosticArtifacts()).hasSize(1);
+            StudioExportArtifact admissionDiagnostic = admissionBody.diagnosticArtifacts().get(0);
+            assertThat(admissionDiagnostic.mediaType()).isEqualTo("application/json");
+            assertThat(admissionDiagnostic.url()).contains("/studio/tenants/tenant-a/diagnostic-artifacts/");
+
+            HttpResponse<String> diagnostic = get(server, admissionDiagnostic.url());
+            assertThat(diagnostic.statusCode()).isEqualTo(200);
+            assertThat(diagnostic.headers().firstValue("Content-Type")).contains("application/json");
+            assertThat(diagnostic.body()).contains("\"status\" : \"VERIFIED\"", "\"claimBundleArtifact\"");
+
+            HttpResponse<String> staleDiagnostic = get(
+                    server,
+                    admissionDiagnostic.url().replace(admissionDiagnostic.sha256(), "sha256:stale"));
+            assertThat(staleDiagnostic.statusCode()).isEqualTo(404);
+
             HttpResponse<byte[]> claimBundle = HttpClient.newHttpClient().send(
                     HttpRequest.newBuilder(uri(server, admissionBody.claimBundleArtifact().url()))
                             .GET()

@@ -46,6 +46,7 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 | `GET` | `/studio/tenants/{tenantId}/catalog` | | | `StudioCatalogVisualsResponse` |
 | `POST` | `/studio/tenants/{tenantId}/catalog/admissions` | | `StudioCatalogAdmissionRequest` | `StudioCatalogAdmissionResponse` |
 | `GET` | `/studio/tenants/{tenantId}/catalog/admissions/{admissionId}/claims.zip` | `sha256` required | | ZIP claim bundle |
+| `GET` | `/studio/tenants/{tenantId}/diagnostic-artifacts/{artifactId}/content` | `sha256` required | | Hash-pinned diagnostic artifact |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}` | | | `StudioVisualAsset` |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}/content` | `sha256` optional | | Binary asset content |
 
@@ -62,6 +63,13 @@ When an admission verifies one or more artifacts, Studio also emits a hash-pinne
 ZIP containing the resolved DCP claim YAML for each verified artifact, an `admission-manifest.yaml` index, and
 `diagnostics.json` for the full admission result set. Claims remain separate files inside the bundle; Fabric must not
 merge multiple component claims into a synthetic mega-claim.
+
+Studio responses that produce or transform operator-visible state may also include `diagnosticArtifacts`. These artifacts
+use the same `StudioExportArtifact` shape and point at the tenant-scoped diagnostic-artifact endpoint. Diagnostic
+artifacts are immutable, hash-pinned snapshots intended for support, CI replay, and step-by-step Flowfoundry debugging.
+Catalog admissions, catalog snapshots, needs extraction, dynamic DCP projections, saved draft summaries, created draft
+sessions, and compile responses should all expose a downloadable diagnostic artifact when the response is produced by a
+tenant-scoped route.
 
 ## Assemblies
 

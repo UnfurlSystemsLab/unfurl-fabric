@@ -168,6 +168,8 @@ Expected outcome:
 - Studio UI should render those diagnostics next to the uploaded claim.
 - When at least one artifact is verified, Studio returns a hash-pinned `claimBundleArtifact` for downloading the
   resolved multi-file claim set.
+- Studio also returns a catalog-admission diagnostic artifact so the exact upload result can be downloaded without
+  unpacking the resolved claims ZIP.
 
 For a multi-file upload, download the combined claim set from the returned `claimBundleArtifact.url`. This bundle keeps
 each DCP claim as its own YAML file and adds an admission manifest plus diagnostics; it does not merge independent
@@ -196,6 +198,9 @@ Check that the catalog contains offers for:
 - `rag.search`
 - `provider.call`
 - authentication/authorization/audit/telemetry ports required by the deployment
+
+Studio UI should show a download action for the catalog snapshot diagnostic artifact so this exact catalog view can be
+attached to support tickets or replayed in CI.
 
 ## Step 4: Create A Studio Assembly
 
@@ -226,6 +231,9 @@ curl -sS -X POST \
 
 The needs must include the durable workflow and AI capabilities required by the workload. For an agent-backed flow, include a need for `workflow.execute` and a need for `agent.run`; model, RAG, tool, auth, telemetry, and secret concerns should appear as DCP dependencies or ports.
 
+Download the needs diagnostic artifact from the response or UI before continuing; it preserves both the suggested
+`needs.yaml` and the extraction warnings used to seed composition.
+
 ## Step 6: Start A Draft Session
 
 Create a Studio draft session for the assembly.
@@ -249,6 +257,9 @@ curl -sS -X POST \
 ```
 
 Record the returned `sessionId` and current revision.
+
+Download the draft-session diagnostic artifact so the starting revision, catalog hash, needs id, trust policy id, and
+collaborator context are captured before intents are applied.
 
 ## Step 7: Use Foundry Authoring From Studio
 
@@ -310,6 +321,9 @@ Check that the projection drills into:
 - Agent phases, tools, prompts, RAG, model providers, embedding providers, and vector store refs.
 - DCP ports for auth/authz/audit/telemetry/secrets where required.
 
+Download the dynamic projection diagnostic artifact whenever graph behavior is surprising; it is the source of truth for
+what the UI rendered at this step.
+
 ## Step 10: Resolve Containerized Deployment
 
 Ask Studio to resolve deployment choices for the draft composition.
@@ -359,6 +373,9 @@ The response contains:
 - `expectedRevision` and `receivedRevision`: revision safety details.
 
 Do not deploy raw session state. The signed contract and runtime binding are the deployment handoff.
+
+Download any compile diagnostic artifacts in addition to the contract/profile artifacts. They capture the response
+metadata, warnings, stale-revision details, and artifact hashes used by the handoff UI.
 
 ## Step 12: Download Export Artifacts Locally
 

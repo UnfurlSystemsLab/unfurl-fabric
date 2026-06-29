@@ -55,12 +55,13 @@ public final class StudioCatalogService {
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssetContent>> claimBundlesByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioAssetContent>> diagnosticArtifactsByTenant = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
     private final StudioSessionEventBus eventBus;
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
     private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
-    private final ObjectMapper jsonMapper = new ObjectMapper();
+    private final ObjectMapper jsonMapper = StudioJson.mapper();
 
     /**
      * Optional DCP authoring proposer. When Fabric is configured with a DCP transport to
@@ -101,7 +102,11 @@ public final class StudioCatalogService {
     public StudioCatalogVisualsResponse listCatalogVisuals(String tenantId) {
         String tenant = normalizeTenant(tenantId);
         List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
-        return response(entries);
+        StudioCatalogVisualsResponse snapshot = response(entries);
+        return new StudioCatalogVisualsResponse(
+                snapshot.catalogHash(),
+                snapshot.entries(),
+                List.of(diagnosticArtifact(tenant, "catalog-snapshot", "catalog.json", snapshot)));
     }
 
     public StudioCatalogAdmissionResponse admit(String tenantId, StudioCatalogAdmissionRequest request) {
@@ -169,13 +174,21 @@ public final class StudioCatalogService {
         boolean allVerified = !results.isEmpty()
                 && results.stream().allMatch(result -> "VERIFIED".equals(result.status()));
         StudioExportArtifact claimBundleArtifact = claimBundleArtifact(tenant, safeRequest.assemblyId(), results, resolvedClaims);
-        return new StudioCatalogAdmissionResponse(
+        StudioCatalogAdmissionResponse response = new StudioCatalogAdmissionResponse(
                 tenant,
                 safeRequest.assemblyId(),
                 allVerified ? "VERIFIED" : "REJECTED",
                 results,
                 response(entries),
                 claimBundleArtifact);
+        return new StudioCatalogAdmissionResponse(
+                response.tenantId(),
+                response.assemblyId(),
+                response.status(),
+                response.results(),
+                response.catalog(),
+                response.claimBundleArtifact(),
+                List.of(diagnosticArtifact(tenant, "catalog-admission", "catalog-admission.json", response)));
     }
 
     /**
@@ -342,7 +355,7 @@ public final class StudioCatalogService {
         List<String> warnings = safeRequest.fileNames().isEmpty()
                 ? List.of("no target application files supplied; generated starter needs")
                 : List.of();
-        return new StudioNeedsExtractionResponse(
+        StudioNeedsExtractionResponse response = new StudioNeedsExtractionResponse(
                 tenant,
                 assembly,
                 needsId,
@@ -350,6 +363,15 @@ public final class StudioCatalogService {
                 yaml,
                 safeRequest.defaultDeploymentTarget(),
                 warnings);
+        return new StudioNeedsExtractionResponse(
+                response.tenantId(),
+                response.assemblyId(),
+                response.needsId(),
+                response.targetApplicationName(),
+                response.suggestedNeedsYaml(),
+                response.defaultDeploymentTarget(),
+                response.warnings(),
+                List.of(diagnosticArtifact(tenant, "needs-extraction", "needs-extraction.json", response)));
     }
 
     public synchronized StudioAuthoringConverseResponse converseAuthoring(StudioAuthoringConverseRequest request) {
@@ -736,7 +758,7 @@ public final class StudioCatalogService {
         List<StudioSubstratePort> substratePorts = deriveSubstratePorts(childNodes, entries);
         List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries, substratePorts);
 
-        return new StudioDynamicDcpProjection(
+        StudioDynamicDcpProjection projection = new StudioDynamicDcpProjection(
                 tenant,
                 assembly,
                 "DYNAMIC",
@@ -747,6 +769,18 @@ public final class StudioCatalogService {
                 substratePorts,
                 connections,
                 dcpProjection.warnings());
+        return new StudioDynamicDcpProjection(
+                projection.tenantId(),
+                projection.assemblyId(),
+                projection.compositionMode(),
+                projection.rootNodeId(),
+                projection.focusNodeId(),
+                projection.nodes(),
+                projection.edges(),
+                projection.substratePorts(),
+                projection.connections(),
+                projection.warnings(),
+                List.of(diagnosticArtifact(tenant, "dynamic-dcp", "dynamic-dcp.json", projection)));
     }
 
     private Claim aggregateClaim(
@@ -1470,7 +1504,12 @@ public final class StudioCatalogService {
                 safeRequest.sceneRevision());
         assemblies.put(assembly, saved);
         persist();
-        return new StudioSaveDraftResponse("SAVED", saved, List.of());
+        StudioSaveDraftResponse response = new StudioSaveDraftResponse("SAVED", saved, List.of());
+        return new StudioSaveDraftResponse(
+                response.status(),
+                response.assembly(),
+                response.warnings(),
+                List.of(diagnosticArtifact(tenant, "saved-draft", "saved-draft.json", response)));
     }
 
     public StudioLayoutState layout(String tenantId, String assemblyId) {
@@ -1533,7 +1572,10 @@ public final class StudioCatalogService {
         sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
         persist();
         publishSessionEvent(session);
-        return new StudioCreateDraftCompositionResponse(session);
+        StudioCreateDraftCompositionResponse response = new StudioCreateDraftCompositionResponse(session);
+        return new StudioCreateDraftCompositionResponse(
+                session,
+                List.of(diagnosticArtifact(tenant, "draft-session", "draft-session.json", response)));
     }
 
     public synchronized StudioDraftSession draftSession(String tenantId, String assemblyId, String sessionId) {
@@ -1660,7 +1702,7 @@ public final class StudioCatalogService {
         StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
         long expected = request == null ? session.sceneRevision() : request.expectedRevision();
         if (expected != session.sceneRevision()) {
-            return new StudioCompileDraftCandidateResponse(
+            StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
                     "STALE_REVISION",
                     "",
                     null,
@@ -1671,6 +1713,18 @@ public final class StudioCatalogService {
                     "",
                     session.sceneRevision(),
                     expected);
+            return new StudioCompileDraftCandidateResponse(
+                    response.status(),
+                    response.candidateId(),
+                    response.contractArtifact(),
+                    response.substrateProfileArtifact(),
+                    response.signedContractArtifact(),
+                    response.warnings(),
+                    response.reason(),
+                    response.details(),
+                    response.expectedRevision(),
+                    response.receivedRevision(),
+                    List.of(diagnosticArtifact(session.tenantId(), "compile-stale", "compile-response.json", response)));
         }
         String candidateId = session.currentCandidateId().isBlank()
                 ? "cand-" + slug(session.assemblyId()) + "-" + session.sceneRevision()
@@ -1680,7 +1734,7 @@ public final class StudioCatalogService {
         StudioExportArtifact signed = request != null && request.sign()
                 ? artifact("signed-contract-" + session.sessionId(), "application/jose+json")
                 : null;
-        return new StudioCompileDraftCandidateResponse(
+        StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
                 "COMPILED",
                 candidateId,
                 contract,
@@ -1693,6 +1747,18 @@ public final class StudioCatalogService {
                 "",
                 0,
                 0);
+        return new StudioCompileDraftCandidateResponse(
+                response.status(),
+                response.candidateId(),
+                response.contractArtifact(),
+                response.substrateProfileArtifact(),
+                response.signedContractArtifact(),
+                response.warnings(),
+                response.reason(),
+                response.details(),
+                response.expectedRevision(),
+                response.receivedRevision(),
+                List.of(diagnosticArtifact(session.tenantId(), "compile-response", "compile-response.json", response)));
     }
 
     public StudioVisualAsset visualAsset(String tenantId, String assetId) {
@@ -1773,10 +1839,56 @@ public final class StudioCatalogService {
         return Optional.of(content);
     }
 
+    /**
+     * Download accessor: returns a generated diagnostic artifact only when the caller
+     * supplies the matching hash pin.
+     */
+    public Optional<StudioAssetContent> diagnosticArtifactContent(String tenantId, String artifactId, String requestedSha256) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedArtifactId = artifactId == null ? "" : artifactId.trim();
+        if (normalizedArtifactId.isBlank()) {
+            return Optional.empty();
+        }
+        StudioAssetContent content = diagnosticArtifactsByTenant
+                .getOrDefault(tenant, Map.of())
+                .get(normalizedArtifactId);
+        if (content == null) {
+            return Optional.empty();
+        }
+        if (requestedSha256 != null && !requestedSha256.isBlank() && !content.sha256().equals(requestedSha256)) {
+            return Optional.empty();
+        }
+        return Optional.of(content);
+    }
+
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
                 entries);
+    }
+
+    /**
+     * Factory: stores an immutable JSON diagnostic snapshot and returns the hash-pinned
+     * artifact metadata used by Studio download buttons.
+     */
+    private StudioExportArtifact diagnosticArtifact(String tenantId, String kind, String fileName, Object body) {
+        try {
+            String tenant = normalizeTenant(tenantId);
+            String artifactId = kind + "-" + UUID.randomUUID();
+            byte[] bytes = jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(body);
+            String sha = sha256(bytes);
+            diagnosticArtifactsByTenant
+                    .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                    .put(artifactId, new StudioAssetContent(bytes, "application/json", sha));
+            return new StudioExportArtifact(
+                    artifactId,
+                    "application/json",
+                    sha,
+                    "/studio/tenants/" + tenant + "/diagnostic-artifacts/" + artifactId
+                            + "/content?sha256=" + sha + "&fileName=" + fileName);
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to create diagnostic artifact", ex);
+        }
     }
 
     private void persist() {

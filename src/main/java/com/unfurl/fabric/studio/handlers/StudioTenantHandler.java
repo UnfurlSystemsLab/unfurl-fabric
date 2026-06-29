@@ -76,6 +76,25 @@ public final class StudioTenantHandler {
                                 });
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.diagnosticArtifactContent()) {
+                service.diagnosticArtifactContent(route.tenantId(), route.diagnosticArtifactId(), queryParam(exchange, "sha256"))
+                        .ifPresentOrElse(
+                                content -> {
+                                    try {
+                                        writeBinary(exchange, 200, content.mediaType(), content.bytes());
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                },
+                                () -> {
+                                    try {
+                                        write(exchange, 404, Map.of("error", "diagnostic artifact is unavailable or hash verification failed"));
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                });
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.asset()) {
                 write(exchange, 200, service.visualAsset(route.tenantId(), route.assetId()));
                 return;
@@ -292,7 +311,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String sessionId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String sessionId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -308,6 +327,7 @@ public final class StudioTenantHandler {
             String assembly = "";
             String assetId = "";
             String admissionId = "";
+            String diagnosticArtifactId = "";
             String sessionId = "";
             String admissionPrefix = "catalog/admissions/";
             if (tail.startsWith(admissionPrefix)) {
@@ -317,6 +337,15 @@ public final class StudioTenantHandler {
                 tail = admissionSlash >= 0
                         ? admissionPrefix + "{admissionId}/" + admissionRemainder.substring(admissionSlash + 1)
                         : admissionPrefix + "{admissionId}";
+            }
+            String diagnosticPrefix = "diagnostic-artifacts/";
+            if (tail.startsWith(diagnosticPrefix)) {
+                String diagnosticRemainder = tail.substring(diagnosticPrefix.length());
+                int diagnosticSlash = diagnosticRemainder.indexOf('/');
+                diagnosticArtifactId = decode(diagnosticSlash >= 0 ? diagnosticRemainder.substring(0, diagnosticSlash) : diagnosticRemainder);
+                tail = diagnosticSlash >= 0
+                        ? diagnosticPrefix + "{artifactId}/" + diagnosticRemainder.substring(diagnosticSlash + 1)
+                        : diagnosticPrefix + "{artifactId}";
             }
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
@@ -345,7 +374,7 @@ public final class StudioTenantHandler {
                         ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
                         : sessionPrefix + "{sessionId}";
             }
-            return new Route(tenant, assembly, assetId, admissionId, sessionId, tail);
+            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, sessionId, tail);
         }
 
         boolean catalogList() {
@@ -358,6 +387,10 @@ public final class StudioTenantHandler {
 
         boolean catalogAdmissionClaimBundle() {
             return "catalog/admissions/{admissionId}/claims.zip".equals(tail);
+        }
+
+        boolean diagnosticArtifactContent() {
+            return "diagnostic-artifacts/{artifactId}/content".equals(tail);
         }
 
         boolean asset() {

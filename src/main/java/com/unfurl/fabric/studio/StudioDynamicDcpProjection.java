@@ -20,8 +20,13 @@ public record StudioDynamicDcpProjection(
         // the Studio 3D scene's pipe rendering; ?owner=host and
         // ?owner=fabric needs are skipped (they're external to the draft).
         List<StudioPortConnectionEdge> connections,
-        List<String> warnings
+        List<String> warnings,
+        List<StudioExportArtifact> diagnosticArtifacts
 ) {
+    /**
+     * Data Transfer Object invariant: normalizes projection defaults and freezes graph
+     * collections plus optional downloadable diagnostic metadata.
+     */
     public StudioDynamicDcpProjection {
         tenantId = tenantId == null || tenantId.isBlank() ? "tenant-local" : tenantId;
         assemblyId = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
@@ -33,6 +38,7 @@ public record StudioDynamicDcpProjection(
         substratePorts = substratePorts == null ? List.of() : List.copyOf(substratePorts);
         connections = connections == null ? List.of() : List.copyOf(connections);
         warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        diagnosticArtifacts = diagnosticArtifacts == null ? List.of() : List.copyOf(diagnosticArtifacts);
     }
 
     /**
@@ -52,7 +58,7 @@ public record StudioDynamicDcpProjection(
             List<String> warnings
     ) {
         this(tenantId, assemblyId, compositionMode, rootNodeId, focusNodeId,
-                nodes, edges, List.of(), List.of(), warnings);
+                nodes, edges, List.of(), List.of(), warnings, List.of());
     }
 
     public StudioDynamicDcpProjection(
@@ -67,6 +73,26 @@ public record StudioDynamicDcpProjection(
             List<String> warnings
     ) {
         this(tenantId, assemblyId, compositionMode, rootNodeId, focusNodeId,
-                nodes, edges, List.of(), connections, warnings);
+                nodes, edges, List.of(), connections, warnings, List.of());
+    }
+
+    /**
+     * Backward-compatible constructor for callers that include substrate ports and
+     * connections but do not emit downloadable projection diagnostics.
+     */
+    public StudioDynamicDcpProjection(
+            String tenantId,
+            String assemblyId,
+            String compositionMode,
+            String rootNodeId,
+            String focusNodeId,
+            List<StudioDynamicDcpNode> nodes,
+            List<StudioDynamicDcpEdge> edges,
+            List<StudioSubstratePort> substratePorts,
+            List<StudioPortConnectionEdge> connections,
+            List<String> warnings
+    ) {
+        this(tenantId, assemblyId, compositionMode, rootNodeId, focusNodeId,
+                nodes, edges, substratePorts, connections, warnings, List.of());
     }
 }

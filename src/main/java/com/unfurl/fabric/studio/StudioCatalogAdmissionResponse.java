@@ -8,8 +8,20 @@ public record StudioCatalogAdmissionResponse(
         String status,
         List<StudioClaimVerificationResult> results,
         StudioCatalogVisualsResponse catalog,
-        StudioExportArtifact claimBundleArtifact
+        StudioExportArtifact claimBundleArtifact,
+        List<StudioExportArtifact> diagnosticArtifacts
 ) {
+    public StudioCatalogAdmissionResponse(
+            String tenantId,
+            String assemblyId,
+            String status,
+            List<StudioClaimVerificationResult> results,
+            StudioCatalogVisualsResponse catalog,
+            StudioExportArtifact claimBundleArtifact
+    ) {
+        this(tenantId, assemblyId, status, results, catalog, claimBundleArtifact, List.of());
+    }
+
     /**
      * Backward-compatible constructor for older callers that only return admission results
      * and the updated catalog without a downloadable resolved-claims bundle.
@@ -35,5 +47,6 @@ public record StudioCatalogAdmissionResponse(
         assemblyId = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
         status = status == null || status.isBlank() ? "PENDING" : status;
         results = results == null ? List.of() : List.copyOf(results);
+        diagnosticArtifacts = diagnosticArtifacts == null ? List.of() : List.copyOf(diagnosticArtifacts);
     }
 }
