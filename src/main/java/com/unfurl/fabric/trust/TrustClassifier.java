@@ -16,9 +16,19 @@ import java.util.regex.Pattern;
  * operate on the allowed half; diagnostic commands surface the rejected half so operators can
  * see why a specific entry was excluded (e.g., "vendor not trusted" rather than "no provider
  * for this capability").
+ *
+ * <p>Pattern: stateless <b>policy evaluator/specification</b> — applies each policy rule to each entry
+ * and partitions the catalog. Pure (no I/O, no mutation of inputs).
  */
 public final class TrustClassifier {
 
+    /**
+     * Partition a catalog into allowed/rejected entries per the policy.
+     *
+     * @param catalog the catalog to classify; null yields an empty classification.
+     * @param policy  the trust policy; null falls back to {@link TrustPolicy#permissive()}.
+     * @return the allowed/rejected partition with per-entry rejection reasons.
+     */
     public TrustClassification classify(Catalog catalog, TrustPolicy policy) {
         if (catalog == null) {
             return new TrustClassification(List.of(), List.of());
@@ -40,6 +50,14 @@ public final class TrustClassifier {
         return new TrustClassification(allowed, rejected);
     }
 
+    /**
+     * Evaluate every policy rule against one entry, collecting all violations (not short-circuiting) so
+     * the operator sees the complete set of reasons an entry was rejected.
+     *
+     * @param entry  the catalog entry under test.
+     * @param policy the effective trust policy.
+     * @return the (possibly empty) list of rejection reasons; empty means allowed.
+     */
     private List<RejectionReason> checkEntry(CatalogEntry entry, TrustPolicy policy) {
         List<RejectionReason> reasons = new ArrayList<>();
 
@@ -96,6 +114,12 @@ public final class TrustClassifier {
         return reasons;
     }
 
+    /**
+     * Extract the group segment (before the first {@code :}) from artifact coordinates.
+     *
+     * @param coordinates the artifact coordinates.
+     * @return the group, or null if absent/unparseable.
+     */
     private static String artifactGroup(String coordinates) {
         if (coordinates == null) {
             return null;
@@ -104,6 +128,13 @@ public final class TrustClassifier {
         return idx <= 0 ? null : coordinates.substring(0, idx);
     }
 
+    /**
+     * Whether an observed DCP {@link Stability} meets or exceeds the policy's stability floor.
+     *
+     * @param observed the offer's stability (null fails).
+     * @param floor    the policy stability floor.
+     * @return true iff observed rank ≥ floor rank.
+     */
     private static boolean stabilityAtOrAbove(Stability observed, TrustPolicy.Stability floor) {
         if (observed == null) {
             return false;
@@ -113,6 +144,13 @@ public final class TrustClassifier {
         return observedRank >= floorRank;
     }
 
+    /**
+     * Rank a DCP {@link Stability} on the comparable scale (DEPRECATED &lt; EXPERIMENTAL &lt; EVOLVING
+     * &lt; STABLE).
+     *
+     * @param stability the DCP stability.
+     * @return its numeric rank.
+     */
     private static int stabilityRank(Stability stability) {
         return switch (stability) {
             case DEPRECATED -> -1;
@@ -122,6 +160,12 @@ public final class TrustClassifier {
         };
     }
 
+    /**
+     * Rank a policy {@link TrustPolicy.Stability} floor on the same scale as {@link #stabilityRank}.
+     *
+     * @param stability the policy floor.
+     * @return its numeric rank.
+     */
     private static int floorRank(TrustPolicy.Stability stability) {
         return switch (stability) {
             case EXPERIMENTAL -> 0;
@@ -133,6 +177,10 @@ public final class TrustClassifier {
     /**
      * Glob match supporting only {@code *} as a multi-character wildcard. Sufficient for the
      * capability namespaces fabric matches today (e.g. {@code storage.*}).
+     *
+     * @param pattern the glob pattern ({@code *} matches anything; literal otherwise).
+     * @param value   the capability string to test.
+     * @return true iff the value matches the pattern.
      */
     private static boolean globMatch(String pattern, String value) {
         if (pattern == null || value == null) {

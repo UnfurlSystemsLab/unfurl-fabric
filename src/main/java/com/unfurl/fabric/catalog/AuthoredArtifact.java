@@ -7,6 +7,13 @@ import com.unfurl.fabric.artifact.ArtifactDescriptor;
  * The scanner enriches this with a computed SHA-256 to produce the final {@link ArtifactDescriptor}
  * that the rest of the planner sees. Distinct type so the manifest schema and the runtime
  * descriptor cannot drift.
+ *
+ * <p>Pattern: immutable <b>DTO/value object</b> with defaulting compact constructor.
+ *
+ * @param coordinates Maven-style artifact coordinates (required).
+ * @param packaging   packaging type (defaults to {@code jar}).
+ * @param source      provenance source (defaults to {@code catalog}).
+ * @param signature   optional detached signature reference.
  */
 public record AuthoredArtifact(
         String coordinates,
@@ -14,6 +21,7 @@ public record AuthoredArtifact(
         String source,
         String signature
 ) {
+    /** Compact constructor: requires coordinates; defaults packaging/source when blank. */
     public AuthoredArtifact {
         if (coordinates == null || coordinates.isBlank()) {
             throw new IllegalArgumentException("artifact.coordinates is required");

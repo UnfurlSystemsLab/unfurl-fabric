@@ -39,11 +39,17 @@ import java.util.Set;
  * bindingPreferences:
  *   storage.put: IN_PROCESS
  * </pre>
+ *
+ * <p>Pattern: <b>Codec/DTO mapper</b> with an internal Jackson-bound <b>envelope</b> ({@link NeedsEnvelope}
+ * and carriers) decoupling the wire schema from the immutable domain {@link Need}. The mapper is
+ * configured once and reused (stateless, thread-safe).
  */
 public final class NeedsCodec {
 
+    /** Pre-configured YAML object mapper (lenient on unknown fields, NON_NULL output). */
     private final ObjectMapper mapper;
 
+    /** Construct a codec with a YAML mapper tuned for readable, forward-compatible needs documents. */
     public NeedsCodec() {
         YAMLFactory yamlFactory = new YAMLFactory()
                 .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
@@ -56,6 +62,13 @@ public final class NeedsCodec {
         this.mapper = m;
     }
 
+    /**
+     * Read and decode a needs document from a file.
+     *
+     * @param needsFile path to the {@code needs.yaml} file.
+     * @return the decoded immutable {@link Need}.
+     * @throws NeedsException if the file cannot be read or parsed.
+     */
     public Need read(Path needsFile) {
         try {
             NeedsEnvelope envelope = mapper.readValue(needsFile.toFile(), NeedsEnvelope.class);
@@ -65,6 +78,13 @@ public final class NeedsCodec {
         }
     }
 
+    /**
+     * Decode a needs document from in-memory bytes.
+     *
+     * @param bytes the raw YAML/JSON bytes.
+     * @return the decoded immutable {@link Need}.
+     * @throws NeedsException if the bytes cannot be parsed.
+     */
     public Need parse(byte[] bytes) {
         try {
             NeedsEnvelope envelope = mapper.readValue(bytes, NeedsEnvelope.class);
@@ -74,6 +94,13 @@ public final class NeedsCodec {
         }
     }
 
+    /**
+     * Encode a {@link Need} to a YAML file, creating parent directories as needed.
+     *
+     * @param need   the need to serialize.
+     * @param target the output file path.
+     * @throws NeedsException if the file cannot be written.
+     */
     public void write(Need need, Path target) {
         try {
             Files.createDirectories(target.toAbsolutePath().getParent());
@@ -83,6 +110,12 @@ public final class NeedsCodec {
         }
     }
 
+    /**
+     * Map a decoded wire {@link NeedsEnvelope} into the immutable domain {@link Need}.
+     *
+     * @param envelope the parsed envelope.
+     * @return the domain need.
+     */
     private Need toNeed(NeedsEnvelope envelope) {
         List<CapabilityRequirement> required = toRequirements(envelope.requiredCapabilities, true);
         List<CapabilityRequirement> optional = toRequirements(envelope.optionalCapabilities, false);
@@ -104,6 +137,14 @@ public final class NeedsCodec {
         return new Need(required, optional, constraints, refusals, trustPolicy, bindingPrefs);
     }
 
+    /**
+     * Convert raw capability carriers into domain {@link CapabilityRequirement}s, defaulting blank
+     * ranges to "any".
+     *
+     * @param raw      the wire carriers (may be null).
+     * @param required whether these are required (true) or optional (false) requirements.
+     * @return the domain requirements (empty when raw is null).
+     */
     private List<CapabilityRequirement> toRequirements(List<CapabilityRequirementCarrier> raw, boolean required) {
         if (raw == null) {
             return List.of();
@@ -116,6 +157,12 @@ public final class NeedsCodec {
         return out;
     }
 
+    /**
+     * Map a domain {@link Need} back into the serializable wire {@link NeedsEnvelope}.
+     *
+     * @param need the domain need.
+     * @return the wire envelope.
+     */
     private NeedsEnvelope toEnvelope(Need need) {
         NeedsEnvelope envelope = new NeedsEnvelope();
         envelope.requiredCapabilities = toCarriers(need.requiredCapabilities());
@@ -135,6 +182,12 @@ public final class NeedsCodec {
         return envelope;
     }
 
+    /**
+     * Convert domain requirements into wire carriers.
+     *
+     * @param reqs the domain requirements.
+     * @return the wire carriers.
+     */
     private List<CapabilityRequirementCarrier> toCarriers(List<CapabilityRequirement> reqs) {
         List<CapabilityRequirementCarrier> out = new ArrayList<>();
         for (CapabilityRequirement r : reqs) {
@@ -146,23 +199,37 @@ public final class NeedsCodec {
         return out;
     }
 
+    /** Jackson-bound wire shape of a needs document (DTO; fields map 1:1 to the YAML schema). */
     static final class NeedsEnvelope {
+        /** Required capability carriers. */
         public List<CapabilityRequirementCarrier> requiredCapabilities;
+        /** Optional capability carriers. */
         public List<CapabilityRequirementCarrier> optionalCapabilities;
+        /** Artifact pin carriers. */
         public List<ArtifactConstraintCarrier> artifactConstraints;
+        /** Concern names the operator expects to be refused. */
         public List<String> refusalExpectations;
+        /** Optional trust-policy document path. */
         public String trustPolicyRef;
+        /** Capability → binding-mode-name preferences. */
         public Map<String, String> bindingPreferences;
     }
 
+    /** Jackson-bound wire shape of one capability requirement. */
     static final class CapabilityRequirementCarrier {
+        /** Capability name. */
         public String capability;
+        /** Capability version range (npm-style); blank means any. */
         public String capabilityVersion;
     }
 
+    /** Jackson-bound wire shape of one artifact constraint. */
     static final class ArtifactConstraintCarrier {
+        /** Artifact group. */
         public String group;
+        /** Artifact name. */
         public String name;
+        /** Artifact version range; null means any. */
         public String version;
     }
 }

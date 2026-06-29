@@ -7,8 +7,13 @@ import java.util.List;
  * Deterministic snapshot of catalog entries. Excludes any runtime/diagnostic metadata so
  * two scans of the same on-disk catalog produce byte-identical Catalog records. Operator
  * diagnostics (scan time, source directory, skipped entries) live on CatalogScanReport.
+ *
+ * <p>Pattern: immutable <b>value object</b> whose compact constructor canonicalizes ordering.
+ *
+ * @param entries the catalog entries (sorted into {@link CatalogEntry#CANONICAL_ORDER}).
  */
 public record Catalog(List<CatalogEntry> entries) {
+    /** Compact constructor: defensively copies and sorts entries into canonical order for determinism. */
     public Catalog {
         if (entries == null) {
             entries = List.of();
@@ -19,6 +24,9 @@ public record Catalog(List<CatalogEntry> entries) {
         }
     }
 
+    /**
+     * @return an empty catalog.
+     */
     public static Catalog empty() {
         return new Catalog(List.of());
     }

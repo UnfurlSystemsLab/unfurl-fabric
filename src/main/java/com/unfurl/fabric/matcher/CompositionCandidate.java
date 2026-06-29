@@ -21,6 +21,16 @@ import java.util.Set;
  * {@link MatchResult.Ambiguous} result. Same entry set + same SHAs → same ID; if any JAR's
  * content changes, the ID changes too (which is the right semantics — the composition is
  * not the same composition).
+ *
+ * <p>Pattern: immutable <b>value object</b> with a content-addressed id factory.
+ *
+ * @param candidateId                  deterministic content-pinned id (required).
+ * @param entries                      the selected catalog entries.
+ * @param satisfiedRequiredCapabilities required capabilities this candidate satisfies.
+ * @param satisfiedOptionalCapabilities optional capabilities this candidate satisfies.
+ * @param dependencyBindings           how each dependency is satisfied.
+ * @param warnings                     non-fatal planning warnings.
+ * @param score                        the deterministic score (required).
  */
 public record CompositionCandidate(
         String candidateId,
@@ -31,6 +41,7 @@ public record CompositionCandidate(
         List<PlanningWarning> warnings,
         CandidateScore score
 ) {
+    /** Compact constructor: requires id and score; defensively copies all collections. */
     public CompositionCandidate {
         if (candidateId == null || candidateId.isBlank()) {
             throw new IllegalArgumentException("candidateId is required");
@@ -51,6 +62,9 @@ public record CompositionCandidate(
      * Deterministic candidate ID over the sorted {@code coordinates:sha256} pairs of the
      * given entries. Format: {@code cand-<12 hex chars>} — short enough for operator CLI
      * use, long enough for collision resistance within a single planning run.
+     *
+     * @param entries the selected entries.
+     * @return the content-addressed candidate id ({@code cand-empty} for an empty set).
      */
     public static String computeId(List<CatalogEntry> entries) {
         if (entries == null || entries.isEmpty()) {
@@ -65,6 +79,13 @@ public record CompositionCandidate(
         return "cand-" + hexLower(hash).substring(0, 12);
     }
 
+    /**
+     * Compute a SHA-256 digest.
+     *
+     * @param data input bytes.
+     * @return the raw 32-byte digest.
+     * @throws IllegalStateException if SHA-256 is unavailable on the JVM.
+     */
     private static byte[] sha256(byte[] data) {
         try {
             return MessageDigest.getInstance("SHA-256").digest(data);
@@ -73,6 +94,12 @@ public record CompositionCandidate(
         }
     }
 
+    /**
+     * Lowercase-hex encode bytes.
+     *
+     * @param data input bytes.
+     * @return the lowercase hex string.
+     */
     private static String hexLower(byte[] data) {
         StringBuilder sb = new StringBuilder(data.length * 2);
         for (byte b : data) {

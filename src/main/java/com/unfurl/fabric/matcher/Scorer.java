@@ -10,9 +10,19 @@ import com.unfurl.fabric.needs.Need;
 /**
  * Scores already-valid candidates. Never gates validity. Weights are checked-in constants on
  * {@link CandidateScore.Weights} so two runs over the same inputs always produce the same score.
+ *
+ * <p>Pattern: stateless <b>strategy/calculator</b> — each {@code compute*} method contributes one
+ * additive term; the total is summed by {@link CandidateScore#of}.
  */
 public final class Scorer {
 
+    /**
+     * Compute the full deterministic score for an entry set against a need.
+     *
+     * @param entries the (already valid) selected entries.
+     * @param need    the operator need.
+     * @return the candidate score with its summed total.
+     */
     public CandidateScore score(java.util.List<CatalogEntry> entries, Need need) {
         int optional = countOptionalCapsSatisfied(entries, need) * CandidateScore.Weights.OPTIONAL_CAPABILITY;
         int version = computeVersionPreference(entries, need);
@@ -34,6 +44,13 @@ public final class Scorer {
                 risk);
     }
 
+    /**
+     * Count optional capabilities satisfied by at least one entry.
+     *
+     * @param entries the entries.
+     * @param need    the need.
+     * @return number of satisfied optional capabilities.
+     */
     private static int countOptionalCapsSatisfied(java.util.List<CatalogEntry> entries, Need need) {
         int count = 0;
         for (CapabilityRequirement req : need.optionalCapabilities()) {
@@ -51,6 +68,14 @@ public final class Scorer {
         return count;
     }
 
+    /**
+     * Reward matched required-capability versions (one weighted point per match). Deterministic; the AI
+     * advisor refines within tied scores.
+     *
+     * @param entries the entries.
+     * @param need    the need.
+     * @return the weighted version-preference score.
+     */
     private static int computeVersionPreference(java.util.List<CatalogEntry> entries, Need need) {
         // Reward when offers in the chosen entries are at the high end of the requested range.
         // Conservative weight: one point per required-cap match. Deterministic, no
@@ -70,6 +95,12 @@ public final class Scorer {
         return matches * CandidateScore.Weights.VERSION_PREFERENCE;
     }
 
+    /**
+     * Sum the stability weight of every offer, scaled by the stability weight constant.
+     *
+     * @param entries the entries.
+     * @return the weighted stability score.
+     */
     private static int computeStabilityScore(java.util.List<CatalogEntry> entries) {
         int total = 0;
         for (CatalogEntry e : entries) {
@@ -80,6 +111,12 @@ public final class Scorer {
         return total * CandidateScore.Weights.STABILITY;
     }
 
+    /**
+     * Per-offer stability weight (STABLE &gt; EVOLVING &gt; EXPERIMENTAL &gt; DEPRECATED).
+     *
+     * @param stability the offer stability (null → 0).
+     * @return the weight.
+     */
     private static int stabilityWeight(Stability stability) {
         if (stability == null) {
             return 0;
@@ -92,6 +129,12 @@ public final class Scorer {
         };
     }
 
+    /**
+     * Sum the lifecycle weight of every entry, scaled by the lifecycle weight constant.
+     *
+     * @param entries the entries.
+     * @return the weighted lifecycle score.
+     */
     private static int computeLifecycleScore(java.util.List<CatalogEntry> entries) {
         int total = 0;
         for (CatalogEntry e : entries) {
@@ -100,6 +143,12 @@ public final class Scorer {
         return total * CandidateScore.Weights.LIFECYCLE;
     }
 
+    /**
+     * Per-entry lifecycle weight (ACTIVE best; BLOCKED worst).
+     *
+     * @param status the lifecycle status.
+     * @return the weight.
+     */
     private static int lifecycleWeight(LifecycleStatus status) {
         return switch (status) {
             case ACTIVE -> 3;
@@ -110,6 +159,12 @@ public final class Scorer {
         };
     }
 
+    /**
+     * Penalty for risky selections (DEPRECATED or RETIRED entries).
+     *
+     * @param entries the entries.
+     * @return the total (negative) risk penalty.
+     */
     private static int computeRiskFlagPenalty(java.util.List<CatalogEntry> entries) {
         int penalty = 0;
         for (CatalogEntry e : entries) {

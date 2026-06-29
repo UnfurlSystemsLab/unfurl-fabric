@@ -37,23 +37,44 @@ import java.util.stream.Collectors;
  *
  * <p>AI advisor (Phase F) re-ranks Ambiguous results and suggests substitutes for NoMatch,
  * but never alters validity or the deterministic score math.
+ *
+ * <p>Pattern: <b>orchestrator/pipeline service</b> composing {@link CandidateValidator} (gate) and
+ * {@link Scorer} (rank), both constructor-injected for testability.
  */
 public final class StructuralMatcher {
 
+    /** Upper bound on emitted candidates, to keep planning runtimes bounded. */
     private static final int MAX_CANDIDATES = 16;
 
+    /** Validity gate. */
     private final CandidateValidator validator;
+    /** Deterministic scorer for valid candidates. */
     private final Scorer scorer;
 
+    /** Production constructor wiring the default validator and scorer. */
     public StructuralMatcher() {
         this(new CandidateValidator(), new Scorer());
     }
 
+    /**
+     * Test/seam constructor injecting collaborators.
+     *
+     * @param validator the validity gate.
+     * @param scorer    the deterministic scorer.
+     */
     public StructuralMatcher(CandidateValidator validator, Scorer scorer) {
         this.validator = validator;
         this.scorer = scorer;
     }
 
+    /**
+     * Match an allowed catalog against a need, producing exactly one of the three {@link MatchResult}s.
+     *
+     * @param allowedEntries  trust-allowed catalog entries (null → empty).
+     * @param need            the operator need (null → no requirements).
+     * @param rejectedEntries trust-rejected entries, for NoMatch diagnostics (null → empty).
+     * @return the match outcome (ExactMatch / Ambiguous / NoMatch).
+     */
     public MatchResult match(List<CatalogEntry> allowedEntries, Need need, List<RejectedEntry> rejectedEntries) {
         if (allowedEntries == null) {
             allowedEntries = List.of();
@@ -116,6 +137,12 @@ public final class StructuralMatcher {
         return new MatchResult.Ambiguous(candidates);
     }
 
+    /**
+     * Deterministic tiebreak key: the candidate's sorted, comma-joined coordinates.
+     *
+     * @param candidate the candidate.
+     * @return the lexicographic coordinates key.
+     */
     private static String lexCoordinates(CompositionCandidate candidate) {
         return candidate.entries().stream()
                 .map(e -> e.artifact().coordinates())
@@ -123,6 +150,13 @@ public final class StructuralMatcher {
                 .collect(Collectors.joining(","));
     }
 
+    /**
+     * Index, per required capability, the allowed entries that provide it at a satisfying version.
+     *
+     * @param entries the allowed entries.
+     * @param need    the need.
+     * @return capability → list of providing entries (insertion-ordered).
+     */
     private static Map<String, List<CatalogEntry>> indexProvidersByCapability(
             List<CatalogEntry> entries, Need need) {
         Map<String, List<CatalogEntry>> index = new LinkedHashMap<>();
@@ -142,6 +176,13 @@ public final class StructuralMatcher {
         return index;
     }
 
+    /**
+     * Required capabilities with zero providers in the index.
+     *
+     * @param need      the need.
+     * @param providers the capability→providers index.
+     * @return the unmet requirements (empty if all covered).
+     */
     private static List<UnmetCapabilityRequirement> findUnmetRequiredCapabilities(
             Need need, Map<String, List<CatalogEntry>> providers) {
         List<UnmetCapabilityRequirement> unmet = new ArrayList<>();
@@ -156,6 +197,15 @@ public final class StructuralMatcher {
         return unmet;
     }
 
+    /**
+     * Generate distinct candidate compositions as the Cartesian product of one provider per required
+     * capability, de-duplicated by coordinates set and ordered smallest-first (minimal covers favored),
+     * with a bound on the number generated.
+     *
+     * @param need      the need.
+     * @param providers the capability→providers index.
+     * @return candidate entry shapes, smallest/lexicographically first.
+     */
     private static List<List<CatalogEntry>> generateMinimalCovers(
             Need need, Map<String, List<CatalogEntry>> providers) {
         // Greedy: choose one provider per required cap, generating each Cartesian product
@@ -202,6 +252,14 @@ public final class StructuralMatcher {
         return shapes;
     }
 
+    /**
+     * Filter trust-rejected entries to those that offer one of the missing capabilities, so NoMatch
+     * diagnostics can explain "present but rejected" rather than just "not found".
+     *
+     * @param missing    the unmet capabilities.
+     * @param rejections the trust-rejected entries.
+     * @return the relevant subset of rejections.
+     */
     private static List<RejectedEntry> filterRejectionsRelevantTo(
             List<UnmetCapabilityRequirement> missing, List<RejectedEntry> rejections) {
         if (missing.isEmpty() || rejections.isEmpty()) {
@@ -222,6 +280,13 @@ public final class StructuralMatcher {
         return relevant;
     }
 
+    /**
+     * The required capabilities satisfied by a given entry shape.
+     *
+     * @param entries the entry shape.
+     * @param need    the need.
+     * @return the satisfied required capability names.
+     */
     private static Set<String> satisfiedRequiredCaps(List<CatalogEntry> entries, Need need) {
         Set<String> satisfied = new LinkedHashSet<>();
         for (CapabilityRequirement req : need.requiredCapabilities()) {
@@ -237,6 +302,13 @@ public final class StructuralMatcher {
         return satisfied;
     }
 
+    /**
+     * The optional capabilities satisfied by a given entry shape.
+     *
+     * @param entries the entry shape.
+     * @param need    the need.
+     * @return the satisfied optional capability names.
+     */
     private static Set<String> satisfiedOptionalCaps(List<CatalogEntry> entries, Need need) {
         Set<String> satisfied = new LinkedHashSet<>();
         for (CapabilityRequirement req : need.optionalCapabilities()) {
@@ -252,6 +324,14 @@ public final class StructuralMatcher {
         return satisfied;
     }
 
+    /**
+     * Derive non-fatal planning warnings for a shape: missing optional capabilities and any selected
+     * DEPRECATED components.
+     *
+     * @param entries the entry shape.
+     * @param need    the need.
+     * @return the planning warnings.
+     */
     private static List<PlanningWarning> derivePlanningWarnings(List<CatalogEntry> entries, Need need) {
         List<PlanningWarning> warnings = new ArrayList<>();
         Set<String> satisfiedOptional = satisfiedOptionalCaps(entries, need);

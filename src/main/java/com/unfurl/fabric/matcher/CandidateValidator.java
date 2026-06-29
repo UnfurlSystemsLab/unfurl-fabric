@@ -24,9 +24,19 @@ import java.util.Set;
  * {@link Need#refusalExpectations()}, or (b) it is depended on by another selected component,
  * or (c) the claim itself marks the {@code redirectTo} as required. Otherwise refusals are
  * informational and do not gate validity.
+ *
+ * <p>Pattern: stateless <b>specification/validator service</b> — each {@code check*} method evaluates one
+ * gate and appends conflicts; the result aggregates the gate booleans + conflicts.
  */
 public final class CandidateValidator {
 
+    /**
+     * Run all gates over the proposed entries.
+     *
+     * @param entries the proposed composition entries (null treated as empty).
+     * @param need    the operator need (null treated as no requirements).
+     * @return the validity result with per-gate booleans and conflicts.
+     */
     public CandidateValidity validate(List<CatalogEntry> entries, Need need) {
         if (entries == null) {
             entries = List.of();
@@ -46,6 +56,14 @@ public final class CandidateValidator {
         return new CandidateValidity(requiredCaps, versions, deps, refusals, bindings, conflicts);
     }
 
+    /**
+     * Gate: every required capability has a satisfying offer in the entry set.
+     *
+     * @param entries   the entries.
+     * @param need      the need.
+     * @param conflicts sink for {@link Conflict.VersionConflict}s.
+     * @return true iff all required capabilities are satisfied.
+     */
     private boolean checkRequiredCapabilities(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
         boolean allMet = true;
         for (CapabilityRequirement req : need.requiredCapabilities()) {
@@ -60,6 +78,14 @@ public final class CandidateValidator {
         return allMet;
     }
 
+    /**
+     * Gate: every operator artifact constraint matches some selected entry.
+     *
+     * @param entries   the entries.
+     * @param need      the need.
+     * @param conflicts sink for {@link Conflict.ArtifactConflict}s.
+     * @return true iff all artifact constraints are satisfied.
+     */
     private boolean checkVersionConstraints(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
         boolean allMet = true;
         for (ArtifactConstraint constraint : need.artifactConstraints()) {
@@ -79,6 +105,16 @@ public final class CandidateValidator {
         return allMet;
     }
 
+    /**
+     * Gate: every required component-to-component dependency resolves within the selected set.
+     * Substrate ({@code substrate=true}) and customer-controlled dependencies are excluded — they are
+     * not component-to-component gates (substrate is derived into a profile; customer deps are host-bound).
+     *
+     * @param entries   the entries.
+     * @param need      the need (unused directly; kept for signature symmetry/extension).
+     * @param conflicts sink for {@link Conflict.DependencyConflict}s.
+     * @return true iff all required dependencies resolve.
+     */
     private boolean checkRequiredDependencies(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
         boolean allResolved = true;
         Set<String> providedCapabilities = new HashSet<>();
@@ -115,6 +151,15 @@ public final class CandidateValidator {
         return allResolved;
     }
 
+    /**
+     * Gate: required concerns (from needs, or implied by peer dependencies on a refused concern) are
+     * owned by some selected component.
+     *
+     * @param entries   the entries.
+     * @param need      the need (source of explicit refusal expectations).
+     * @param conflicts sink for {@link Conflict.RefusalConflict}s.
+     * @return true iff all required concerns are owned.
+     */
     private boolean checkRefusalAlignment(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
         Set<String> concernsOwnedBySelectedComponents = new HashSet<>();
         Set<String> requiredConcerns = new LinkedHashSet<>(need.refusalExpectations());
@@ -151,6 +196,14 @@ public final class CandidateValidator {
         return aligned;
     }
 
+    /**
+     * Gate: each capability with a binding preference is offered by a provider supporting that mode.
+     *
+     * @param entries   the entries.
+     * @param need      the need (source of binding preferences).
+     * @param conflicts sink for {@link Conflict.BindingConflict}s.
+     * @return true iff all binding preferences are compatible.
+     */
     private boolean checkBindingCompatibility(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
         boolean compatible = true;
         for (CatalogEntry e : entries) {
@@ -170,6 +223,13 @@ public final class CandidateValidator {
         return compatible;
     }
 
+    /**
+     * Whether any entry offers the required capability at a satisfying version.
+     *
+     * @param entries the entries.
+     * @param req     the capability requirement.
+     * @return true iff a matching offer exists.
+     */
     private static boolean hasMatchingOffer(List<CatalogEntry> entries, CapabilityRequirement req) {
         for (CatalogEntry e : entries) {
             for (Offer o : e.claimDescriptor().claim().offers()) {
@@ -184,6 +244,13 @@ public final class CandidateValidator {
         return false;
     }
 
+    /**
+     * The first observed version of a capability across entries (for conflict messages).
+     *
+     * @param entries    the entries.
+     * @param capability the capability name.
+     * @return the first seen version, or {@code <none>}.
+     */
     private static String firstSeenVersion(List<CatalogEntry> entries, String capability) {
         for (CatalogEntry e : entries) {
             for (Offer o : e.claimDescriptor().claim().offers()) {
@@ -195,6 +262,13 @@ public final class CandidateValidator {
         return "<none>";
     }
 
+    /**
+     * Extract the capability/scheme name from a dependency URI by stripping the {@code @version} suffix
+     * and any {@code ?query} parameters.
+     *
+     * @param dep the dependency URI string.
+     * @return the capability name, or null if blank.
+     */
     private static String capabilityNameFromDependencyUri(String dep) {
         // Strip "@" suffix and any "?" query params to extract the capability/scheme name
         String trimmed = dep;

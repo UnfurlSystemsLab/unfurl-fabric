@@ -19,9 +19,24 @@ import java.util.Map;
  * <p>Catalog drift is a separate concern from signature verification — a signed contract may
  * verify cleanly even if the catalog has drifted, and a deployment server without the catalog
  * present may legitimately skip this check.
+ *
+ * <p>Pattern: stateless <b>service</b> (pure comparison; no I/O, no mutation of inputs).
  */
 public final class CatalogDriftChecker {
 
+    /**
+     * Compare a compiled contract's selected artifacts against the current catalog.
+     *
+     * <p>Builds a coordinates→entry index of the catalog, then for each selection reports either a
+     * SHA mismatch ({@code DriftEntry}) or absence from the catalog ({@code MissingEntry}). A null
+     * catalog is treated as "no information" and reported as clean (callers skip the check when no
+     * catalog is supplied).
+     *
+     * @param contract the compiled contract whose selections are checked (required).
+     * @param catalog  the current catalog, or null to skip the check.
+     * @return a drift report; {@code clean} when no mismatches or missing entries were found.
+     * @throws IllegalArgumentException if contract is null.
+     */
     public CatalogDriftReport check(CompiledContract contract, Catalog catalog) {
         if (contract == null) {
             throw new IllegalArgumentException("contract is required");

@@ -27,23 +27,45 @@ import java.util.jar.JarFile;
  * class. Catalog JARs are treated as <i>packaged capability declarations</i>; their executable
  * code is loaded only by the runtime (flow), and only after the signed contract has been
  * verified.
+ *
+ * <p>Pattern: <b>service</b> with injected collaborators (codec + clock); skips are signalled via an
+ * internal control-flow exception ({@link SkipJar}) so one bad JAR never aborts the whole scan.
  */
 public final class CatalogScanner {
 
+    /** Path within each JAR where the catalog manifest is expected. */
     static final String MANIFEST_PATH = "META-INF/unfurl-catalog.yaml";
 
+    /** Manifest parser / claim-hash computer. */
     private final CatalogManifestCodec codec;
+    /** Time source for the scan timestamp (injectable for tests). */
     private final Clock clock;
 
+    /** Production constructor: default codec and system UTC clock. */
     public CatalogScanner() {
         this(new CatalogManifestCodec(), Clock.systemUTC());
     }
 
+    /**
+     * Test/seam constructor injecting collaborators.
+     *
+     * @param codec the manifest codec (null → default).
+     * @param clock the clock (null → system UTC).
+     */
     public CatalogScanner(CatalogManifestCodec codec, Clock clock) {
         this.codec = codec == null ? new CatalogManifestCodec() : codec;
         this.clock = clock == null ? Clock.systemUTC() : clock;
     }
 
+    /**
+     * Scan a directory of {@code *.jar} files into a catalog + diagnostic report. Each JAR is parsed for
+     * its catalog manifest; unreadable/malformed/missing-manifest JARs are recorded as skips rather than
+     * failing the scan. Only a missing/inaccessible directory is fatal.
+     *
+     * @param catalogDirectory the directory to scan (required, must be a directory).
+     * @return the scan report (catalog snapshot + scan time/source + skipped entries).
+     * @throws CatalogScanException if the path is null, not a directory, or cannot be listed.
+     */
     public CatalogScanReport scan(Path catalogDirectory) {
         if (catalogDirectory == null) {
             throw new CatalogScanException("catalog directory path is null");
@@ -76,6 +98,14 @@ public final class CatalogScanner {
         return new CatalogScanReport(catalog, Instant.now(clock), catalogDirectory, skipped);
     }
 
+    /**
+     * Scan one JAR into a {@link CatalogEntry}: compute its SHA-256, parse its manifest, enrich the
+     * authored artifact with the computed SHA, and compute the claim hash.
+     *
+     * @param jarPath the JAR to scan.
+     * @return the catalog entry.
+     * @throws SkipJar if the JAR is unreadable, lacks a manifest, or the manifest is malformed.
+     */
     private CatalogEntry scanSingleJar(Path jarPath) {
         byte[] jarBytes = readJarBytes(jarPath);
         String jarSha = sha256Hex(jarBytes);
@@ -105,6 +135,13 @@ public final class CatalogScanner {
         return new CatalogEntry(artifact, claimDescriptor, metadata, parsed.componentShapeProfile(), jarPath);
     }
 
+    /**
+     * Read the full JAR bytes (for SHA-256 computation).
+     *
+     * @param jarPath the JAR path.
+     * @return the JAR bytes.
+     * @throws SkipJar if the JAR cannot be read.
+     */
     private byte[] readJarBytes(Path jarPath) {
         try {
             return Files.readAllBytes(jarPath);
@@ -114,6 +151,13 @@ public final class CatalogScanner {
         }
     }
 
+    /**
+     * Read the catalog manifest entry's bytes from the JAR (metadata access only; no code execution).
+     *
+     * @param jarPath the JAR path.
+     * @return the manifest bytes.
+     * @throws SkipJar if the manifest is missing or the JAR cannot be opened/read.
+     */
     private byte[] readManifestBytes(Path jarPath) {
         try (JarFile jar = new JarFile(jarPath.toFile(), false)) {
             JarEntry entry = jar.getJarEntry(MANIFEST_PATH);
@@ -130,6 +174,13 @@ public final class CatalogScanner {
         }
     }
 
+    /**
+     * Compute a lowercase hex SHA-256 of the given bytes.
+     *
+     * @param data the input bytes.
+     * @return the 64-char lowercase hex digest.
+     * @throws IllegalStateException if SHA-256 is unavailable on the JVM.
+     */
     private static String sha256Hex(byte[] data) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -144,10 +195,20 @@ public final class CatalogScanner {
         }
     }
 
+    /**
+     * Internal control-flow signal carrying a skip reason + detail, caught per-JAR in {@link #scan} so a
+     * single bad JAR is recorded as a {@link SkippedEntry} rather than aborting the whole scan.
+     */
     private static final class SkipJar extends RuntimeException {
+        /** The skip category. */
         private final SkippedEntry.SkipReason reason;
+        /** The human-readable detail. */
         private final String detail;
 
+        /**
+         * @param reason the skip category.
+         * @param detail the human-readable detail.
+         */
         SkipJar(SkippedEntry.SkipReason reason, String detail) {
             super(detail);
             this.reason = reason;
