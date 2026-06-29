@@ -1,0 +1,125 @@
+claim:
+  identity:
+    uri: urn:unfurl:fabric:studio
+    name: unfurl-fabric
+    kind: COMPONENT
+    version: 0.1.0
+    publisher: Unfurl
+    publisher_uri: urn:unfurl
+  domain:
+    summary: Design-time compiler and Studio API host for DCP-backed catalog admission, composition, deployment resolution, and contract handoff.
+    concerns:
+      - concern: catalog-admission
+        description: Validates uploaded DCP claims and catalog artifacts before admitting them to a tenant catalog.
+      - concern: composition-planning
+        description: Matches operator needs against DCP catalog offers and dependencies to produce deterministic composition candidates.
+      - concern: studio-api
+        description: Serves tenant-scoped Studio APIs for catalog browsing, assemblies, draft sessions, layout, authoring delegation, and deployment resolution.
+      - concern: contract-handoff
+        description: Produces compiled and signed DCP composition artifacts for downstream deployment systems.
+    boundary_principles:
+      - Fabric owns design-time catalog, planning, and Studio control-plane behavior, not production workload execution.
+      - Runtime authentication, authorization, audit, telemetry, secrets, and provider access must be expressed through DCP claims, runtime bindings, or ports before concrete adapters are wired.
+      - Studio layout and draft state are presentation and collaboration state; signed contracts remain the deployment handoff source of truth.
+  refusals:
+    - concern: production-workload-runtime
+      rationale: Fabric does not execute production component workloads; deployment runtimes such as Flow, Foundry, or customer infrastructure own runtime execution.
+      owned_by: runtime-platform
+    - concern: browser-ui-ownership
+      rationale: Fabric does not own the browser application; Studio UI behavior and validation client mirrors live in unfurl-ui.
+      owned_by: unfurl-ui
+    - concern: ai-model-runtime
+      rationale: Fabric does not host AI model execution; authoring and model/provider calls are delegated through DCP ports or Foundry runtime bindings.
+      owned_by: unfurl-foundry
+  dependencies:
+    needs:
+      - claim.dependencies.dcp.claim-validation
+      - claim.dependencies.dcp.composition-contract
+  offers:
+    - capability: fabric.catalog-admission
+      description: Accepts DCP claim YAML or JAR artifacts with embedded catalog manifests and returns structured admission diagnostics.
+      consumer_access: NAMED_COMPONENTS_ONLY
+      offer_interface:
+        interface_kind: HTTP_API
+        details:
+          route: /studio/tenants/{tenantId}/catalog/admissions
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+    - capability: fabric.catalog-query
+      description: Exposes the tenant catalog read model, visual metadata, and hash-pinned catalog snapshots to Studio clients and authoring tools.
+      consumer_access: NAMED_COMPONENTS_ONLY
+      offer_interface:
+        interface_kind: HTTP_API
+        details:
+          route: /studio/tenants/{tenantId}/catalog
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+    - capability: fabric.composition.compile
+      description: Compiles catalog-backed candidates into deterministic DCP composition contract artifacts and substrate profile metadata.
+      consumer_access: NAMED_COMPONENTS_ONLY
+      offer_interface:
+        interface_kind: HTTP_API
+        details:
+          route: /studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/compile
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+    - capability: fabric.deployment.resolve
+      description: Resolves deployment shape choices from component claims, substrate support, and deployment policy without making Studio layout authoritative.
+      consumer_access: NAMED_COMPONENTS_ONLY
+      offer_interface:
+        interface_kind: HTTP_API
+        details:
+          route: /studio/deployment/resolve
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+    - capability: fabric.authoring.delegate
+      description: Delegates Studio authoring requests to a configured Foundry DCP agent endpoint or deterministic local fallback.
+      consumer_access: NAMED_COMPONENTS_ONLY
+      offer_interface:
+        interface_kind: HTTP_API
+        details:
+          route: /studio/authoring/converse
+      stability: EXPERIMENTAL
+      version: 0.1.0
+      metered: false
+  conflict_resolution:
+    overlapping_concerns: []
+    precedence_rules:
+      - DCP claim and runtime-binding records are authoritative for cross-repo integration contracts.
+      - Signed composition contracts are authoritative for deployment handoff.
+    requires_human_escalation: false
+  integration_ports:
+    ports:
+      dcp_claim_validator:
+        kind: dependency
+        maps_to: claim.dependencies.dcp.claim-validation
+      dcp_contract_compiler:
+        kind: dependency
+        maps_to: claim.dependencies.dcp.composition-contract
+      foundry_authoring_endpoint:
+        kind: optional_runtime_binding
+        maps_to: claim.dependencies.foundry.agent-run
+  metadata:
+    dcp_version: 0.2.0
+    claim_version: 0.1.0
+    created_at: 1970-01-01T00:00:00Z
+    extensions:
+      dcp_type: COMPONENT
+      level: product
+catalog:
+  lifecycle:
+    status: ACTIVE
+  artifact:
+    coordinates: com.unfurl.fabric:unfurl-fabric:0.1.0-SNAPSHOT
+    packaging: jar
+    source: module-build
+  binding:
+    default_mode: IN_PROCESS
+    supported_modes:
+      - IN_PROCESS
+      - REMOTE_HTTP
+    remote_endpoint_hint: http://127.0.0.1:7878

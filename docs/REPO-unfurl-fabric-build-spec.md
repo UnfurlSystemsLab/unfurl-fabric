@@ -35,6 +35,15 @@ Package the Studio server jar:
 mvn -pl unfurl-fabric -am package
 ```
 
+The normal module jar and the shaded Studio server jar both embed the Fabric DCP catalog manifest at:
+
+```text
+META-INF/unfurl-catalog.yaml
+```
+
+This manifest is the DCP-backed catalog claim for the Fabric Studio control-plane component. JAR admission and package
+scanning must be able to read it without loading any Fabric classes.
+
 The shade plugin writes:
 
 ```text
@@ -115,4 +124,3 @@ Tests cover:
 - Fabric-to-Flow integration scenarios.
 
 When changing API records, run Fabric tests and the UI validation client tests if route or JSON shape changes cross into `unfurl-ui`.
-
