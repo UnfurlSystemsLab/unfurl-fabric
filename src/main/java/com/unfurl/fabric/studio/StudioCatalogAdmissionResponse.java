@@ -7,8 +7,27 @@ public record StudioCatalogAdmissionResponse(
         String assemblyId,
         String status,
         List<StudioClaimVerificationResult> results,
-        StudioCatalogVisualsResponse catalog
+        StudioCatalogVisualsResponse catalog,
+        StudioExportArtifact claimBundleArtifact
 ) {
+    /**
+     * Backward-compatible constructor for older callers that only return admission results
+     * and the updated catalog without a downloadable resolved-claims bundle.
+     */
+    public StudioCatalogAdmissionResponse(
+            String tenantId,
+            String assemblyId,
+            String status,
+            List<StudioClaimVerificationResult> results,
+            StudioCatalogVisualsResponse catalog
+    ) {
+        this(tenantId, assemblyId, status, results, catalog, null);
+    }
+
+    /**
+     * Data Transfer Object invariant: normalizes admission metadata and freezes per-file
+     * results while leaving the optional claim bundle absent when no artifact verified.
+     */
     public StudioCatalogAdmissionResponse {
         if (tenantId == null || tenantId.isBlank()) {
             throw new IllegalArgumentException("tenantId is required");

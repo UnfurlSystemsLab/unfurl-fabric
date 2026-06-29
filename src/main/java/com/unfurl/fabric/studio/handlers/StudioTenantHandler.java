@@ -57,6 +57,25 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.listCatalogVisuals(route.tenantId()));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.catalogAdmissionClaimBundle()) {
+                service.claimBundleContent(route.tenantId(), route.admissionId(), queryParam(exchange, "sha256"))
+                        .ifPresentOrElse(
+                                content -> {
+                                    try {
+                                        writeBinary(exchange, 200, content.mediaType(), content.bytes());
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                },
+                                () -> {
+                                    try {
+                                        write(exchange, 404, Map.of("error", "claim bundle is unavailable or hash verification failed"));
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                });
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.asset()) {
                 write(exchange, 200, service.visualAsset(route.tenantId(), route.assetId()));
                 return;
@@ -273,7 +292,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String sessionId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String sessionId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -288,7 +307,17 @@ public final class StudioTenantHandler {
             String tail = remainder.substring(slash + 1);
             String assembly = "";
             String assetId = "";
+            String admissionId = "";
             String sessionId = "";
+            String admissionPrefix = "catalog/admissions/";
+            if (tail.startsWith(admissionPrefix)) {
+                String admissionRemainder = tail.substring(admissionPrefix.length());
+                int admissionSlash = admissionRemainder.indexOf('/');
+                admissionId = decode(admissionSlash >= 0 ? admissionRemainder.substring(0, admissionSlash) : admissionRemainder);
+                tail = admissionSlash >= 0
+                        ? admissionPrefix + "{admissionId}/" + admissionRemainder.substring(admissionSlash + 1)
+                        : admissionPrefix + "{admissionId}";
+            }
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
                 String assemblyRemainder = tail.substring(assemblyPrefix.length());
@@ -316,7 +345,7 @@ public final class StudioTenantHandler {
                         ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
                         : sessionPrefix + "{sessionId}";
             }
-            return new Route(tenant, assembly, assetId, sessionId, tail);
+            return new Route(tenant, assembly, assetId, admissionId, sessionId, tail);
         }
 
         boolean catalogList() {
@@ -325,6 +354,10 @@ public final class StudioTenantHandler {
 
         boolean catalogAdmission() {
             return "catalog/admissions".equals(tail);
+        }
+
+        boolean catalogAdmissionClaimBundle() {
+            return "catalog/admissions/{admissionId}/claims.zip".equals(tail);
         }
 
         boolean asset() {

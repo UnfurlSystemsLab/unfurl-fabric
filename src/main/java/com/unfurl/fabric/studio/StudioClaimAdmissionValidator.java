@@ -14,8 +14,13 @@ import com.unfurl.dcp.validation.Diagnostic;
 import com.unfurl.dcp.validation.ErrorCode;
 import com.unfurl.dcp.validation.Severity;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Adapter: turns Studio-uploaded YAML into DCP claim-validation results. It accepts
@@ -24,6 +29,8 @@ import java.util.List;
  * {@link ClaimValidator} so Fabric admission cannot drift from the protocol library.
  */
 final class StudioClaimAdmissionValidator {
+    private static final String EMBEDDED_CATALOG_MANIFEST_PATH = "META-INF/unfurl-catalog.yaml";
+
     private final ObjectMapper yamlMapper;
     private final ClaimValidator claimValidator;
 
@@ -46,11 +53,15 @@ final class StudioClaimAdmissionValidator {
 
     /**
      * Strategy method: parse the artifact's claim YAML and return a verified/rejected result.
-     * Missing or malformed YAML is represented as DCP-shaped diagnostics so the Studio UI can
-     * render every admission failure through one diagnostic surface.
+     * Missing or malformed YAML or JAR manifests are represented as DCP-shaped diagnostics so
+     * the Studio UI can render every admission failure through one diagnostic surface.
      */
     AdmissionValidation validate(StudioComponentArtifactDraft artifact) {
-        if (artifact == null || artifact.claimYaml().isBlank()) {
+        ClaimYamlSource claimYamlSource = resolveClaimYaml(artifact);
+        if (!claimYamlSource.diagnostics().isEmpty()) {
+            return AdmissionValidation.rejected(claimYamlSource.diagnostics());
+        }
+        if (claimYamlSource.claimYaml().isBlank()) {
             return AdmissionValidation.rejected(List.of(new StudioDcpDiagnostic(
                     Severity.ERROR.name(),
                     ErrorCode.CLAIM_MALFORMED.name(),
@@ -58,7 +69,7 @@ final class StudioClaimAdmissionValidator {
                     "DCP claim YAML is required for catalog admission")));
         }
         try {
-            Claim claim = parseClaim(artifact.claimYaml());
+            Claim claim = parseClaim(claimYamlSource.claimYaml());
             List<StudioDcpDiagnostic> diagnostics = claimValidator.validate(claim).diagnostics().stream()
                     .map(StudioClaimAdmissionValidator::toStudioDiagnostic)
                     .toList();
@@ -66,13 +77,58 @@ final class StudioClaimAdmissionValidator {
                     .anyMatch(diagnostic -> Severity.ERROR.name().equals(diagnostic.severity()));
             return hasErrors
                     ? AdmissionValidation.rejected(diagnostics)
-                    : AdmissionValidation.verified(claim, diagnostics);
+                    : AdmissionValidation.verified(claim, diagnostics, claimYamlSource.claimYaml());
         } catch (IOException | RuntimeException ex) {
             return AdmissionValidation.rejected(List.of(new StudioDcpDiagnostic(
                     Severity.ERROR.name(),
                     ErrorCode.CLAIM_MALFORMED.name(),
                     "claim",
                     "unable to parse DCP claim YAML: " + ex.getMessage())));
+        }
+    }
+
+    /**
+     * Adapter helper: chooses the claim source for an uploaded draft. Explicit YAML wins for
+     * compatibility, while JAR drafts can supply archive bytes so Studio can extract the DCP
+     * catalog manifest without executing any artifact code.
+     */
+    private ClaimYamlSource resolveClaimYaml(StudioComponentArtifactDraft artifact) {
+        if (artifact == null) {
+            return ClaimYamlSource.empty();
+        }
+        if (!artifact.claimYaml().isBlank()) {
+            return ClaimYamlSource.fromYaml(artifact.claimYaml());
+        }
+        if (artifact.fileName().toLowerCase().endsWith(".jar") && !artifact.artifactBase64().isBlank()) {
+            return extractEmbeddedCatalogManifest(artifact.artifactBase64());
+        }
+        return ClaimYamlSource.empty();
+    }
+
+    /**
+     * Archive reader: decodes a Studio-uploaded JAR and reads only the embedded catalog
+     * manifest entry. It treats base64 and ZIP failures as claim-admission diagnostics so
+     * operators see the same DCP error panel used for schema problems.
+     */
+    private ClaimYamlSource extractEmbeddedCatalogManifest(String artifactBase64) {
+        try {
+            byte[] artifactBytes = Base64.getDecoder().decode(artifactBase64);
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(artifactBytes))) {
+                ZipEntry entry;
+                while ((entry = zip.getNextEntry()) != null) {
+                    if (!entry.isDirectory() && EMBEDDED_CATALOG_MANIFEST_PATH.equals(entry.getName())) {
+                        return ClaimYamlSource.fromYaml(new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+                    }
+                }
+            }
+            return ClaimYamlSource.rejected("artifact." + EMBEDDED_CATALOG_MANIFEST_PATH,
+                    "JAR artifact is missing " + EMBEDDED_CATALOG_MANIFEST_PATH);
+        } catch (IllegalArgumentException ex) {
+            return ClaimYamlSource.rejected("artifactBase64",
+                    "JAR artifactBase64 is not valid base64: " + ex.getMessage());
+        } catch (IOException ex) {
+            return ClaimYamlSource.rejected("artifact",
+                    "unable to read JAR artifact catalog manifest: " + ex.getMessage());
         }
     }
 
@@ -118,27 +174,29 @@ final class StudioClaimAdmissionValidator {
      */
     record AdmissionValidation(
             Claim claim,
-            List<StudioDcpDiagnostic> diagnostics
+            List<StudioDcpDiagnostic> diagnostics,
+            String claimYaml
     ) {
         /**
          * Invariant constructor: copied diagnostics prevent mutation after validation.
          */
         AdmissionValidation {
             diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
+            claimYaml = claimYaml == null ? "" : claimYaml;
         }
 
         /**
          * Factory for a verified claim with zero or more warning diagnostics.
          */
-        static AdmissionValidation verified(Claim claim, List<StudioDcpDiagnostic> diagnostics) {
-            return new AdmissionValidation(claim, diagnostics);
+        static AdmissionValidation verified(Claim claim, List<StudioDcpDiagnostic> diagnostics, String claimYaml) {
+            return new AdmissionValidation(claim, diagnostics, claimYaml);
         }
 
         /**
          * Factory for a rejected artifact; the absent claim prevents accidental catalog updates.
          */
         static AdmissionValidation rejected(List<StudioDcpDiagnostic> diagnostics) {
-            return new AdmissionValidation(null, diagnostics);
+            return new AdmissionValidation(null, diagnostics, "");
         }
 
         /**
@@ -147,6 +205,48 @@ final class StudioClaimAdmissionValidator {
         boolean verified() {
             return claim != null && diagnostics.stream()
                     .noneMatch(diagnostic -> Severity.ERROR.name().equals(diagnostic.severity()));
+        }
+    }
+
+    /**
+     * Value object: carries either resolved claim YAML or admission diagnostics from the
+     * source-selection step before semantic DCP validation begins.
+     */
+    private record ClaimYamlSource(
+            String claimYaml,
+            List<StudioDcpDiagnostic> diagnostics
+    ) {
+        /**
+         * Invariant constructor: normalizes nullable helper output to immutable values.
+         */
+        private ClaimYamlSource {
+            claimYaml = claimYaml == null ? "" : claimYaml;
+            diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
+        }
+
+        /**
+         * Factory for drafts that provide no usable claim source.
+         */
+        private static ClaimYamlSource empty() {
+            return new ClaimYamlSource("", List.of());
+        }
+
+        /**
+         * Factory for drafts whose claim material has been resolved to YAML text.
+         */
+        private static ClaimYamlSource fromYaml(String claimYaml) {
+            return new ClaimYamlSource(claimYaml, List.of());
+        }
+
+        /**
+         * Factory for claim-source failures that should block catalog admission.
+         */
+        private static ClaimYamlSource rejected(String path, String message) {
+            return new ClaimYamlSource("", List.of(new StudioDcpDiagnostic(
+                    Severity.ERROR.name(),
+                    ErrorCode.CLAIM_MALFORMED.name(),
+                    path,
+                    message)));
         }
     }
 }

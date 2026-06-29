@@ -7,11 +7,14 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,7 +89,19 @@ class StudioServerTest {
             assertThat(admission.body())
                     .contains("\"status\":\"VERIFIED\"")
                     .contains("\"catalogEntryId\":\"uploaded:payment.yaml\"")
-                    .contains("\"diagnostics\":[]");
+                    .contains("\"diagnostics\":[]")
+                    .contains("\"claimBundleArtifact\"");
+            StudioCatalogAdmissionResponse admissionBody = StudioJson.mapper()
+                    .readValue(admission.body(), StudioCatalogAdmissionResponse.class);
+            HttpResponse<byte[]> claimBundle = HttpClient.newHttpClient().send(
+                    HttpRequest.newBuilder(uri(server, admissionBody.claimBundleArtifact().url()))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofByteArray());
+            assertThat(claimBundle.statusCode()).isEqualTo(200);
+            assertThat(claimBundle.headers().firstValue("Content-Type")).contains("application/zip");
+            assertThat(zipEntries(claimBundle.body()))
+                    .contains("claims/01-payment-yaml.claim.yaml", "admission-manifest.yaml", "diagnostics.json");
 
             HttpResponse<String> needs = post(
                     server,
@@ -483,5 +498,20 @@ class StudioServerTest {
 
     private static String jsonString(String value) throws Exception {
         return StudioJson.mapper().writeValueAsString(value);
+    }
+
+    /**
+     * Fixture helper: lists ZIP entries from the binary claim-bundle response without
+     * writing test artifacts to disk.
+     */
+    private static Set<String> zipEntries(byte[] bytes) throws Exception {
+        Set<String> entries = new java.util.LinkedHashSet<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                entries.add(entry.getName());
+            }
+        }
+        return entries;
     }
 }

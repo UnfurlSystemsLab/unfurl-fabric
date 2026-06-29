@@ -16,14 +16,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.net.URI;
+import java.io.ByteArrayInputStream;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.concurrent.TimeUnit;
+import java.util.jar.JarEntry;
+import java.util.jar.JarOutputStream;
+import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,6 +77,13 @@ class StudioCatalogServiceTest {
                 .orElseThrow()
                 .visualManifest().toString())
                 .contains("claim.offers.payment.process");
+        assertThat(response.claimBundleArtifact())
+                .satisfies(artifact -> {
+                    assertThat(artifact.mediaType()).isEqualTo("application/zip");
+                    assertThat(artifact.sha256()).startsWith("sha256:");
+                    assertThat(artifact.url()).contains("/studio/tenants/tenant-a/catalog/admissions/");
+                    assertThat(artifact.url()).contains("/claims.zip?sha256=");
+                });
     }
 
     @Test
@@ -125,6 +138,93 @@ class StudioCatalogServiceTest {
                                 assertThat(diagnostic.code()).isEqualTo("CLAIM_MALFORMED");
                                 assertThat(diagnostic.path()).isEqualTo("claim");
                                 assertThat(diagnostic.message()).contains("DCP claim YAML is required");
+                            });
+                });
+    }
+
+    /**
+     * Verifies Studio admission can derive claim YAML from a JAR's embedded catalog
+     * manifest, matching the UI upload path used for Foundry and substrate artifacts.
+     */
+    @Test
+    void admitsJarArtifactByReadingEmbeddedCatalogManifest(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        String artifactBase64 = Base64.getEncoder().encodeToString(jarWithManifest(
+                dir,
+                validClaimYaml("jar-payment", "payment.process")));
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.jar", "", "", artifactBase64))));
+
+        assertThat(response.status()).isEqualTo("VERIFIED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> {
+                    assertThat(result.status()).isEqualTo("VERIFIED");
+                    assertThat(result.catalogEntryId()).isEqualTo("uploaded:payment.jar");
+                    assertThat(result.claimHash()).startsWith("sha256:");
+                    assertThat(result.diagnostics()).isEmpty();
+                });
+        assertThat(response.catalog().entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .contains("uploaded:payment.jar");
+    }
+
+    /**
+     * Verifies multi-file admission emits one downloadable ZIP that preserves each resolved
+     * DCP claim as its own file with manifest and diagnostics metadata.
+     */
+    @Test
+    void emitsDownloadableClaimBundleForMultiFileAdmission(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        String artifactBase64 = Base64.getEncoder().encodeToString(jarWithManifest(
+                dir,
+                validClaimYaml("jar-payment", "payment.authorize")));
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(
+                        new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")),
+                        new StudioComponentArtifactDraft("payment.jar", "", "", artifactBase64))));
+
+        StudioExportArtifact bundle = response.claimBundleArtifact();
+        assertThat(bundle).isNotNull();
+        StudioAssetContent content = service.claimBundleContent("tenant-a", bundle.artifactId(), bundle.sha256())
+                .orElseThrow();
+        assertThat(content.mediaType()).isEqualTo("application/zip");
+        assertThat(content.sha256()).isEqualTo(bundle.sha256());
+        assertThat(zipEntries(content.bytes()))
+                .contains(
+                        "claims/01-payment-yaml.claim.yaml",
+                        "claims/02-payment-jar.claim.yaml",
+                        "admission-manifest.yaml",
+                        "diagnostics.json");
+        assertThat(service.claimBundleContent("tenant-a", bundle.artifactId(), "sha256:wrong"))
+                .isEmpty();
+    }
+
+    /**
+     * Verifies missing embedded manifests stay visible as structured DCP diagnostics
+     * rather than admitting an archive with no catalog claim.
+     */
+    @Test
+    void rejectsJarArtifactWhenEmbeddedCatalogManifestIsMissing(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        String artifactBase64 = Base64.getEncoder().encodeToString(jarWithoutManifest(dir));
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.jar", "", "", artifactBase64))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> {
+                    assertThat(result.status()).isEqualTo("REJECTED");
+                    assertThat(result.diagnostics()).singleElement()
+                            .satisfies(diagnostic -> {
+                                assertThat(diagnostic.code()).isEqualTo("CLAIM_MALFORMED");
+                                assertThat(diagnostic.path()).isEqualTo("artifact.META-INF/unfurl-catalog.yaml");
+                                assertThat(diagnostic.message()).contains("missing META-INF/unfurl-catalog.yaml");
                             });
                 });
     }
@@ -638,5 +738,48 @@ class StudioCatalogServiceTest {
                   claim_version: 1.0.0
                   created_at: 1970-01-01T00:00:00Z
                 """.formatted(name, name, name, capability, capability, capability, capability);
+    }
+
+    /**
+     * Fixture helper: creates a minimal JAR carrying the Fabric catalog manifest entry
+     * used by Studio admission.
+     */
+    private static byte[] jarWithManifest(Path dir, String manifestYaml) throws Exception {
+        Path jar = dir.resolve("component-with-manifest.jar");
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
+            output.write(manifestYaml.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return Files.readAllBytes(jar);
+    }
+
+    /**
+     * Fixture helper: creates a valid JAR that intentionally lacks the embedded catalog
+     * manifest so negative admission behavior can be asserted.
+     */
+    private static byte[] jarWithoutManifest(Path dir) throws Exception {
+        Path jar = dir.resolve("component-without-manifest.jar");
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new JarEntry("META-INF/placeholder.txt"));
+            output.write("placeholder".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return Files.readAllBytes(jar);
+    }
+
+    /**
+     * Fixture helper: lists ZIP entry names from an in-memory Studio export artifact so
+     * tests can assert bundle structure without expanding files onto disk.
+     */
+    private static Set<String> zipEntries(byte[] bytes) throws Exception {
+        Set<String> entries = new java.util.LinkedHashSet<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                entries.add(entry.getName());
+            }
+        }
+        return entries;
     }
 }

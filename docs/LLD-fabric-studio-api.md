@@ -45,15 +45,23 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 |---|---|---|---|---|
 | `GET` | `/studio/tenants/{tenantId}/catalog` | | | `StudioCatalogVisualsResponse` |
 | `POST` | `/studio/tenants/{tenantId}/catalog/admissions` | | `StudioCatalogAdmissionRequest` | `StudioCatalogAdmissionResponse` |
+| `GET` | `/studio/tenants/{tenantId}/catalog/admissions/{admissionId}/claims.zip` | `sha256` required | | ZIP claim bundle |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}` | | | `StudioVisualAsset` |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}/content` | `sha256` optional | | Binary asset content |
 
 Catalog admissions accept uploaded component artifact drafts and update the tenant catalog after DCP claim verification.
 Each draft may carry `claimYaml`, containing either a pure DCP `Claim` YAML document or a catalog manifest with a
-top-level `claim` block. Fabric parses the claim, runs `unfurl-dcp` claim validation, and rejects the artifact when
-validation returns any `ERROR` diagnostic. Admission responses preserve DCP diagnostics as structured records with
-`severity`, `code`, `path`, and `message` so Studio can render actionable claim errors next to the artifact. Warnings
-remain visible on otherwise verified claims.
+top-level `claim` block. For `.jar` uploads, a draft may instead carry `artifactBase64`; Studio decodes the archive and
+reads `META-INF/unfurl-catalog.yaml` without loading classes or executing artifact code. Missing, malformed, or
+non-decodable embedded manifests are rejected with DCP-shaped diagnostics. Fabric parses the claim, runs `unfurl-dcp`
+claim validation, and rejects the artifact when validation returns any `ERROR` diagnostic. Admission responses preserve
+DCP diagnostics as structured records with `severity`, `code`, `path`, and `message` so Studio can render actionable
+claim errors next to the artifact. Warnings remain visible on otherwise verified claims.
+
+When an admission verifies one or more artifacts, Studio also emits a hash-pinned `claimBundleArtifact`. The bundle is a
+ZIP containing the resolved DCP claim YAML for each verified artifact, an `admission-manifest.yaml` index, and
+`diagnostics.json` for the full admission result set. Claims remain separate files inside the bundle; Fabric must not
+merge multiple component claims into a synthetic mega-claim.
 
 ## Assemblies
 

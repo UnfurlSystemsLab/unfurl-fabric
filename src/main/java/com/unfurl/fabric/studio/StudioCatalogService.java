@@ -1,5 +1,6 @@
 package com.unfurl.fabric.studio;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.unfurl.dcp.claim.Claim;
 import com.unfurl.dcp.claim.ClaimMetadata;
 import com.unfurl.dcp.claim.ComponentKind;
@@ -24,6 +25,8 @@ import com.unfurl.substrate.composition.ContractInvocation;
 import com.unfurl.substrate.composition.ContractInvocationResult;
 import com.unfurl.substrate.policy.ExecutionContext;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,17 +46,21 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 public final class StudioCatalogService {
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioAssetContent>> claimBundlesByTenant = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
     private final StudioSessionEventBus eventBus;
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
     private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
+    private final ObjectMapper jsonMapper = new ObjectMapper();
 
     /**
      * Optional DCP authoring proposer. When Fabric is configured with a DCP transport to
@@ -104,6 +111,7 @@ public final class StudioCatalogService {
                 : request;
         List<StudioVisualCatalogEntry> entries = new ArrayList<>(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries));
         List<StudioClaimVerificationResult> results = new ArrayList<>();
+        List<ResolvedClaimBundleEntry> resolvedClaims = new ArrayList<>();
 
         for (StudioComponentArtifactDraft artifact : safeRequest.artifacts()) {
             if (artifact.fileName() == null || artifact.fileName().isBlank()) {
@@ -141,6 +149,11 @@ public final class StudioCatalogService {
             StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, validation.claim(), claimHash, artifactSha);
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
+            resolvedClaims.add(new ResolvedClaimBundleEntry(
+                    artifact.fileName(),
+                    entryId,
+                    claimHash,
+                    validation.claimYaml()));
             results.add(new StudioClaimVerificationResult(
                     artifact.fileName(),
                     "VERIFIED",
@@ -155,12 +168,111 @@ public final class StudioCatalogService {
         persist();
         boolean allVerified = !results.isEmpty()
                 && results.stream().allMatch(result -> "VERIFIED".equals(result.status()));
+        StudioExportArtifact claimBundleArtifact = claimBundleArtifact(tenant, safeRequest.assemblyId(), results, resolvedClaims);
         return new StudioCatalogAdmissionResponse(
                 tenant,
                 safeRequest.assemblyId(),
                 allVerified ? "VERIFIED" : "REJECTED",
                 results,
-                response(entries));
+                response(entries),
+                claimBundleArtifact);
+    }
+
+    /**
+     * Bundle factory: packages resolved verified claims from a multi-file admission as a
+     * hash-pinned ZIP download. Claims remain separate files so Fabric preserves DCP claim
+     * boundaries while still giving operators one portable catalog-admission artifact.
+     */
+    private StudioExportArtifact claimBundleArtifact(
+            String tenantId,
+            String assemblyId,
+            List<StudioClaimVerificationResult> results,
+            List<ResolvedClaimBundleEntry> resolvedClaims
+    ) {
+        if (resolvedClaims == null || resolvedClaims.isEmpty()) {
+            return null;
+        }
+        String admissionId = "adm-" + UUID.randomUUID();
+        byte[] bytes = claimBundleBytes(tenantId, assemblyId, admissionId, results, resolvedClaims);
+        String sha = sha256(bytes);
+        StudioAssetContent content = new StudioAssetContent(bytes, "application/zip", sha);
+        claimBundlesByTenant
+                .computeIfAbsent(normalizeTenant(tenantId), ignored -> new ConcurrentHashMap<>())
+                .put(admissionId, content);
+        return new StudioExportArtifact(
+                admissionId,
+                "application/zip",
+                sha,
+                "/studio/tenants/" + normalizeTenant(tenantId) + "/catalog/admissions/"
+                        + admissionId + "/claims.zip?sha256=" + sha);
+    }
+
+    /**
+     * Archive writer: emits a deterministic internal bundle shape for an admission result,
+     * including per-claim YAML, a YAML manifest, and JSON diagnostics for operator review.
+     */
+    private byte[] claimBundleBytes(
+            String tenantId,
+            String assemblyId,
+            String admissionId,
+            List<StudioClaimVerificationResult> results,
+            List<ResolvedClaimBundleEntry> resolvedClaims
+    ) {
+        try {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (ZipOutputStream zip = new ZipOutputStream(buffer, StandardCharsets.UTF_8)) {
+                int index = 1;
+                List<String> claimPaths = new ArrayList<>();
+                for (ResolvedClaimBundleEntry resolvedClaim : resolvedClaims) {
+                    String path = "claims/%02d-%s.claim.yaml".formatted(index, slug(resolvedClaim.fileName()));
+                    claimPaths.add(path);
+                    zip.putNextEntry(new ZipEntry(path));
+                    zip.write(resolvedClaim.claimYaml().getBytes(StandardCharsets.UTF_8));
+                    zip.closeEntry();
+                    index++;
+                }
+                zip.putNextEntry(new ZipEntry("admission-manifest.yaml"));
+                zip.write(admissionManifestYaml(tenantId, assemblyId, admissionId, resolvedClaims, claimPaths)
+                        .getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+                zip.putNextEntry(new ZipEntry("diagnostics.json"));
+                zip.write(jsonMapper.writeValueAsBytes(Map.of(
+                        "tenantId", normalizeTenant(tenantId),
+                        "assemblyId", assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId,
+                        "admissionId", admissionId,
+                        "results", results == null ? List.of() : results)));
+                zip.closeEntry();
+            }
+            return buffer.toByteArray();
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to create catalog admission claim bundle", ex);
+        }
+    }
+
+    /**
+     * Manifest writer: records the claim bundle index in simple YAML so shell users can
+     * inspect the ZIP without needing a Studio client library.
+     */
+    private String admissionManifestYaml(
+            String tenantId,
+            String assemblyId,
+            String admissionId,
+            List<ResolvedClaimBundleEntry> resolvedClaims,
+            List<String> claimPaths
+    ) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("tenantId: ").append(normalizeTenant(tenantId)).append('\n');
+        builder.append("assemblyId: ").append(assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId).append('\n');
+        builder.append("admissionId: ").append(admissionId).append('\n');
+        builder.append("claims:\n");
+        for (int i = 0; i < resolvedClaims.size(); i++) {
+            ResolvedClaimBundleEntry claim = resolvedClaims.get(i);
+            builder.append("  - fileName: ").append(yamlQuote(claim.fileName())).append('\n');
+            builder.append("    catalogEntryId: ").append(yamlQuote(claim.catalogEntryId())).append('\n');
+            builder.append("    claimHash: ").append(yamlQuote(claim.claimHash())).append('\n');
+            builder.append("    path: ").append(yamlQuote(claimPaths.get(i))).append('\n');
+        }
+        return builder.toString();
     }
 
     /**
@@ -1639,6 +1751,28 @@ public final class StudioCatalogService {
         }
     }
 
+    /**
+     * Download accessor: returns a previously generated catalog-admission claim bundle only
+     * when the caller supplies the matching hash pin.
+     */
+    public Optional<StudioAssetContent> claimBundleContent(String tenantId, String admissionId, String requestedSha256) {
+        String tenant = normalizeTenant(tenantId);
+        String normalizedAdmissionId = admissionId == null ? "" : admissionId.trim();
+        if (normalizedAdmissionId.isBlank()) {
+            return Optional.empty();
+        }
+        StudioAssetContent content = claimBundlesByTenant
+                .getOrDefault(tenant, Map.of())
+                .get(normalizedAdmissionId);
+        if (content == null) {
+            return Optional.empty();
+        }
+        if (requestedSha256 != null && !requestedSha256.isBlank() && !content.sha256().equals(requestedSha256)) {
+            return Optional.empty();
+        }
+        return Optional.of(content);
+    }
+
     private StudioCatalogVisualsResponse response(List<StudioVisualCatalogEntry> entries) {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
@@ -2339,6 +2473,15 @@ public final class StudioCatalogService {
         return slug.isBlank() ? "local" : slug;
     }
 
+    /**
+     * YAML scalar helper: quotes manifest values generated from user-controlled file names
+     * and catalog ids so the admission manifest remains parseable.
+     */
+    private String yamlQuote(String value) {
+        String safe = value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"");
+        return "\"" + safe + "\"";
+    }
+
     private String sha256(String value) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -2354,6 +2497,27 @@ public final class StudioCatalogService {
             return "sha256:" + HexFormat.of().formatHex(digest.digest(bytes));
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
+    }
+
+    /**
+     * Value object: records the resolved YAML that was actually validated for a verified
+     * upload so the downloadable claim bundle is faithful to admission.
+     */
+    private record ResolvedClaimBundleEntry(
+            String fileName,
+            String catalogEntryId,
+            String claimHash,
+            String claimYaml
+    ) {
+        /**
+         * Invariant constructor: normalizes nullable admission fields before ZIP emission.
+         */
+        private ResolvedClaimBundleEntry {
+            fileName = fileName == null ? "" : fileName;
+            catalogEntryId = catalogEntryId == null ? "" : catalogEntryId;
+            claimHash = claimHash == null ? "" : claimHash;
+            claimYaml = claimYaml == null ? "" : claimYaml;
         }
     }
 }
