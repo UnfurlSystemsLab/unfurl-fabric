@@ -146,8 +146,8 @@ final class CatalogFixtures {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: IN_PROCESS
-                    supportedModes: [IN_PROCESS]
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
                 """;
     }
 
@@ -165,12 +165,12 @@ final class CatalogFixtures {
                     concerns:
                       - concern: noop
                         description: nothing
-                    boundaryPrinciples:
+                    boundary_principles:
                       - "nothing crosses the boundary"
                   refusals:
                     - concern: identity
                       rationale: nope
-                      ownedBy: someone-else
+                      owned_by: someone-else
                   offers: []
                 """;
     }
@@ -200,18 +200,18 @@ final class CatalogFixtures {
                     concerns:
                       - concern: primary
                         description: primary concern of this component
-                    boundaryPrinciples:
+                    boundary_principles:
                       - "deterministic boundary"
                   refusals:
                     - concern: identity-management
                       rationale: not our concern
-                      ownedBy: customer-idp
+                      owned_by: customer-idp
                   dependencies:
                     needs: []
                   offers:
                     - capability: %s
                       description: example offer
-                      consumerAccess: NAMED_COMPONENTS_ONLY
+                      consumer_access: NAMED_COMPONENTS_ONLY
                       stability: STABLE
                       version: %s
                       metered: false
@@ -223,8 +223,8 @@ final class CatalogFixtures {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: %s
-                    supportedModes: [%s]
+                    default_mode: %s
+                    supported_modes: [%s]
                 """,
                 identityUri, identityName, identityKind, identityVersion, publisher,
                 domainSummary,

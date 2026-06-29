@@ -135,6 +135,22 @@ The YAML may be either:
 - a pure DCP `Claim` document; or
 - the Fabric catalog-manifest envelope with a top-level `claim` block and a `catalog` block.
 
+#### Field-name convention: snake_case is canonical
+
+All field names in **both** blocks are authored in **snake_case** — this is the canonical DCP wire format
+(see `HLD-C2 §H`). Examples: `boundary_principles`, `consumer_access`, `negotiation_surface`,
+`protocols_supported`, `supported_intents`, `answer_grounding`, `cost_implications`, `owned_by`,
+`dcp_version`, `claim_version`, and in the catalog block `default_mode`, `supported_modes`,
+`component_shape_profile` (`default_shape`, `supported_shapes`, `shape_runtime` with nested `binding_mode`,
+`endpoint_ref_hint`, …).
+
+Both Fabric parse paths agree on this: the Studio admission validator
+(`StudioClaimAdmissionValidator`) and the catalog scanner (`CatalogManifestCodec`) both bind with Jackson's
+`PropertyNamingStrategies.SNAKE_CASE`. Because `FAIL_ON_UNKNOWN_PROPERTIES` is disabled, **camelCase keys
+do not error — they silently fail to bind**, producing misleading "field is required" diagnostics on a
+field that is in fact present. Always author manifests in snake_case. (The opaque claim-hash mapper is a
+deliberate exception kept stable for hash continuity; it does not affect the bound `Claim` object.)
+
 ```bash
 curl -sS -X POST "http://127.0.0.1:7878/studio/tenants/tenant-a/catalog/admissions" \
   -H "content-type: application/json" \

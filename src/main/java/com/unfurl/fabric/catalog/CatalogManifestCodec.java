@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
@@ -109,6 +110,10 @@ public final class CatalogManifestCodec {
         mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+        // Canonical DCP wire format is snake_case (HLD-C2 §H). Align the manifest reader with the
+        // snake_case admission validator (StudioClaimAdmissionValidator) so both Fabric parse paths
+        // bind identical fields. The canonical claim-hash mapper is deliberately left unchanged.
+        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
         return mapper;
     }
 

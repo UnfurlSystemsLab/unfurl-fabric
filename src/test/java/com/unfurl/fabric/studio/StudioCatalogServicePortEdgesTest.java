@@ -35,7 +35,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: ai.chat.completion
                     description: chat
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -43,7 +43,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: ai.chat.completion
                   description: chat
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -55,12 +55,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     private static final String CONSUMER_MANIFEST = """
@@ -76,7 +76,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: app.checkout
                     description: checkout
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -85,7 +85,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: app.checkout
                   description: checkout
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -97,12 +97,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     /**
@@ -124,7 +124,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: app.checkout
                     description: checkout
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -133,7 +133,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: app.checkout
                   description: checkout
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -145,12 +145,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     private static final String SUBSTRATE_OWNED_CONSUMER_MANIFEST = """
@@ -166,7 +166,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: app.checkout
                     description: checkout
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -175,7 +175,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: app.checkout
                   description: checkout
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -187,12 +187,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     private static final String UNTAGGED_UNFURL_SUBSTRATE_CONSUMER_MANIFEST = """
@@ -208,7 +208,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: app.agent
                     description: agent
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -217,7 +217,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: app.agent
                   description: agent
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -229,12 +229,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     /**
@@ -255,7 +255,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: app.checkout
                     description: checkout
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -265,7 +265,7 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: app.checkout
                   description: checkout
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -277,12 +277,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     private static final String MULTI_OFFERS_PROVIDER_MANIFEST = """
@@ -298,7 +298,7 @@ class StudioCatalogServicePortEdgesTest {
                 concerns:
                   - concern: ai.chat.completion
                     description: chat
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -306,13 +306,13 @@ class StudioCatalogServicePortEdgesTest {
               offers:
                 - capability: ai.chat.completion
                   description: chat
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
                 - capability: ai.chat.embedding
                   description: embeddings
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -324,12 +324,12 @@ class StudioCatalogServicePortEdgesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     @Test

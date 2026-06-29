@@ -150,7 +150,7 @@ class StudioDeploymentServiceTest {
                     concerns:
                       - concern: %s
                         description: %s
-                    boundaryPrinciples:
+                    boundary_principles:
                       - test boundary
                   refusals: []
                   dependencies:
@@ -158,7 +158,7 @@ class StudioDeploymentServiceTest {
                   offers:
                     - capability: %s
                       description: %s
-                      consumerAccess: ANY
+                      consumer_access: ANY
                       stability: STABLE
                       version: 1.0.0
                       metered: false
@@ -170,8 +170,8 @@ class StudioDeploymentServiceTest {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: IN_PROCESS
-                    supportedModes: [IN_PROCESS]
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
                 %s
                 """.formatted(artifact, artifact, artifact, capability, capability,
                 capability, capability, artifact, componentShapeProfileYaml);
@@ -179,10 +179,10 @@ class StudioDeploymentServiceTest {
 
     private static String containerShapeProfile() {
         return """
-                  componentShapeProfile:
-                    defaultShape: IN_PROCESS_LIBRARY
-                    supportedShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
-                    shapeRuntime: {}
+                  component_shape_profile:
+                    default_shape: IN_PROCESS_LIBRARY
+                    supported_shapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
+                    shape_runtime: {}
                 """;
     }
 }

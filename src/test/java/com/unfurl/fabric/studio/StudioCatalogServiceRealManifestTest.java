@@ -35,7 +35,7 @@ class StudioCatalogServiceRealManifestTest {
                 concerns:
                   - concern: ai.llm.anthropic
                     description: Claude completions
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -43,7 +43,7 @@ class StudioCatalogServiceRealManifestTest {
               offers:
                 - capability: ai.llm.anthropic
                   description: Claude completions
-                  consumerAccess: NAMED_COMPONENTS_ONLY
+                  consumer_access: NAMED_COMPONENTS_ONLY
                   stability: STABLE
                   version: 0.1.0
                   metered: true
@@ -55,12 +55,12 @@ class StudioCatalogServiceRealManifestTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: MANAGED_ADAPTER
-                supportedModes: [MANAGED_ADAPTER]
-              componentShapeProfile:
-                defaultShape: MANAGED_EXTERNAL_ADAPTER
-                supportedShapes: [MANAGED_EXTERNAL_ADAPTER]
-                shapeRuntime: {}
+                default_mode: MANAGED_ADAPTER
+                supported_modes: [MANAGED_ADAPTER]
+              component_shape_profile:
+                default_shape: MANAGED_EXTERNAL_ADAPTER
+                supported_shapes: [MANAGED_EXTERNAL_ADAPTER]
+                shape_runtime: {}
             """;
 
     private static final String FOUNDRY_RAG_MANIFEST = """
@@ -76,7 +76,7 @@ class StudioCatalogServiceRealManifestTest {
                 concerns:
                   - concern: rag.search
                     description: Vector retrieval
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -84,13 +84,13 @@ class StudioCatalogServiceRealManifestTest {
               offers:
                 - capability: rag.search
                   description: Retrieval
-                  consumerAccess: NAMED_COMPONENTS_ONLY
+                  consumer_access: NAMED_COMPONENTS_ONLY
                   stability: EVOLVING
                   version: 0.1.0
                   metered: false
                 - capability: rag.embed
                   description: Embeddings
-                  consumerAccess: NAMED_COMPONENTS_ONLY
+                  consumer_access: NAMED_COMPONENTS_ONLY
                   stability: EVOLVING
                   version: 0.1.0
                   metered: false
@@ -102,12 +102,12 @@ class StudioCatalogServiceRealManifestTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: IN_PROCESS
-                supportedModes: [IN_PROCESS]
-              componentShapeProfile:
-                defaultShape: IN_PROCESS_LIBRARY
-                supportedShapes: [IN_PROCESS_LIBRARY]
-                shapeRuntime: {}
+                default_mode: IN_PROCESS
+                supported_modes: [IN_PROCESS]
+              component_shape_profile:
+                default_shape: IN_PROCESS_LIBRARY
+                supported_shapes: [IN_PROCESS_LIBRARY]
+                shape_runtime: {}
             """;
 
     @Test
@@ -210,7 +210,7 @@ class StudioCatalogServiceRealManifestTest {
                     concerns:
                       - concern: demo.do
                         description: demo
-                    boundaryPrinciples:
+                    boundary_principles:
                       - "deterministic boundary"
                   refusals: []
                   dependencies:
@@ -218,7 +218,7 @@ class StudioCatalogServiceRealManifestTest {
                   offers:
                     - capability: demo.do
                       description: demo
-                      consumerAccess: NAMED_COMPONENTS_ONLY
+                      consumer_access: NAMED_COMPONENTS_ONLY
                       stability: STABLE
                       version: 0.1.0
                       metered: false
@@ -230,12 +230,12 @@ class StudioCatalogServiceRealManifestTest {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: IN_PROCESS
-                    supportedModes: [IN_PROCESS]
-                  componentShapeProfile:
-                    defaultShape: %s
-                    supportedShapes: [%s]
-                    shapeRuntime: {}
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
+                  component_shape_profile:
+                    default_shape: %s
+                    supported_shapes: [%s]
+                    shape_runtime: {}
                 """, shape.toLowerCase(), shape.toLowerCase(), shape.toLowerCase(), shape, shape);
     }
 

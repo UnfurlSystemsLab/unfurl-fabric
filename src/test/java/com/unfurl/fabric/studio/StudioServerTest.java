@@ -442,7 +442,7 @@ class StudioServerTest {
                     concerns:
                       - concern: %s
                         description: %s
-                    boundaryPrinciples:
+                    boundary_principles:
                       - test boundary
                   refusals: []
                   dependencies:
@@ -450,7 +450,7 @@ class StudioServerTest {
                   offers:
                     - capability: %s
                       description: %s
-                      consumerAccess: ANY
+                      consumer_access: ANY
                       stability: STABLE
                       version: 1.0.0
                       metered: false
@@ -462,12 +462,12 @@ class StudioServerTest {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: IN_PROCESS
-                    supportedModes: [IN_PROCESS]
-                  componentShapeProfile:
-                    defaultShape: IN_PROCESS_LIBRARY
-                    supportedShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
-                    shapeRuntime: {}
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
+                  component_shape_profile:
+                    default_shape: IN_PROCESS_LIBRARY
+                    supported_shapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
+                    shape_runtime: {}
                 """.formatted(artifact, artifact, artifact, capability, capability, capability, capability, artifact);
     }
 

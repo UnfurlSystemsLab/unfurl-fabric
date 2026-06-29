@@ -101,20 +101,20 @@ class CatalogManifestCodecTest {
         String manifest = CatalogFixtures.storageS3Manifest()
                 .replace("""
                           binding:
-                            defaultMode: IN_PROCESS
-                            supportedModes: [IN_PROCESS]
+                            default_mode: IN_PROCESS
+                            supported_modes: [IN_PROCESS]
                         """, """
                           binding:
-                            defaultMode: IN_PROCESS
-                            supportedModes: [IN_PROCESS]
-                          componentShapeProfile:
-                            defaultShape: IN_PROCESS_LIBRARY
-                            supportedShapes: [IN_PROCESS_LIBRARY, SPRING_BOOT_SERVICE]
-                            shapeRuntime:
+                            default_mode: IN_PROCESS
+                            supported_modes: [IN_PROCESS]
+                          component_shape_profile:
+                            default_shape: IN_PROCESS_LIBRARY
+                            supported_shapes: [IN_PROCESS_LIBRARY, SPRING_BOOT_SERVICE]
+                            shape_runtime:
                               SPRING_BOOT_SERVICE:
                                 shape: SPRING_BOOT_SERVICE
-                                bindingMode: REMOTE_HTTP
-                                endpointRefHint: storage-service
+                                binding_mode: REMOTE_HTTP
+                                endpoint_ref_hint: storage-service
                         """);
 
         ParsedManifest parsed = codec.parse(manifest.getBytes(StandardCharsets.UTF_8));

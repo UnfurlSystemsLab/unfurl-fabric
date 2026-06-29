@@ -152,10 +152,10 @@ class FabricCliDeploymentDiagnosticsTest {
 
     private static String containerShapeProfile() {
         return """
-                  componentShapeProfile:
-                    defaultShape: IN_PROCESS_LIBRARY
-                    supportedShapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
-                    shapeRuntime: {}
+                  component_shape_profile:
+                    default_shape: IN_PROCESS_LIBRARY
+                    supported_shapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
+                    shape_runtime: {}
                 """;
     }
 

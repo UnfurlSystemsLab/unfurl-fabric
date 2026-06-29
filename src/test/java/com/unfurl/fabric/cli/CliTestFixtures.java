@@ -137,10 +137,10 @@ final class CliTestFixtures {
                 "storage-" + shape.toLowerCase(java.util.Locale.ROOT),
                 "storage.put",
                 """
-                          componentShapeProfile:
-                            defaultShape: %s
-                            supportedShapes: [%s]
-                            shapeRuntime: {}
+                          component_shape_profile:
+                            default_shape: %s
+                            supported_shapes: [%s]
+                            shape_runtime: {}
                         """.formatted(shape, shape));
         Path needs = writeNeeds(dir, "storage.put");
         Path policy = dir.resolve("deployment-policy-" + shape.toLowerCase(java.util.Locale.ROOT) + ".yaml");
@@ -207,10 +207,10 @@ final class CliTestFixtures {
 
     private static String shapeProfile(String shape) {
         return """
-                  componentShapeProfile:
-                    defaultShape: %s
-                    supportedShapes: [%s]
-                    shapeRuntime: {}
+                  component_shape_profile:
+                    default_shape: %s
+                    supported_shapes: [%s]
+                    shape_runtime: {}
                 """.formatted(shape, shape);
     }
 
@@ -267,7 +267,7 @@ final class CliTestFixtures {
                     concerns:
                       - concern: %s
                         description: %s
-                    boundaryPrinciples:
+                    boundary_principles:
                       - test boundary
                   refusals: []
                   dependencies:
@@ -275,7 +275,7 @@ final class CliTestFixtures {
                   offers:
                     - capability: %s
                       description: %s
-                      consumerAccess: ANY
+                      consumer_access: ANY
                       stability: STABLE
                       version: 1.0.0
                       metered: false
@@ -287,8 +287,8 @@ final class CliTestFixtures {
                     packaging: jar
                     source: catalog
                   binding:
-                    defaultMode: IN_PROCESS
-                    supportedModes: [IN_PROCESS]
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
                 %s
                 """.formatted(artifact, artifact, publisher, artifact, capability, capability,
                 deps, capability, capability, lifecycle, artifact, shapeProfile);

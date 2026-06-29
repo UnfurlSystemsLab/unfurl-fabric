@@ -41,7 +41,7 @@ class StudioCatalogServiceConnectionCandidatesTest {
                 concerns:
                   - concern: ai.llm.openai
                     description: OpenAI completions
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -49,7 +49,7 @@ class StudioCatalogServiceConnectionCandidatesTest {
               offers:
                 - capability: ai.llm.openai
                   description: OpenAI completions
-                  consumerAccess: NAMED_COMPONENTS_ONLY
+                  consumer_access: NAMED_COMPONENTS_ONLY
                   stability: STABLE
                   version: 0.1.0
                   metered: true
@@ -61,12 +61,12 @@ class StudioCatalogServiceConnectionCandidatesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: MANAGED_ADAPTER
-                supportedModes: [MANAGED_ADAPTER]
-              componentShapeProfile:
-                defaultShape: MANAGED_EXTERNAL_ADAPTER
-                supportedShapes: [MANAGED_EXTERNAL_ADAPTER]
-                shapeRuntime: {}
+                default_mode: MANAGED_ADAPTER
+                supported_modes: [MANAGED_ADAPTER]
+              component_shape_profile:
+                default_shape: MANAGED_EXTERNAL_ADAPTER
+                supported_shapes: [MANAGED_EXTERNAL_ADAPTER]
+                shape_runtime: {}
             """;
 
     private static final String CONSUMER_APP_MANIFEST = """
@@ -82,7 +82,7 @@ class StudioCatalogServiceConnectionCandidatesTest {
                 concerns:
                   - concern: app.checkout
                     description: Checkout flow
-                boundaryPrinciples:
+                boundary_principles:
                   - "deterministic boundary"
               refusals: []
               dependencies:
@@ -91,7 +91,7 @@ class StudioCatalogServiceConnectionCandidatesTest {
               offers:
                 - capability: app.checkout
                   description: Checkout endpoint
-                  consumerAccess: ANY
+                  consumer_access: ANY
                   stability: STABLE
                   version: 0.1.0
                   metered: false
@@ -103,12 +103,12 @@ class StudioCatalogServiceConnectionCandidatesTest {
                 packaging: jar
                 source: catalog
               binding:
-                defaultMode: REMOTE_HTTP
-                supportedModes: [REMOTE_HTTP]
-              componentShapeProfile:
-                defaultShape: SPRING_BOOT_SERVICE
-                supportedShapes: [SPRING_BOOT_SERVICE]
-                shapeRuntime: {}
+                default_mode: REMOTE_HTTP
+                supported_modes: [REMOTE_HTTP]
+              component_shape_profile:
+                default_shape: SPRING_BOOT_SERVICE
+                supported_shapes: [SPRING_BOOT_SERVICE]
+                shape_runtime: {}
             """;
 
     @Test
