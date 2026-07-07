@@ -125,6 +125,14 @@ Layout is UI state and must not be used as a contract validity source.
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/intents` | `StudioIntentRequest` | `StudioIntentResponse` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/compile` | `StudioCompileDraftCandidateRequest` | `StudioCompileDraftCandidateResponse` |
 
+`StudioIntentRequest` records governed operator edits in the session intent log.
+`ADD_COMPONENT` and `REPLACE_COMPONENT` advance the current candidate pointer to
+the accepted catalog entry. `REMOVE_COMPONENT` clears that pointer when the
+removed catalog entry is the active candidate so later compile/export calls do
+not use stale draft state. Port-level intents such as `CONNECT` and
+`DISCONNECT` preserve the current candidate while recording their payload for
+history and collaboration.
+
 ## Session Events
 
 | Method | Path | Query | Response |

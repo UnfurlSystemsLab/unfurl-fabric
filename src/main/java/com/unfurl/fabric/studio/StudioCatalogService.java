@@ -2706,12 +2706,23 @@ public final class StudioCatalogService {
         return collaboratorId == null || collaboratorId.isBlank() ? "anonymous" : collaboratorId.trim();
     }
 
+    /**
+     * Projector: derives the session's current candidate pointer after a validated Studio intent.
+     * ADD/REPLACE point at the accepted catalog entry, REMOVE clears the pointer when the removed
+     * catalog entry was the active candidate, and non-component intents preserve the existing
+     * candidate so compile/export continues from the latest governed component selection.
+     */
     private String candidateAfterIntent(String currentCandidateId, StudioIntentRequest request, Map<String, Object> payload) {
         if ("REPLACE_COMPONENT".equals(request.type)) {
             return stringValue(payload.get("newCatalogEntryId"), currentCandidateId);
         }
         if ("ADD_COMPONENT".equals(request.type)) {
             return stringValue(payload.get("catalogEntryId"), currentCandidateId);
+        }
+        if ("REMOVE_COMPONENT".equals(request.type)
+                && currentCandidateId != null
+                && currentCandidateId.equals(stringValue(payload.get("catalogEntryId"), ""))) {
+            return "";
         }
         return currentCandidateId == null ? "" : currentCandidateId;
     }

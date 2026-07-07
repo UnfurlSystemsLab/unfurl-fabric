@@ -119,6 +119,33 @@ class StudioCatalogServiceAddComponentTest {
         assertThat(response.status()).isEqualTo("VALID");
     }
 
+    /**
+     * Regression test: REMOVE_COMPONENT clears the current candidate pointer when the active
+     * catalog entry is removed so later compile/export requests cannot target stale draft state.
+     */
+    @Test
+    void removeComponentClearsCurrentCandidateWhenItTargetsActiveCatalogEntry() {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a", "assembly-demo", "sha256:catalog",
+                        "needs-checkout", "trust-prod", "com.unfurl:validation-service:1.1.0", "alice", "Alice"));
+
+        StudioIntentRequest intent = baseAddIntent(created);
+        intent.type = "REMOVE_COMPONENT";
+        intent.put("componentId", "component.validation-service");
+        intent.put("catalogEntryId", "com.unfurl:validation-service:1.1.0");
+
+        StudioIntentResponse response = service.applyIntent(
+                "tenant-a", "assembly-demo", created.session().sessionId(), intent);
+
+        assertThat(response.status()).isEqualTo("VALID");
+        assertThat(response.updatedCandidateId()).isEmpty();
+        assertThat(response.session().currentCandidateId()).isEmpty();
+    }
+
     private static StudioIntentRequest baseAddIntent(StudioCreateDraftCompositionResponse created) {
         StudioIntentRequest intent = new StudioIntentRequest();
         intent.tenantId = "tenant-a";
