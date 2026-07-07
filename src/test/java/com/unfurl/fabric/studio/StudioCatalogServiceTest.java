@@ -87,6 +87,81 @@ class StudioCatalogServiceTest {
     }
 
     @Test
+    void removesCatalogEntriesFromTenantCatalog() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioCatalogRemovalResponse response = service.removeCatalogEntry(
+                "tenant-a",
+                "com.unfurl:validation-service:1.1.0");
+
+        assertThat(response.status()).isEqualTo("REMOVED");
+        assertThat(response.catalogEntryId()).isEqualTo("com.unfurl:validation-service:1.1.0");
+        assertThat(response.catalog().entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .doesNotContain("com.unfurl:validation-service:1.1.0")
+                .contains("com.unfurl:storage-s3:1.2.0");
+        assertThat(service.listCatalogVisuals("tenant-a").entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .doesNotContain("com.unfurl:validation-service:1.1.0");
+        assertThat(response.diagnosticArtifacts()).hasSize(1);
+    }
+
+    @Test
+    void savesAndLoadsCatalogAndAssemblySnapshots() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioCatalogSnapshot catalogSnapshot = service.saveCatalogSnapshot("tenant-a");
+        service.removeCatalogEntry("tenant-b", "com.unfurl:storage-s3:1.2.0");
+        StudioCatalogVisualsResponse loadedCatalog = service.loadCatalogSnapshot("tenant-b", catalogSnapshot);
+
+        assertThat(catalogSnapshot.diagnosticArtifacts()).hasSize(1);
+        assertThat(loadedCatalog.entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .contains("com.unfurl:storage-s3:1.2.0");
+
+        service.saveDraft("tenant-a", "assembly-checkout", new StudioSaveDraftRequest(
+                "Checkout Platform",
+                "needs-checkout",
+                "kubernetes-prod",
+                "CONTAINERIZED_SERVICE",
+                "cand-abc123",
+                3));
+        service.saveLayout("tenant-a", "assembly-checkout", new StudioLayoutStateRequest(
+                "Exploded",
+                "CHILD_DCP",
+                "payment",
+                Map.of("distance", 5.5),
+                List.of("inspect payment replacement")));
+        StudioCreateDraftCompositionResponse session = service.createDraftSession(
+                "tenant-a",
+                "assembly-checkout",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-checkout",
+                        catalogSnapshot.catalogHash(),
+                        "needs-checkout",
+                        "",
+                        "cand-abc123",
+                        "operator",
+                        "Operator"));
+
+        StudioAssemblySnapshot assemblySnapshot = service.saveAssemblySnapshot("tenant-a", "assembly-checkout");
+        StudioAssemblySnapshot loadedAssembly = service.loadAssemblySnapshot("tenant-b", "assembly-import", assemblySnapshot);
+
+        assertThat(session.session().sessionId()).isNotBlank();
+        assertThat(assemblySnapshot.diagnosticArtifacts()).hasSize(1);
+        assertThat(loadedAssembly.tenantId()).isEqualTo("tenant-b");
+        assertThat(loadedAssembly.assemblyId()).isEqualTo("assembly-import");
+        assertThat(loadedAssembly.layout().selectedSurface()).isEqualTo("payment");
+        assertThat(loadedAssembly.sessions()).singleElement()
+                .satisfies(loaded -> {
+                    assertThat(loaded.tenantId()).isEqualTo("tenant-b");
+                    assertThat(loaded.assemblyId()).isEqualTo("assembly-import");
+                    assertThat(loaded.sessionId()).isEqualTo(session.session().sessionId());
+                });
+    }
+
+    @Test
     void rejectsAdmissionWhenDcpClaimValidationFails() {
         StudioCatalogService service = new StudioCatalogService();
 

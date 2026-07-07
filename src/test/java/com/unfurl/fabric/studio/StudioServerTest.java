@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -67,6 +68,16 @@ class StudioServerTest {
             assertThat(catalog.statusCode()).isEqualTo(200);
             assertThat(catalog.body()).contains("\"catalogHash\":\"sha256:", "validation-service");
 
+            HttpResponse<String> removal = delete(
+                    server,
+                    "/studio/tenants/tenant-a/catalog/"
+                            + URLEncoder.encode("com.unfurl:storage-s3:1.2.0", StandardCharsets.UTF_8));
+            assertThat(removal.statusCode()).isEqualTo(200);
+            assertThat(removal.body())
+                    .contains("\"status\":\"REMOVED\"")
+                    .contains("\"catalogEntryId\":\"com.unfurl:storage-s3:1.2.0\"")
+                    .doesNotContain("\"catalogEntryId\":\"com.unfurl:storage-s3:1.2.0\",\"claimHash\"");
+
             HttpResponse<String> asset = get(server, "/studio/tenants/tenant-a/assets/validation-service-model");
             assertThat(asset.statusCode()).isEqualTo(200);
             assertThat(asset.body())
@@ -102,6 +113,21 @@ class StudioServerTest {
             assertThat(diagnostic.statusCode()).isEqualTo(200);
             assertThat(diagnostic.headers().firstValue("Content-Type")).contains("application/json");
             assertThat(diagnostic.body()).contains("\"status\" : \"VERIFIED\"", "\"claimBundleArtifact\"");
+
+            HttpResponse<String> catalogSnapshot = get(server, "/studio/tenants/tenant-a/catalog/snapshot");
+            assertThat(catalogSnapshot.statusCode()).isEqualTo(200);
+            assertThat(catalogSnapshot.body())
+                    .contains("\"tenantId\":\"tenant-a\"")
+                    .contains("\"catalogHash\":\"sha256:")
+                    .contains("\"entries\"");
+            HttpResponse<String> catalogLoaded = post(
+                    server,
+                    "/studio/tenants/tenant-b/catalog/snapshot",
+                    catalogSnapshot.body());
+            assertThat(catalogLoaded.statusCode()).isEqualTo(200);
+            assertThat(catalogLoaded.body())
+                    .contains("\"catalogHash\":\"sha256:")
+                    .contains("\"catalogEntryId\":\"uploaded:payment.yaml\"");
 
             HttpResponse<String> staleDiagnostic = get(
                     server,
@@ -184,6 +210,24 @@ class StudioServerTest {
             assertThat(layout.body())
                     .contains("\"selectedSurface\":\"payment\"")
                     .contains("inspect payment replacement");
+
+            HttpResponse<String> assemblySnapshot = get(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-payments/snapshot");
+            assertThat(assemblySnapshot.statusCode()).isEqualTo(200);
+            assertThat(assemblySnapshot.body())
+                    .contains("\"tenantId\":\"tenant-a\"")
+                    .contains("\"assemblyId\":\"assembly-payments\"")
+                    .contains("\"layout\"");
+            HttpResponse<String> assemblyLoaded = post(
+                    server,
+                    "/studio/tenants/tenant-b/assemblies/assembly-import/snapshot",
+                    assemblySnapshot.body());
+            assertThat(assemblyLoaded.statusCode()).isEqualTo(200);
+            assertThat(assemblyLoaded.body())
+                    .contains("\"tenantId\":\"tenant-b\"")
+                    .contains("\"assemblyId\":\"assembly-import\"")
+                    .contains("\"selectedSurface\":\"payment\"");
 
             HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
             assertThat(assemblies.statusCode()).isEqualTo(200);
@@ -397,6 +441,18 @@ class StudioServerTest {
                 HttpRequest.newBuilder(uri(server, path))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * HTTP helper: sends a DELETE request to a running StudioServer route and
+     * returns the string response body for route-contract assertions.
+     */
+    private HttpResponse<String> delete(StudioServer server, String path) throws Exception {
+        return HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(uri(server, path))
+                        .DELETE()
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
     }

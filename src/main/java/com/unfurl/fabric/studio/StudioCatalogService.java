@@ -109,6 +109,48 @@ public final class StudioCatalogService {
                 List.of(diagnosticArtifact(tenant, "catalog-snapshot", "catalog.json", snapshot)));
     }
 
+    /**
+     * Snapshot factory: captures the tenant catalog read model as portable JSON
+     * while preserving the catalog hash Fabric uses for draft grounding.
+     */
+    public StudioCatalogSnapshot saveCatalogSnapshot(String tenantId) {
+        String tenant = normalizeTenant(tenantId);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        StudioCatalogVisualsResponse catalog = response(entries);
+        StudioCatalogSnapshot snapshot = new StudioCatalogSnapshot(
+                tenant,
+                catalog.catalogHash(),
+                catalog.entries(),
+                List.of());
+        return new StudioCatalogSnapshot(
+                snapshot.tenantId(),
+                snapshot.catalogHash(),
+                snapshot.entries(),
+                List.of(diagnosticArtifact(tenant, "catalog-snapshot", "catalog-snapshot.json", snapshot)));
+    }
+
+    /**
+     * Snapshot loader: replaces the route tenant's catalog from a portable
+     * snapshot. The route tenant is authoritative so imported JSON cannot escape
+     * the tenant boundary.
+     */
+    public StudioCatalogVisualsResponse loadCatalogSnapshot(String tenantId, StudioCatalogSnapshot snapshot) {
+        String tenant = normalizeTenant(tenantId);
+        if (snapshot == null) {
+            throw new IllegalArgumentException("catalog snapshot is required");
+        }
+        List<StudioVisualCatalogEntry> entries = snapshot.entries().stream()
+                .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
+                .toList();
+        entriesByTenant.put(tenant, List.copyOf(entries));
+        persist();
+        StudioCatalogVisualsResponse catalog = response(entries);
+        return new StudioCatalogVisualsResponse(
+                catalog.catalogHash(),
+                catalog.entries(),
+                List.of(diagnosticArtifact(tenant, "catalog-snapshot-load", "catalog-snapshot-load.json", catalog)));
+    }
+
     public StudioCatalogAdmissionResponse admit(String tenantId, StudioCatalogAdmissionRequest request) {
         String tenant = normalizeTenant(tenantId);
         StudioCatalogAdmissionRequest safeRequest = request == null
@@ -189,6 +231,42 @@ public final class StudioCatalogService {
                 response.catalog(),
                 response.claimBundleArtifact(),
                 List.of(diagnosticArtifact(tenant, "catalog-admission", "catalog-admission.json", response)));
+    }
+
+    /**
+     * Command handler: removes one catalog entry from the tenant-scoped Studio catalog
+     * and returns the updated catalog snapshot. This is a tenant catalog curation
+     * operation; draft sessions that already referenced the entry are left for the
+     * normal intent/catalog validation path to reject or repair.
+     */
+    public StudioCatalogRemovalResponse removeCatalogEntry(String tenantId, String catalogEntryId) {
+        String tenant = normalizeTenant(tenantId);
+        if (catalogEntryId == null || catalogEntryId.isBlank()) {
+            throw new IllegalArgumentException("catalogEntryId is required");
+        }
+        List<StudioVisualCatalogEntry> existing = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = existing.stream()
+                .filter(entry -> !catalogEntryId.equals(entry.catalogEntryId()))
+                .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
+                .toList();
+        if (entries.size() == existing.size()) {
+            throw new IllegalArgumentException("catalog entry not found: " + catalogEntryId);
+        }
+        entriesByTenant.put(tenant, List.copyOf(entries));
+        persist();
+        StudioCatalogVisualsResponse catalog = response(entries);
+        StudioCatalogRemovalResponse response = new StudioCatalogRemovalResponse(
+                tenant,
+                catalogEntryId,
+                "REMOVED",
+                catalog,
+                List.of());
+        return new StudioCatalogRemovalResponse(
+                response.tenantId(),
+                response.catalogEntryId(),
+                response.status(),
+                response.catalog(),
+                List.of(diagnosticArtifact(tenant, "catalog-removal", "catalog-removal.json", response)));
     }
 
     /**
@@ -1512,6 +1590,120 @@ public final class StudioCatalogService {
                 List.of(diagnosticArtifact(tenant, "saved-draft", "saved-draft.json", response)));
     }
 
+    /**
+     * Snapshot factory: captures the durable Studio workspace state for one
+     * tenant/assembly. The result is a portable JSON object; compile/export
+     * validity remains governed by later Fabric DCP operations.
+     */
+    public StudioAssemblySnapshot saveAssemblySnapshot(String tenantId, String assemblyId) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = normalizeAssembly(assemblyId);
+        StudioAssemblySummary summary = assembliesByTenant
+                .computeIfAbsent(tenant, this::fixtureAssemblies)
+                .getOrDefault(assembly, defaultAssemblySummary(tenant, assembly));
+        StudioLayoutState layoutState = layout(tenant, assembly);
+        List<StudioDraftSession> sessions = sessionsByTenant
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                .values()
+                .stream()
+                .filter(session -> assembly.equals(session.assemblyId()))
+                .sorted(Comparator.comparing(StudioDraftSession::sessionId))
+                .toList();
+        StudioAssemblySnapshot snapshot = new StudioAssemblySnapshot(
+                tenant,
+                assembly,
+                summary,
+                layoutState,
+                sessions,
+                List.of());
+        return new StudioAssemblySnapshot(
+                snapshot.tenantId(),
+                snapshot.assemblyId(),
+                snapshot.assembly(),
+                snapshot.layout(),
+                snapshot.sessions(),
+                List.of(diagnosticArtifact(tenant, "assembly-snapshot", "assembly-snapshot.json", snapshot)));
+    }
+
+    /**
+     * Snapshot loader: restores a portable assembly snapshot into the addressed
+     * tenant and assembly maps. Route ids are authoritative and all imported
+     * sessions are re-scoped before persistence.
+     */
+    public StudioAssemblySnapshot loadAssemblySnapshot(
+            String tenantId,
+            String assemblyId,
+            StudioAssemblySnapshot snapshot
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String assembly = normalizeAssembly(assemblyId);
+        if (snapshot == null) {
+            throw new IllegalArgumentException("assembly snapshot is required");
+        }
+        StudioAssemblySummary sourceAssembly = snapshot.assembly() == null
+                ? defaultAssemblySummary(tenant, assembly)
+                : snapshot.assembly();
+        StudioAssemblySummary normalizedAssembly = new StudioAssemblySummary(
+                tenant,
+                assembly,
+                sourceAssembly.targetApplicationName(),
+                sourceAssembly.defaultDeploymentTarget(),
+                sourceAssembly.needsId(),
+                sourceAssembly.deploymentShape(),
+                sourceAssembly.currentCandidateId(),
+                sourceAssembly.sceneRevision());
+        assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies).put(assembly, normalizedAssembly);
+
+        StudioLayoutState sourceLayout = snapshot.layout() == null
+                ? layout(tenant, assembly)
+                : snapshot.layout();
+        StudioLayoutState normalizedLayout = new StudioLayoutState(
+                tenant,
+                assembly,
+                sourceLayout.activeView(),
+                sourceLayout.semanticZoomLevel(),
+                sourceLayout.selectedSurface(),
+                sourceLayout.camera(),
+                sourceLayout.annotations());
+        layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(assembly, normalizedLayout);
+
+        Map<String, StudioDraftSession> tenantSessions = sessionsByTenant
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        tenantSessions.keySet().removeIf(key -> key.startsWith(assembly + "/"));
+        List<StudioDraftSession> normalizedSessions = snapshot.sessions().stream()
+                .map(session -> new StudioDraftSession(
+                        tenant,
+                        assembly,
+                        session.sessionId(),
+                        session.baseCatalogHash(),
+                        session.compositionMode(),
+                        session.needsId(),
+                        session.trustPolicyId(),
+                        session.currentCandidateId(),
+                        session.sceneRevision(),
+                        session.warnings(),
+                        session.collaborators(),
+                        session.intentLog()))
+                .sorted(Comparator.comparing(StudioDraftSession::sessionId))
+                .toList();
+        normalizedSessions.forEach(session -> tenantSessions.put(sessionKey(assembly, session.sessionId()), session));
+        persist();
+        StudioAssemblySnapshot loaded = new StudioAssemblySnapshot(
+                tenant,
+                assembly,
+                normalizedAssembly,
+                normalizedLayout,
+                normalizedSessions,
+                List.of());
+        return new StudioAssemblySnapshot(
+                loaded.tenantId(),
+                loaded.assemblyId(),
+                loaded.assembly(),
+                loaded.layout(),
+                loaded.sessions(),
+                List.of(diagnosticArtifact(tenant, "assembly-snapshot-load", "assembly-snapshot-load.json", loaded)));
+    }
+
     public StudioLayoutState layout(String tenantId, String assemblyId) {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
@@ -2418,6 +2610,23 @@ public final class StudioCatalogService {
 
     private String normalizeAssembly(String assemblyId) {
         return assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+    }
+
+    /**
+     * Factory: creates a minimal assembly summary for snapshot operations when a
+     * workspace has layout/session state but no saved draft summary yet.
+     */
+    private StudioAssemblySummary defaultAssemblySummary(String tenantId, String assemblyId) {
+        String assembly = normalizeAssembly(assemblyId);
+        return new StudioAssemblySummary(
+                normalizeTenant(tenantId),
+                assembly,
+                assembly,
+                "",
+                "",
+                "CONTAINERIZED_SERVICE",
+                "",
+                0);
     }
 
     private String sessionKey(String assemblyId, String sessionId) {

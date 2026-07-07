@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.unfurl.fabric.studio.StudioAccessDecision;
 import com.unfurl.fabric.studio.StudioAccessPolicy;
+import com.unfurl.fabric.studio.StudioAssemblySnapshot;
 import com.unfurl.fabric.studio.StudioCatalogAdmissionRequest;
 import com.unfurl.fabric.studio.StudioCatalogService;
+import com.unfurl.fabric.studio.StudioCatalogSnapshot;
 import com.unfurl.fabric.studio.StudioCollaborator;
 import com.unfurl.fabric.studio.StudioCompileDraftCandidateRequest;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
@@ -55,6 +57,21 @@ public final class StudioTenantHandler {
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogList()) {
                 write(exchange, 200, service.listCatalogVisuals(route.tenantId()));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.catalogSnapshot()) {
+                write(exchange, 200, service.saveCatalogSnapshot(route.tenantId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.catalogSnapshot()) {
+                StudioCatalogSnapshot request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioCatalogSnapshot.class);
+                write(exchange, 200, service.loadCatalogSnapshot(route.tenantId(), request));
+                return;
+            }
+            if ("DELETE".equals(exchange.getRequestMethod()) && route.catalogEntry()) {
+                write(exchange, 200, service.removeCatalogEntry(route.tenantId(), route.catalogEntryId()));
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogAdmissionClaimBundle()) {
@@ -159,6 +176,17 @@ public final class StudioTenantHandler {
                         route.tenantId(),
                         route.assemblyId(),
                         queryParam(exchange, "catalogEntryId")));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.assemblySnapshot()) {
+                write(exchange, 200, service.saveAssemblySnapshot(route.tenantId(), route.assemblyId()));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.assemblySnapshot()) {
+                StudioAssemblySnapshot request = mapper.readValue(
+                        exchange.getRequestBody(),
+                        StudioAssemblySnapshot.class);
+                write(exchange, 200, service.loadAssemblySnapshot(route.tenantId(), route.assemblyId(), request));
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod()) && route.assemblyCreate()) {
@@ -311,7 +339,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String sessionId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String sessionId, String catalogEntryId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -329,6 +357,7 @@ public final class StudioTenantHandler {
             String admissionId = "";
             String diagnosticArtifactId = "";
             String sessionId = "";
+            String catalogEntryId = "";
             String admissionPrefix = "catalog/admissions/";
             if (tail.startsWith(admissionPrefix)) {
                 String admissionRemainder = tail.substring(admissionPrefix.length());
@@ -365,6 +394,20 @@ public final class StudioTenantHandler {
                         ? assetPrefix + "{assetId}/" + assetRemainder.substring(assetSlash + 1)
                         : assetPrefix + "{assetId}";
             }
+            String catalogEntryPrefix = "catalog/";
+            if (tail.startsWith(catalogEntryPrefix)
+                    && !tail.startsWith(admissionPrefix)
+                    && !"catalog/admissions".equals(tail)
+                    && !"catalog/snapshot".equals(tail)) {
+                String catalogEntryRemainder = tail.substring(catalogEntryPrefix.length());
+                int catalogEntrySlash = catalogEntryRemainder.indexOf('/');
+                catalogEntryId = decode(catalogEntrySlash >= 0
+                        ? catalogEntryRemainder.substring(0, catalogEntrySlash)
+                        : catalogEntryRemainder);
+                tail = catalogEntrySlash >= 0
+                        ? catalogEntryPrefix + "{catalogEntryId}/" + catalogEntryRemainder.substring(catalogEntrySlash + 1)
+                        : catalogEntryPrefix + "{catalogEntryId}";
+            }
             String sessionPrefix = "assemblies/{assemblyId}/sessions/";
             if (tail.startsWith(sessionPrefix)) {
                 String sessionRemainder = tail.substring(sessionPrefix.length());
@@ -374,7 +417,7 @@ public final class StudioTenantHandler {
                         ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
                         : sessionPrefix + "{sessionId}";
             }
-            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, sessionId, tail);
+            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, sessionId, catalogEntryId, tail);
         }
 
         boolean catalogList() {
@@ -383,6 +426,18 @@ public final class StudioTenantHandler {
 
         boolean catalogAdmission() {
             return "catalog/admissions".equals(tail);
+        }
+
+        boolean catalogSnapshot() {
+            return "catalog/snapshot".equals(tail);
+        }
+
+        /**
+         * Route predicate: matches tenant catalog entry commands where the catalog
+         * entry id is a single URL-encoded path segment.
+         */
+        boolean catalogEntry() {
+            return "catalog/{catalogEntryId}".equals(tail);
         }
 
         boolean catalogAdmissionClaimBundle() {
@@ -427,6 +482,10 @@ public final class StudioTenantHandler {
 
         boolean connectionCandidates() {
             return "assemblies/{assemblyId}/dynamic-dcp/connection-candidates".equals(tail);
+        }
+
+        boolean assemblySnapshot() {
+            return "assemblies/{assemblyId}/snapshot".equals(tail);
         }
 
         boolean saveDraft() {

@@ -44,7 +44,10 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 | Method | Path | Query | Request | Response |
 |---|---|---|---|---|
 | `GET` | `/studio/tenants/{tenantId}/catalog` | | | `StudioCatalogVisualsResponse` |
+| `GET` | `/studio/tenants/{tenantId}/catalog/snapshot` | | | `StudioCatalogSnapshot` |
+| `POST` | `/studio/tenants/{tenantId}/catalog/snapshot` | | `StudioCatalogSnapshot` | `StudioCatalogVisualsResponse` |
 | `POST` | `/studio/tenants/{tenantId}/catalog/admissions` | | `StudioCatalogAdmissionRequest` | `StudioCatalogAdmissionResponse` |
+| `DELETE` | `/studio/tenants/{tenantId}/catalog/{catalogEntryId}` | | | `StudioCatalogRemovalResponse` |
 | `GET` | `/studio/tenants/{tenantId}/catalog/admissions/{admissionId}/claims.zip` | `sha256` required | | ZIP claim bundle |
 | `GET` | `/studio/tenants/{tenantId}/diagnostic-artifacts/{artifactId}/content` | `sha256` required | | Hash-pinned diagnostic artifact |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}` | | | `StudioVisualAsset` |
@@ -64,12 +67,23 @@ ZIP containing the resolved DCP claim YAML for each verified artifact, an `admis
 `diagnostics.json` for the full admission result set. Claims remain separate files inside the bundle; Fabric must not
 merge multiple component claims into a synthetic mega-claim.
 
+Catalog removal deletes one catalog entry from the tenant-scoped Studio catalog and returns the updated
+`StudioCatalogVisualsResponse`. Removal is a Studio catalog curation operation, not a DCP validity shortcut: existing
+draft sessions that reference the removed entry continue to fail later catalog-grounding checks until the operator
+replaces or removes those draft components. The response includes a diagnostic artifact so support and CI can replay
+the exact catalog state after the removal.
+
+Catalog snapshots are tenant-scoped portable JSON state. Saving a catalog returns the exact DCP-backed visual entries
+and catalog hash Fabric currently serves to Studio. Loading a catalog replaces only the addressed tenant catalog; the
+route tenant remains the isolation boundary even when the JSON was saved from another tenant. The loaded entries remain
+subject to the same downstream intent validation and catalog-grounding checks as admitted entries.
+
 Studio responses that produce or transform operator-visible state may also include `diagnosticArtifacts`. These artifacts
 use the same `StudioExportArtifact` shape and point at the tenant-scoped diagnostic-artifact endpoint. Diagnostic
 artifacts are immutable, hash-pinned snapshots intended for support, CI replay, and step-by-step Flowfoundry debugging.
-Catalog admissions, catalog snapshots, needs extraction, dynamic DCP projections, saved draft summaries, created draft
-sessions, and compile responses should all expose a downloadable diagnostic artifact when the response is produced by a
-tenant-scoped route.
+Catalog admissions, catalog removals, catalog snapshots, needs extraction, dynamic DCP projections, saved draft
+summaries, created draft sessions, and compile responses should all expose a downloadable diagnostic artifact when the
+response is produced by a tenant-scoped route.
 
 ## Assemblies
 
@@ -81,9 +95,16 @@ tenant-scoped route.
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp` | | | `StudioDynamicDcpProjection` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp/replacements` | `componentNodeId` | | `StudioReplacementCandidatesResponse` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp/connection-candidates` | `catalogEntryId` | | `StudioConnectionCandidatesResponse` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/snapshot` | | | `StudioAssemblySnapshot` |
+| `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/snapshot` | | `StudioAssemblySnapshot` | `StudioAssemblySnapshot` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/drafts/save` | | `StudioSaveDraftRequest` | `StudioSaveDraftResponse` |
 
 Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation.
+
+Assembly snapshots are portable Studio workspace JSON. Saving an assembly captures the assembly summary, saved layout,
+and draft sessions for that tenant/assembly. Loading an assembly writes those records back through Fabric's Studio state
+store after normalizing tenant and assembly ids to the route. It does not deserialize arbitrary contract exports or bypass
+DCP validation; subsequent edits, compile, and export still use Fabric's governed intent and validation APIs.
 
 ## Layout
 
