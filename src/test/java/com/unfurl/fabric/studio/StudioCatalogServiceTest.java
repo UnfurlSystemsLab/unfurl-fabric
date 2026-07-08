@@ -177,6 +177,8 @@ class StudioCatalogServiceTest {
                           kind: COMPONENT
                           version: 1.0.0
                           publisher: Unfurl
+                        faults:
+                          emitted: []
                         metadata:
                           dcp_version: 0.1.0
                           claim_version: 1.0.0
@@ -911,6 +913,7 @@ class StudioCatalogServiceTest {
                 null,
                 null,
                 new IntegrationPorts(Map.of()),
+                com.unfurl.dcp.fault.FaultPolicy.empty(),
                 new ClaimMetadata("0.2.0", "1.0.0", Instant.EPOCH, extensions));
     }
 
@@ -947,6 +950,8 @@ class StudioCatalogServiceTest {
                     metered: false
                 integration_ports:
                   ports: {}
+                faults:
+                  emitted: []
                 metadata:
                   dcp_version: 0.2.0
                   claim_version: 1.0.0
@@ -1051,6 +1056,8 @@ class StudioCatalogServiceTest {
         return """
                 claim:
                 %s
+                  faults:
+                    emitted: []
                 catalog:
                   lifecycle:
                     status: ACTIVE

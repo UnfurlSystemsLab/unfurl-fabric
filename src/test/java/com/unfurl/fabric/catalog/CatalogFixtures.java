@@ -215,6 +215,8 @@ final class CatalogFixtures {
                       stability: STABLE
                       version: %s
                       metered: false
+                  faults:
+                    emitted: []
                 catalog:
                   lifecycle:
                     status: %s

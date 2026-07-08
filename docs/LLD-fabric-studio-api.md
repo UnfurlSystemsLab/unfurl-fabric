@@ -85,6 +85,11 @@ Catalog admissions, catalog removals, catalog snapshots, needs extraction, dynam
 summaries, created draft sessions, and compile responses should all expose a downloadable diagnostic artifact when the
 response is produced by a tenant-scoped route.
 
+Tenant-scoped handlers must not silently drop HTTP connections for recoverable route failures. Validation errors,
+runtime exceptions, and classpath/linkage mismatches at the handler boundary are converted to JSON error responses so
+the Vite proxy and Studio UI receive a status code instead of a socket hang-up while the operator rebuilds or restarts
+the Studio server.
+
 ## Assemblies
 
 | Method | Path | Query | Request | Response |

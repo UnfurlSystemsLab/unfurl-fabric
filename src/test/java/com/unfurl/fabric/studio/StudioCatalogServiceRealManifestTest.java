@@ -47,6 +47,8 @@ class StudioCatalogServiceRealManifestTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: true
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -94,6 +96,8 @@ class StudioCatalogServiceRealManifestTest {
                   stability: EVOLVING
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -222,6 +226,8 @@ class StudioCatalogServiceRealManifestTest {
                       stability: STABLE
                       version: 0.1.0
                       metered: false
+                  faults:
+                    emitted: []
                 catalog:
                   lifecycle:
                     status: ACTIVE

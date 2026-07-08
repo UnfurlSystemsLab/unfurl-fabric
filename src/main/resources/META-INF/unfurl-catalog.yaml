@@ -103,6 +103,81 @@ claim:
       foundry_authoring_endpoint:
         kind: optional_runtime_binding
         maps_to: claim.dependencies.foundry.agent-run
+  faults:
+    emitted:
+      - code: fabric.catalog-admission.failed
+        category: CAPABILITY
+        severity: BLOCKING
+        description: Catalog admission could not validate or admit a DCP claim or artifact.
+        affects:
+          needs:
+            - claim.dependencies.dcp.claim-validation
+          offers:
+            - fabric.catalog-admission
+            - fabric.catalog-query
+          constraints: []
+        evidence:
+          signals: [INVOCATION_ERROR, POLICY_DENIAL]
+        propagation:
+          parent_impact: BLOCKED
+          propagates_when: parent assembly depends on admitted catalog state
+          suppresses_when: existing admitted catalog snapshot remains sufficient
+        remediation:
+          allowed_actions: [inspect_admission_diagnostics, reject_artifact, repair_claim_metadata]
+      - code: fabric.composition.compile.failed
+        category: RUNTIME
+        severity: BLOCKING
+        description: Composition compile failed before producing signed DCP contract artifacts.
+        affects:
+          needs:
+            - claim.dependencies.dcp.composition-contract
+          offers:
+            - fabric.composition.compile
+          constraints: []
+        evidence:
+          signals: [INVOCATION_ERROR, CONTRACT_INVALIDATION]
+        propagation:
+          parent_impact: BLOCKED
+          propagates_when: deployment handoff requires a compiled signed contract
+          suppresses_when: previous signed contract revision remains valid
+        remediation:
+          allowed_actions: [inspect_compile_diagnostics, revise_assembly, regenerate_contract]
+      - code: fabric.deployment.resolve.failed
+        category: CAPABILITY
+        severity: DEGRADED
+        description: Deployment resolution could not produce a compatible shape plan from claims and policy.
+        affects:
+          needs:
+            - claim.dependencies.dcp.composition-contract
+          offers:
+            - fabric.deployment.resolve
+          constraints: []
+        evidence:
+          signals: [INVOCATION_ERROR, POLICY_DENIAL]
+        propagation:
+          parent_impact: DEGRADED
+          propagates_when: deployment package generation depends on resolved shape metadata
+          suppresses_when: operator keeps the assembly in draft
+        remediation:
+          allowed_actions: [adjust_deployment_policy, add_substrate_support, inspect_resolution_diagnostics]
+      - code: fabric.authoring.delegate.failed
+        category: DEPENDENCY
+        severity: DEGRADED
+        description: Authoring delegation to a Foundry endpoint or deterministic fallback failed.
+        affects:
+          needs:
+            - claim.dependencies.foundry.agent-run
+          offers:
+            - fabric.authoring.delegate
+          constraints: []
+        evidence:
+          signals: [HEALTH, INVOCATION_ERROR]
+        propagation:
+          parent_impact: DEGRADED
+          propagates_when: Studio authoring flow depends on delegated agent assistance
+          suppresses_when: deterministic local authoring fallback remains available
+        remediation:
+          allowed_actions: [repair_foundry_binding, use_local_authoring_fallback, retry_authoring_request]
   metadata:
     dcp_version: 0.2.0
     claim_version: 0.1.0

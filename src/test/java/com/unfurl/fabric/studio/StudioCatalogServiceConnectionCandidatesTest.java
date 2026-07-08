@@ -53,6 +53,8 @@ class StudioCatalogServiceConnectionCandidatesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: true
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -95,6 +97,8 @@ class StudioCatalogServiceConnectionCandidatesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE

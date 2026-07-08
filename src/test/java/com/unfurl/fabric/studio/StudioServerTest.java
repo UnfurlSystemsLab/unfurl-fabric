@@ -8,10 +8,12 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -249,6 +251,35 @@ class StudioServerTest {
                     .contains("\"componentNodeId\":\"component.validation-service\"")
                     .contains("customer-policy-validator")
                     .contains("\"status\":\"BLOCKED\"");
+
+            String uploadedJarName = "foundry-substrate-offers-0.1.0-SNAPSHOT.jar";
+            HttpResponse<String> jarAdmission = post(server, "/studio/tenants/tenant-a/catalog/admissions", """
+                    {
+                      "assemblyId": "assembly-checkout",
+                      "artifacts": [
+                        {
+                          "fileName": "%s",
+                          "artifactBase64": "%s"
+                        }
+                      ]
+                    }
+                    """.formatted(
+                            uploadedJarName,
+                            jarBase64(manifest("foundry-substrate-offers", "provider.call"))));
+            assertThat(jarAdmission.statusCode()).isEqualTo(200);
+            assertThat(jarAdmission.body())
+                    .contains("\"status\":\"VERIFIED\"")
+                    .contains("\"catalogEntryId\":\"uploaded:" + uploadedJarName + "\"");
+
+            HttpResponse<String> connections = get(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-checkout/dynamic-dcp/connection-candidates?catalogEntryId="
+                            + URLEncoder.encode("uploaded:" + uploadedJarName, StandardCharsets.UTF_8));
+            assertThat(connections.statusCode()).isEqualTo(200);
+            assertThat(connections.body())
+                    .contains("\"catalogEntryId\":\"uploaded:" + uploadedJarName + "\"")
+                    .contains("\"connections\"")
+                    .contains("\"replacements\"");
         }
     }
 
@@ -532,6 +563,20 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Fixture helper: builds an in-memory JAR upload body containing the DCP catalog
+     * manifest Studio admission expects under META-INF.
+     */
+    private static String jarBase64(String manifestYaml) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        try (JarOutputStream jar = new JarOutputStream(bytes)) {
+            jar.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
+            jar.write(manifestYaml.getBytes(StandardCharsets.UTF_8));
+            jar.closeEntry();
+        }
+        return Base64.getEncoder().encodeToString(bytes.toByteArray());
+    }
+
     private static String manifest(String artifact, String capability) {
         return """
                 claim:
@@ -548,7 +593,10 @@ class StudioServerTest {
                         description: %s
                     boundary_principles:
                       - test boundary
-                  refusals: []
+                  refusals:
+                    - concern: unrelated.concern
+                      rationale: This component deliberately owns only its declared capability.
+                      owned_by: host
                   dependencies:
                     needs: []
                   offers:
@@ -558,6 +606,14 @@ class StudioServerTest {
                       stability: STABLE
                       version: 1.0.0
                       metered: false
+                  integration_ports:
+                    ports: {}
+                  faults:
+                    emitted: []
+                  metadata:
+                    dcp_version: 0.2.0
+                    claim_version: 1.0.0
+                    created_at: 1970-01-01T00:00:00Z
                 catalog:
                   lifecycle:
                     status: ACTIVE
@@ -608,6 +664,8 @@ class StudioServerTest {
                     metered: false
                 integration_ports:
                   ports: {}
+                faults:
+                  emitted: []
                 metadata:
                   dcp_version: 0.2.0
                   claim_version: 1.0.0

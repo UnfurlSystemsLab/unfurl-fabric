@@ -279,6 +279,8 @@ final class CliTestFixtures {
                       stability: STABLE
                       version: 1.0.0
                       metered: false
+                  faults:
+                    emitted: []
                 catalog:
                   lifecycle:
                     status: %s

@@ -96,6 +96,7 @@ public final class FabricTestFixtures {
                 null,
                 null,
                 null,
+                com.unfurl.dcp.fault.FaultPolicy.empty(),
                 null);
     }
 

@@ -282,6 +282,10 @@ public final class StudioTenantHandler {
             write(exchange, 400, Map.of("error", ex.getMessage()));
         } catch (RuntimeException ex) {
             write(exchange, 500, Map.of("error", ex.getMessage()));
+        } catch (LinkageError ex) {
+            write(exchange, 500, Map.of(
+                    "error", "Studio server classpath is inconsistent; rebuild and restart the Studio server",
+                    "detail", ex.getClass().getName() + ": " + ex.getMessage()));
         }
     }
 

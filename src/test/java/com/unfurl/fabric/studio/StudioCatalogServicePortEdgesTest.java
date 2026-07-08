@@ -47,6 +47,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -89,6 +91,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -137,6 +141,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -179,6 +185,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -221,6 +229,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -269,6 +279,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
@@ -316,6 +328,8 @@ class StudioCatalogServicePortEdgesTest {
                   stability: STABLE
                   version: 0.1.0
                   metered: false
+              faults:
+                emitted: []
             catalog:
               lifecycle:
                 status: ACTIVE
