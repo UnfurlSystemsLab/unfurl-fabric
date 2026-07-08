@@ -63,4 +63,15 @@ class NeedsCodecTest {
         assertThat(parsed.artifactConstraints()).isEqualTo(original.artifactConstraints());
         assertThat(parsed.bindingPreferences()).isEqualTo(original.bindingPreferences());
     }
+
+    @Test
+    void writesNeedToStringForApiResponses() {
+        Need original = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("workflow.execute", "^1"));
+
+        Need parsed = codec.parse(codec.writeToString(original).getBytes(StandardCharsets.UTF_8));
+
+        assertThat(parsed.requiredCapabilities())
+                .extracting(CapabilityRequirement::capability)
+                .containsExactly("workflow.execute");
+    }
 }

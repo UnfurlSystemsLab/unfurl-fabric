@@ -99,6 +99,13 @@ response is produced by a tenant-scoped route.
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/snapshot` | | `StudioAssemblySnapshot` | `StudioAssemblySnapshot` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/drafts/save` | | `StudioSaveDraftRequest` | `StudioSaveDraftResponse` |
 
+Needs extraction is a DCP needs-seeding strategy, not proof that a component is already in a draft assembly.
+`StudioNeedsExtractionRequest` accepts the backward-compatible `fileNames` list and may also carry inline source
+files. Fabric derives `requiredCapabilities` by analyzing inline workflow YAML `nodes[].uses`, by inferring
+orchestration needs from recognized source names (`workflow.yaml`/flow files imply `workflow.execute`, agent manifests
+imply `agent.run`), and only falls back to the historical `<target-application>.run` starter need when no DCP
+capability can be derived. Draft membership remains governed by `StudioIntentRequest` session history.
+
 Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation.
 
 Assembly snapshots are portable Studio workspace JSON. Saving an assembly captures the assembly summary, saved layout,
@@ -124,6 +131,7 @@ Layout is UI state and must not be used as a contract validity source.
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/collaborators/heartbeat` | `StudioCollaborator` | `StudioDraftSession` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/intents` | `StudioIntentRequest` | `StudioIntentResponse` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/compile` | `StudioCompileDraftCandidateRequest` | `StudioCompileDraftCandidateResponse` |
+| `GET` | `/studio/tenants/{tenantId}/exports/{artifactId}/content` | `sha256` | `StudioExportArtifact` content |
 
 `StudioIntentRequest` records governed operator edits in the session intent log.
 `ADD_COMPONENT` and `REPLACE_COMPONENT` advance the current candidate pointer to
@@ -132,6 +140,24 @@ removed catalog entry is the active candidate so later compile/export calls do
 not use stale draft state. Port-level intents such as `CONNECT` and
 `DISCONNECT` preserve the current candidate while recording their payload for
 history and collaboration.
+
+Compile is intentionally not pointer-based. `compileCandidate` replays the
+session intent log (`ADD_COMPONENT`, `REMOVE_COMPONENT`, `REPLACE_COMPONENT`) to
+derive the complete draft inventory, grounds every referenced catalog entry in
+the tenant catalog, validates the resulting DCP composition against the stored
+or supplied `Need`, resolves deployment shapes with the requested deployment
+policy, and only then emits hash-pinned export artifacts. Successful compile
+responses echo `expectedRevision` and `receivedRevision` with the revision
+checked by the server; stale responses use `expectedRevision` for the current
+server revision and `receivedRevision` for the caller-supplied revision.
+
+Export artifacts are not synthetic URLs. The contract, substrate profile, and
+signed-contract artifacts returned by compile are stored as immutable,
+hash-pinned tenant-scoped bytes and served through
+`/studio/tenants/{tenantId}/exports/{artifactId}/content?sha256=...`.
+Signing requires an operator-configured Studio signing key pair; when signing is
+requested without configured keys, Studio emits unsigned artifacts with an
+explicit warning rather than fabricating a signature.
 
 ## Session Events
 
@@ -160,7 +186,17 @@ Authoring delegates to Foundry through DCP `agent.run` when configured. When no 
 |---|---|---|---|
 | `POST` | `/studio/deployment/resolve` | `StudioDeploymentResolveRequest` | `StudioDeploymentResolveResponse` |
 
-This endpoint resolves deployment shape choices for Studio without making UI layout authoritative.
+This endpoint resolves deployment shape choices for Studio without making UI
+layout authoritative. `StudioDeploymentResolveRequest` supports two input
+strategies:
+
+- Filesystem mode, for CLI/debug usage: `catalogPath` + `needsPath`.
+- Studio session mode, for the UI flow: `tenantId` + `assemblyId` + `sessionId`
+  with optional `needsYaml`/`needsId`.
+
+Session mode replays the same complete draft inventory as compile and consumes
+the tenant's admitted catalog/session state. It must never require browser users
+to know server filesystem paths.
 
 ## Client Mirror
 

@@ -35,4 +35,21 @@ class WorkflowAnalyzerTest {
                 .extracting(req -> req.capabilityVersion().range())
                 .containsExactly("*", "*");
     }
+
+    @Test
+    void extractsDistinctNodeUsesFromInlineContent() {
+        Need need = new WorkflowAnalyzer().analyzeContent("""
+                id: wf
+                version: 1.0.0
+                nodes:
+                  - id: agent
+                    uses: agent.run
+                  - id: store
+                    uses: storage.put
+                """, "workflow.yaml");
+
+        assertThat(need.requiredCapabilities())
+                .extracting(CapabilityRequirement::capability)
+                .containsExactly("agent.run", "storage.put");
+    }
 }

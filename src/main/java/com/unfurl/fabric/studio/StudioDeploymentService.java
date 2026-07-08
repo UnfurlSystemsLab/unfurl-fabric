@@ -34,7 +34,17 @@ import java.util.stream.Collectors;
 
 public final class StudioDeploymentService {
 
+    /**
+     * Facade method: resolves deployment shapes from filesystem catalog/needs inputs.
+     *
+     * <p>Pattern: application service entry point for CLI/debug Studio flows. The UI session
+     * flow should build a {@link CompositionCandidate} from tenant state and call
+     * {@link #resolveDeployment(CompositionCandidate, StudioDeploymentResolveRequest)}.
+     */
     public StudioDeploymentResolveResponse resolveDeployment(StudioDeploymentResolveRequest request) {
+        if (request == null || !request.usesFilesystemState()) {
+            throw new IllegalArgumentException("filesystem deployment resolve requires catalogPath and needsPath");
+        }
         Catalog catalog = new CatalogScanner().scan(request.catalogPath()).catalog();
         Need need = new NeedsCodec().read(request.needsPath());
         TrustPolicy trustPolicy = request.trustPolicy() == null ? TrustPolicy.permissive() : request.trustPolicy();
@@ -46,15 +56,39 @@ public final class StudioDeploymentService {
             return selection.invalid();
         }
 
+        return resolveDeployment(selection.candidate(), request);
+    }
+
+    /**
+     * Facade method: resolves deployment shapes for an already validated session candidate.
+     *
+     * <p>Pattern: application service entry point for the Studio session flow. Candidate-id
+     * checks remain deterministic and content-pinned; shape resolution delegates to the shared
+     * deployment resolver used by CLI/debug mode.
+     */
+    public StudioDeploymentResolveResponse resolveDeployment(
+            CompositionCandidate candidate,
+            StudioDeploymentResolveRequest request
+    ) {
+        if (candidate == null) {
+            return StudioDeploymentResolveResponse.invalid(
+                    "NO_MATCH",
+                    "no valid composition",
+                    List.of());
+        }
+        if (request != null && request.candidateId() != null && !request.candidateId().isBlank()
+                && !candidate.candidateId().equals(request.candidateId())) {
+            return StudioDeploymentResolveResponse.invalid(
+                    "UNKNOWN_CANDIDATE_ID",
+                    "unknown candidate id " + request.candidateId() + "; valid ids: " + candidate.candidateId(),
+                    List.of());
+        }
         try {
-            ResolverOutcome outcome = new DeploymentShapeResolver().resolve(
-                    deploymentComponents(selection.candidate()),
-                    allShapeSupport(),
-                    deploymentPolicy(request.deploymentPolicy()));
+            ResolverOutcome outcome = resolveOutcome(candidate, request == null ? null : request.deploymentPolicy());
             return StudioDeploymentResolveResponse.resolved(
-                    selection.candidate().candidateId(),
+                    candidate.candidateId(),
                     selections(outcome),
-                    warnings(selection.candidate()));
+                    warnings(candidate));
         } catch (DeploymentResolutionException ex) {
             return StudioDeploymentResolveResponse.invalid(
                     "DEPLOYMENT_RESOLUTION_FAILED",
@@ -67,6 +101,20 @@ public final class StudioDeploymentService {
                                     .toList())
                             .orElse(List.of()));
         }
+    }
+
+    /**
+     * Strategy helper: converts a composition candidate and Studio policy draft into the
+     * deployment resolver's binding plan outcome.
+     */
+    public ResolverOutcome resolveOutcome(
+            CompositionCandidate candidate,
+            StudioDeploymentPolicyDraft deploymentPolicy
+    ) {
+        return new DeploymentShapeResolver().resolve(
+                deploymentComponents(candidate),
+                allShapeSupport(),
+                deploymentPolicy(deploymentPolicy));
     }
 
     private Selection selectCandidate(MatchResult result, StudioDeploymentResolveRequest request) {

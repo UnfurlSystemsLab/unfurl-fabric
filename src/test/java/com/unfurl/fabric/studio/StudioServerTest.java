@@ -157,7 +157,7 @@ class StudioServerTest {
             assertThat(needs.statusCode()).isEqualTo(200);
             assertThat(needs.body())
                     .contains("\"needsId\":\"assembly-checkout-extracted-needs\"")
-                    .contains("checkout.platform.run")
+                    .contains("workflow.execute")
                     .contains("\"defaultDeploymentTarget\":\"kubernetes-prod\"");
 
             HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies", """
@@ -249,6 +249,54 @@ class StudioServerTest {
                     .contains("\"componentNodeId\":\"component.validation-service\"")
                     .contains("customer-policy-validator")
                     .contains("\"status\":\"BLOCKED\"");
+        }
+    }
+
+    @Test
+    void servesCompiledExportArtifactContent() throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-demo",
+                        "sha256:catalog",
+                        "",
+                        "trust-prod",
+                        "",
+                        "alice",
+                        "Alice"));
+        StudioIntentRequest intent = new StudioIntentRequest();
+        intent.tenantId = "tenant-a";
+        intent.assemblyId = "assembly-demo";
+        intent.sessionId = created.session().sessionId();
+        intent.baseRevision = 0;
+        intent.type = "ADD_COMPONENT";
+        intent.collaboratorId = "alice";
+        intent.put("catalogEntryId", "com.unfurl:validation-service:1.1.0");
+        service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), intent);
+        StudioCompileDraftCandidateResponse compiled = service.compileCandidate(
+                "tenant-a",
+                "assembly-demo",
+                created.session().sessionId(),
+                new StudioCompileDraftCandidateRequest(
+                        "tenant-a",
+                        "assembly-demo",
+                        created.session().sessionId(),
+                        1,
+                        false,
+                        null));
+        assertThat(compiled.status())
+                .as(compiled.reason() + ": " + compiled.details())
+                .isEqualTo("COMPILED");
+
+        try (StudioServer server = started(service)) {
+            HttpResponse<String> artifact = get(server, compiled.contractArtifact().url());
+
+            assertThat(artifact.statusCode()).isEqualTo(200);
+            assertThat(artifact.headers().firstValue("Content-Type")).contains("application/yaml");
+            assertThat(artifact.body()).contains("validation-service");
         }
     }
 

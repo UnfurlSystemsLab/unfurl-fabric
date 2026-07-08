@@ -112,6 +112,25 @@ public final class StudioTenantHandler {
                                 });
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.exportArtifactContent()) {
+                service.exportArtifactContent(route.tenantId(), route.exportArtifactId(), queryParam(exchange, "sha256"))
+                        .ifPresentOrElse(
+                                content -> {
+                                    try {
+                                        writeBinary(exchange, 200, content.mediaType(), content.bytes());
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                },
+                                () -> {
+                                    try {
+                                        write(exchange, 404, Map.of("error", "export artifact is unavailable or hash verification failed"));
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                });
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.asset()) {
                 write(exchange, 200, service.visualAsset(route.tenantId(), route.assetId()));
                 return;
@@ -339,7 +358,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String sessionId, String catalogEntryId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String exportArtifactId, String sessionId, String catalogEntryId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -356,6 +375,7 @@ public final class StudioTenantHandler {
             String assetId = "";
             String admissionId = "";
             String diagnosticArtifactId = "";
+            String exportArtifactId = "";
             String sessionId = "";
             String catalogEntryId = "";
             String admissionPrefix = "catalog/admissions/";
@@ -375,6 +395,15 @@ public final class StudioTenantHandler {
                 tail = diagnosticSlash >= 0
                         ? diagnosticPrefix + "{artifactId}/" + diagnosticRemainder.substring(diagnosticSlash + 1)
                         : diagnosticPrefix + "{artifactId}";
+            }
+            String exportPrefix = "exports/";
+            if (tail.startsWith(exportPrefix)) {
+                String exportRemainder = tail.substring(exportPrefix.length());
+                int exportSlash = exportRemainder.indexOf('/');
+                exportArtifactId = decode(exportSlash >= 0 ? exportRemainder.substring(0, exportSlash) : exportRemainder);
+                tail = exportSlash >= 0
+                        ? exportPrefix + "{artifactId}/" + exportRemainder.substring(exportSlash + 1)
+                        : exportPrefix + "{artifactId}";
             }
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
@@ -417,7 +446,7 @@ public final class StudioTenantHandler {
                         ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
                         : sessionPrefix + "{sessionId}";
             }
-            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, sessionId, catalogEntryId, tail);
+            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, exportArtifactId, sessionId, catalogEntryId, tail);
         }
 
         boolean catalogList() {
@@ -446,6 +475,13 @@ public final class StudioTenantHandler {
 
         boolean diagnosticArtifactContent() {
             return "diagnostic-artifacts/{artifactId}/content".equals(tail);
+        }
+
+        /**
+         * Route predicate: matches tenant-scoped compile/export artifact downloads.
+         */
+        boolean exportArtifactContent() {
+            return "exports/{artifactId}/content".equals(tail);
         }
 
         boolean asset() {

@@ -12,6 +12,9 @@ import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.claim.OfferInterface;
 import com.unfurl.dcp.claim.Stability;
 import com.unfurl.dcp.projection.DcpProjectionProjector;
+import com.unfurl.fabric.needs.CapabilityRequirement;
+import com.unfurl.fabric.needs.Need;
+import com.unfurl.fabric.needs.NeedsCodec;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -305,18 +308,154 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void extractsStarterNeedsForTargetApplication() {
+    void extractsFlowfoundryNeedsFromSourceNames() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioNeedsExtractionResponse response = service.extractNeeds(
+                "tenant-a",
+                "flowfoundry-export",
+                new StudioNeedsExtractionRequest(
+                        "Flowfoundry Export",
+                        List.of("workflow.yaml", "workload-agent.agent.yaml"),
+                        "containerized-local"));
+
+        Need parsed = new NeedsCodec().parse(response.suggestedNeedsYaml().getBytes(StandardCharsets.UTF_8));
+
+        assertThat(response.needsId()).isEqualTo("flowfoundry-export-extracted-needs");
+        assertThat(parsed.requiredCapabilities())
+                .extracting(CapabilityRequirement::capability)
+                .containsExactly("workflow.execute", "agent.run");
+        assertThat(response.suggestedNeedsYaml()).doesNotContain("flowfoundry.export.run");
+        assertThat(response.defaultDeploymentTarget()).isEqualTo("containerized-local");
+        assertThat(response.warnings()).containsExactly(
+                "source file contents not supplied; inferred capabilities from file names only");
+    }
+
+    @Test
+    void extractsWorkflowNodeNeedsFromInlineSource() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioNeedsExtractionResponse response = service.extractNeeds(
+                "tenant-a",
+                "flowfoundry-export",
+                new StudioNeedsExtractionRequest(
+                        "Flowfoundry Export",
+                        List.of(),
+                        "containerized-local",
+                        List.of(new StudioNeedsExtractionSourceFile("workflow.yaml", """
+                                id: export
+                                nodes:
+                                  - id: run-agent
+                                    uses: agent.run
+                                  - id: publish
+                                    uses: storage.put
+                                """))));
+
+        Need parsed = new NeedsCodec().parse(response.suggestedNeedsYaml().getBytes(StandardCharsets.UTF_8));
+
+        assertThat(parsed.requiredCapabilities())
+                .extracting(CapabilityRequirement::capability)
+                .containsExactly("workflow.execute", "agent.run", "storage.put");
+        assertThat(response.warnings()).isEmpty();
+    }
+
+    @Test
+    void fallsBackToStarterNeedsWhenNoDcpCapabilityCanBeInferred() {
         StudioCatalogService service = new StudioCatalogService();
 
         StudioNeedsExtractionResponse response = service.extractNeeds(
                 "tenant-a",
                 "assembly-checkout",
-                new StudioNeedsExtractionRequest("Checkout Platform", List.of("workflow.yaml"), "kubernetes-prod"));
+                new StudioNeedsExtractionRequest("Checkout Platform", List.of("README.md"), "kubernetes-prod"));
 
-        assertThat(response.needsId()).isEqualTo("assembly-checkout-extracted-needs");
-        assertThat(response.suggestedNeedsYaml()).contains("checkout.platform.run");
+        Need parsed = new NeedsCodec().parse(response.suggestedNeedsYaml().getBytes(StandardCharsets.UTF_8));
+
+        assertThat(parsed.requiredCapabilities())
+                .extracting(CapabilityRequirement::capability)
+                .containsExactly("checkout.platform.run");
         assertThat(response.defaultDeploymentTarget()).isEqualTo("kubernetes-prod");
-        assertThat(response.warnings()).isEmpty();
+        assertThat(response.warnings()).contains(
+                "source file contents not supplied; inferred capabilities from file names only",
+                "no DCP capabilities could be inferred from supplied files; generated starter needs");
+    }
+
+    @Test
+    void resolvesDeploymentFromTenantSessionInventory(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioDeploymentResolveResponse response = service.resolveDeployment(new StudioDeploymentResolveRequest(
+                null,
+                null,
+                null,
+                null,
+                true,
+                containerPolicy(),
+                "tenant-a",
+                "assembly-flow",
+                created.session().sessionId(),
+                "",
+                ""));
+
+        assertThat(response.status()).isEqualTo("RESOLVED");
+        assertThat(response.candidateId()).startsWith("cand-");
+        assertThat(response.selections())
+                .extracting(StudioDeploymentSelection::capability)
+                .contains("workflow.execute", "agent.run");
+        assertThat(response.selections())
+                .extracting(selection -> selection.deploymentShape().name())
+                .containsOnly("CONTAINERIZED_SERVICE");
+    }
+
+    @Test
+    void compilesFullSessionInventoryAndServesExportArtifacts(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioCompileDraftCandidateResponse response = service.compileCandidate(
+                "tenant-a",
+                "assembly-flow",
+                created.session().sessionId(),
+                new StudioCompileDraftCandidateRequest(
+                        "tenant-a",
+                        "assembly-flow",
+                        created.session().sessionId(),
+                        2,
+                        false,
+                        containerPolicy()));
+
+        assertThat(response.status())
+                .as(response.reason() + ": " + response.details())
+                .isEqualTo("COMPILED");
+        assertThat(response.candidateId()).startsWith("cand-");
+        assertThat(response.candidateId()).isNotEqualTo("uploaded:foundry.jar");
+        assertThat(response.expectedRevision()).isEqualTo(2);
+        assertThat(response.receivedRevision()).isEqualTo(2);
+        assertThat(response.contractArtifact().url()).contains("/studio/tenants/tenant-a/exports/");
+        assertThat(service.exportArtifactContent(
+                "tenant-a",
+                response.contractArtifact().artifactId(),
+                response.contractArtifact().sha256()))
+                .hasValueSatisfying(content -> {
+                    String contract = new String(content.bytes(), StandardCharsets.UTF_8);
+                    assertThat(contract)
+                            .contains("com.unfurl:flow:1.0.0")
+                            .contains("com.unfurl:foundry:1.0.0");
+                });
+        assertThat(service.exportArtifactContent(
+                "tenant-a",
+                response.substrateProfileArtifact().artifactId(),
+                response.substrateProfileArtifact().sha256()))
+                .hasValueSatisfying(content -> assertThat(content.mediaType()).isEqualTo("application/yaml"));
+        assertThat(service.exportArtifactContent(
+                "tenant-a",
+                response.contractArtifact().artifactId(),
+                "sha256:wrong"))
+                .isEmpty();
     }
 
     @Test
@@ -813,6 +952,131 @@ class StudioCatalogServiceTest {
                   claim_version: 1.0.0
                   created_at: 1970-01-01T00:00:00Z
                 """.formatted(name, name, name, capability, capability, capability, capability);
+    }
+
+    /**
+     * Fixture service: admits Flow and Foundry manifest JARs, then stores extracted
+     * workflow/agent needs for a tenant assembly.
+     */
+    private static StudioCatalogService flowfoundrySessionService(Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-flow",
+                List.of(
+                        new StudioComponentArtifactDraft(
+                                "flow.jar",
+                                "",
+                                "",
+                                Base64.getEncoder().encodeToString(jarWithManifest(
+                                        dir,
+                                        catalogManifestYaml("flow", "workflow.execute")))),
+                        new StudioComponentArtifactDraft(
+                                "foundry.jar",
+                                "",
+                                "",
+                                Base64.getEncoder().encodeToString(jarWithManifest(
+                                        dir,
+                                        catalogManifestYaml("foundry", "agent.run")))))));
+        service.extractNeeds(
+                "tenant-a",
+                "assembly-flow",
+                new StudioNeedsExtractionRequest(
+                        "Flowfoundry Export",
+                        List.of("workflow.yaml", "workload.agent.yaml"),
+                        "containerized-local"));
+        return service;
+    }
+
+    /**
+     * Fixture builder: creates a Studio draft session pointing at the extracted
+     * Flowfoundry needs id.
+     */
+    private static StudioCreateDraftCompositionResponse flowfoundryDraftSession(StudioCatalogService service) {
+        return service.createDraftSession(
+                "tenant-a",
+                "assembly-flow",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-flow",
+                        "sha256:catalog",
+                        "assembly-flow-extracted-needs",
+                        "trust-prod",
+                        "",
+                        "alice",
+                        "Alice"));
+    }
+
+    /**
+     * Fixture command: applies one ADD_COMPONENT intent at the supplied revision.
+     */
+    private static void addComponent(
+            StudioCatalogService service,
+            StudioDraftSession session,
+            String catalogEntryId,
+            long revision
+    ) {
+        StudioIntentRequest intent = new StudioIntentRequest();
+        intent.tenantId = session.tenantId();
+        intent.assemblyId = session.assemblyId();
+        intent.sessionId = session.sessionId();
+        intent.baseRevision = revision;
+        intent.type = "ADD_COMPONENT";
+        intent.collaboratorId = "alice";
+        intent.put("catalogEntryId", catalogEntryId);
+        StudioIntentResponse response = service.applyIntent(
+                session.tenantId(),
+                session.assemblyId(),
+                session.sessionId(),
+                intent);
+        assertThat(response.status()).isEqualTo("VALID");
+    }
+
+    /**
+     * Fixture policy: asks the deployment resolver to choose containerized runtime
+     * shapes from the component shape profiles embedded in the test manifests.
+     */
+    private static StudioDeploymentPolicyDraft containerPolicy() {
+        return new StudioDeploymentPolicyDraft(
+                List.of("CONTAINERIZED_SERVICE"),
+                List.of(),
+                List.of(),
+                new StudioDeploymentRuntimeDraft("21", true, true, true, null));
+    }
+
+    /**
+     * Fixture manifest: wraps a pure DCP claim with catalog metadata and a shape profile
+     * that supports containerized deployment.
+     */
+    private static String catalogManifestYaml(String name, String capability) {
+        return """
+                claim:
+                %s
+                catalog:
+                  lifecycle:
+                    status: ACTIVE
+                  artifact:
+                    coordinates: com.unfurl:%s:1.0.0
+                    packaging: jar
+                    source: catalog
+                  binding:
+                    default_mode: IN_PROCESS
+                    supported_modes: [IN_PROCESS]
+                  component_shape_profile:
+                    default_shape: IN_PROCESS_LIBRARY
+                    supported_shapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]
+                    shape_runtime: {}
+                """.formatted(indent(validClaimYaml(name, capability), 2), name);
+    }
+
+    /**
+     * Fixture formatter: indents every line of a YAML block by the requested spaces.
+     */
+    private static String indent(String yaml, int spaces) {
+        String prefix = " ".repeat(spaces);
+        return yaml.lines()
+                .map(line -> prefix + line)
+                .reduce((left, right) -> left + "\n" + right)
+                .orElse("");
     }
 
     /**

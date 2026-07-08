@@ -121,7 +121,10 @@ public final class StudioServer implements AutoCloseable {
                     "status", status == 200 ? "READY" : "NOT_READY",
                     "eventBus", eventBusHealth));
         }));
-        ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(new StudioDeploymentService(), mapper);
+        ResolveDeploymentHandler resolveDeployment = new ResolveDeploymentHandler(
+                new StudioDeploymentService(),
+                catalogService,
+                mapper);
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
         StudioAuthoringHandler authoringHandler = new StudioAuthoringHandler(catalogService, mapper);
         server.createContext("/studio/authoring", withCors(authoringHandler::handle));

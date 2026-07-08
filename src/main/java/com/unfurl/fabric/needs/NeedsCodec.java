@@ -111,6 +111,21 @@ public final class NeedsCodec {
     }
 
     /**
+     * Encode a {@link Need} as YAML text for API responses and diagnostic artifacts.
+     *
+     * @param need the need to serialize.
+     * @return YAML text using the same provider-friendly schema as {@link #write(Need, Path)}.
+     * @throws NeedsException if the need cannot be rendered.
+     */
+    public String writeToString(Need need) {
+        try {
+            return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(toEnvelope(need));
+        } catch (IOException ex) {
+            throw new NeedsException("unable to render needs: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
      * Map a decoded wire {@link NeedsEnvelope} into the immutable domain {@link Need}.
      *
      * @param envelope the parsed envelope.

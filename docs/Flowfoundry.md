@@ -226,11 +226,18 @@ Create the design-time assembly that will hold the draft composition.
 curl -sS -X POST "http://127.0.0.1:7878/studio/tenants/tenant-a/assemblies" \
   -H "content-type: application/json" \
   -H "X-Unfurl-Tenant: tenant-a" \
-  -d '{"name":"flowfoundry-export"}' \
+  -d '{
+    "assemblyId": "flowfoundry-export",
+    "targetApplicationName": "Flowfoundry Export",
+    "defaultDeploymentTarget": "containerized-local"
+  }' \
   -o assembly.json
 ```
 
-Record the returned `assemblyId`.
+The `assemblyId` is the stable tenant-scoped workspace identifier used by later needs, session,
+layout, projection, and compile routes. `targetApplicationName` is the operator-facing label,
+and `defaultDeploymentTarget` seeds later deployment resolution choices. Record the returned
+`assemblyId`.
 
 ## Step 5: Extract Or Provide Needs
 
@@ -246,6 +253,21 @@ curl -sS -X POST \
 ```
 
 The needs must include the durable workflow and AI capabilities required by the workload. For an agent-backed flow, include a need for `workflow.execute` and a need for `agent.run`; model, RAG, tool, auth, telemetry, and secret concerns should appear as DCP dependencies or ports.
+Studio derives those needs from supplied source metadata: `workflow.yaml` implies the Flow runtime need
+`workflow.execute`, `*.agent.yaml` implies the Foundry need `agent.run`, and inline workflow content can add node
+capabilities from `nodes[].uses`. A correct Flowfoundry extraction response therefore contains at least:
+
+```yaml
+requiredCapabilities:
+  - capability: workflow.execute
+    capabilityVersion: ^1
+  - capability: agent.run
+    capabilityVersion: ^1
+```
+
+This extraction seeds composition; it does not prove Flow or Foundry artifacts are already part of the assembly draft.
+Verify draft membership after Step 8 by checking the session intent log or assembly snapshot for the accepted
+`uploaded:unfurl-flow-...` and `uploaded:unfurl-foundry-...` catalog entry ids.
 
 Download the needs diagnostic artifact from the response or UI before continuing; it preserves both the suggested
 `needs.yaml` and the extraction warnings used to seed composition.
@@ -347,7 +369,23 @@ Ask Studio to resolve deployment choices for the draft composition.
 ```bash
 curl -sS -X POST "http://127.0.0.1:7878/studio/deployment/resolve" \
   -H "content-type: application/json" \
-  -d @deployment-resolve-request.json \
+  -d '{
+    "tenantId": "tenant-a",
+    "assemblyId": "<assemblyId>",
+    "sessionId": "<sessionId>",
+    "autoSelectBest": true,
+    "deploymentPolicy": {
+      "preferredShapes": ["CONTAINERIZED_SERVICE", "SPRING_BOOT_SERVICE", "IN_PROCESS_LIBRARY"],
+      "disallowedShapes": [],
+      "requireIsolationForCapabilityPatterns": [],
+      "runtime": {
+        "javaVersion": "21",
+        "springBoot": true,
+        "kubernetes": true,
+        "serviceMesh": true
+      }
+    }
+  }' \
   -o deployment-resolve-response.json
 ```
 
@@ -373,8 +411,7 @@ curl -sS -X POST \
   -H "content-type: application/json" \
   -H "X-Unfurl-Tenant: tenant-a" \
   -d '{
-    "candidateId": "<candidateId>",
-    "baseRevision": <latestRevision>,
+    "expectedRevision": <latestRevision>,
     "sign": true
   }' \
   -o compile-response.json
@@ -410,11 +447,14 @@ jq -r '.signedContractArtifact.url' compile-response.json | xargs -I{} \
   curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-contract.json
 ```
 
-Current implementation note: `StudioCompileDraftCandidateResponse` returns artifact metadata and URLs. If the export-content route is not wired in the running server yet, persist the same logical artifacts from the CLI/service layer and keep the file names above. The deployment package should not depend on Studio session internals.
+Compile artifact URLs are hash-pinned Studio export routes. A missing or mismatched `sha256` must fail the download
+rather than returning mutable session state.
 
 ## Step 13: Create Runtime Bindings
 
-Create a runtime binding file for the container environment.
+Create a runtime binding file for the container environment from the signed contract, substrate profile, and deployment
+resolution response. This is the boundary where Studio handoff ends and the deploy emitter/runtime package assembly
+begins.
 
 The binding must reference:
 
