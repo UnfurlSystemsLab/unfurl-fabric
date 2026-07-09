@@ -10,11 +10,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.zip.ZipInputStream;
@@ -423,6 +426,74 @@ class StudioServerTest {
             assertThat(content.headers().firstValue("Content-Type")).contains("model/gltf-binary");
             assertThat(new String(content.body(), StandardCharsets.UTF_8))
                     .isEqualTo("asset:validation-service:META-INF/visual/validation-service.glb");
+        }
+    }
+
+    /**
+     * Regression test: keeps a live session event stream open while sending other tenant
+     * requests, proving the server executor prevents SSE from starving intent/catalog work.
+     */
+    @Test
+    void liveSessionEventsDoNotBlockConcurrentTenantRequests() throws Exception {
+        try (StudioServer server = started()) {
+            HttpClient client = HttpClient.newHttpClient();
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
+                    {
+                      "baseCatalogHash": "sha256:catalog",
+                      "needsId": "needs-checkout"
+                    }
+                    """);
+            StudioCreateDraftCompositionResponse createdBody = StudioJson.mapper()
+                    .readValue(created.body(), StudioCreateDraftCompositionResponse.class);
+            String sessionPath = "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/"
+                    + createdBody.session().sessionId();
+            var eventsFuture = client.sendAsync(
+                    HttpRequest.newBuilder(uri(server, sessionPath + "/events"))
+                            .timeout(Duration.ofSeconds(5))
+                            .GET()
+                            .build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            HttpResponse<InputStream> events = eventsFuture.get(5, TimeUnit.SECONDS);
+            assertThat(events.statusCode()).isEqualTo(200);
+            assertThat(events.headers().firstValue("Content-Type"))
+                    .hasValueSatisfying(contentType -> assertThat(contentType).contains("text/event-stream"));
+
+            try (InputStream ignored = events.body()) {
+                HttpResponse<String> intent = client.send(
+                        HttpRequest.newBuilder(uri(server, sessionPath + "/intents"))
+                                .timeout(Duration.ofSeconds(5))
+                                .header("Content-Type", "application/json")
+                                .POST(HttpRequest.BodyPublishers.ofString("""
+                                        {
+                                          "tenantId": "tenant-a",
+                                          "assemblyId": "assembly-demo",
+                                          "sessionId": "%s",
+                                          "baseRevision": 0,
+                                          "type": "ADD_COMPONENT",
+                                          "catalogEntryId": "com.unfurl:validation-service:1.1.0"
+                                        }
+                                        """.formatted(createdBody.session().sessionId())))
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertThat(intent.statusCode()).isEqualTo(200);
+                assertThat(intent.body())
+                        .contains("\"status\":\"VALID\"")
+                        .contains("\"newRevision\":1");
+
+                HttpResponse<String> candidates = client.send(
+                        HttpRequest.newBuilder(uri(
+                                        server,
+                                        "/studio/tenants/tenant-a/assemblies/assembly-demo/dynamic-dcp/connection-candidates"
+                                                + "?catalogEntryId=com.unfurl%3Avalidation-service%3A1.1.0"))
+                                .timeout(Duration.ofSeconds(5))
+                                .GET()
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString());
+                assertThat(candidates.statusCode()).isEqualTo(200);
+                assertThat(candidates.body()).contains("\"catalogEntryId\":\"com.unfurl:validation-service:1.1.0\"");
+            } finally {
+                eventsFuture.cancel(true);
+            }
         }
     }
 

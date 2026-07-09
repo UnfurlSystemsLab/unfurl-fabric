@@ -11,8 +11,19 @@ import com.unfurl.fabric.studio.handlers.StudioTenantHandler;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+/**
+ * Ports & Adapters HTTP Adapter: hosts the lightweight Fabric Studio API on the JDK
+ * {@link HttpServer}. The server owns a concurrent request executor because live
+ * Server-Sent Event streams intentionally remain open while operators continue
+ * issuing catalog, intent, heartbeat, and compile requests.
+ */
 public final class StudioServer implements AutoCloseable {
     public static final String DEFAULT_BIND_ADDRESS = "127.0.0.1";
     public static final int DEFAULT_PORT = 7878;
@@ -29,22 +40,34 @@ public final class StudioServer implements AutoCloseable {
             "^http://(localhost|127\\.0\\.0\\.1)(:\\d{1,5})?$");
 
     private final HttpServer server;
+    private final ExecutorService executor;
     private final ObjectMapper mapper;
     private final String bindAddress;
     private final StudioCatalogService catalogService;
     private final StudioSessionEventBus eventBus;
 
+    /**
+     * Convenience constructor: starts a loopback Studio server on the default port.
+     */
     public StudioServer() throws IOException {
         this(DEFAULT_BIND_ADDRESS, DEFAULT_PORT);
     }
 
+    /**
+     * Convenience constructor: starts a Studio server using the default state store.
+     */
     public StudioServer(String bindAddress, int port) throws IOException {
         this(bindAddress, port, new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath())));
     }
 
+    /**
+     * Test/local constructor: hosts Studio routes with an injected catalog service.
+     */
     public StudioServer(String bindAddress, int port, StudioCatalogService catalogService) throws IOException {
         this.bindAddress = bindAddress == null || bindAddress.isBlank() ? DEFAULT_BIND_ADDRESS : bindAddress;
         this.server = HttpServer.create(new InetSocketAddress(this.bindAddress, port), 0);
+        this.executor = createExecutor();
+        this.server.setExecutor(executor);
         this.mapper = StudioJson.mapper();
         this.catalogService = catalogService == null
                 ? new StudioCatalogService(new StudioStateStore(StudioStateStore.defaultPath()))
@@ -54,10 +77,15 @@ public final class StudioServer implements AutoCloseable {
         routes();
     }
 
+    /**
+     * Microservice constructor: binds Studio to configured state, assets, and event-bus adapters.
+     */
     public StudioServer(StudioMicroserviceConfig config) throws IOException {
         StudioMicroserviceConfig safe = config == null ? StudioMicroserviceConfig.defaults() : config;
         this.bindAddress = safe.bindAddress();
         this.server = HttpServer.create(new InetSocketAddress(this.bindAddress, safe.port()), 0);
+        this.executor = createExecutor();
+        this.server.setExecutor(executor);
         this.mapper = StudioJson.mapper();
         this.eventBus = StudioEventBusFactory.create(safe);
         this.catalogService = new StudioCatalogService(
@@ -84,12 +112,39 @@ public final class StudioServer implements AutoCloseable {
         return !DEFAULT_BIND_ADDRESS.equals(bindAddress) && !"localhost".equalsIgnoreCase(bindAddress);
     }
 
+    /**
+     * Lifecycle method: stops request handling, interrupts long-lived event stream workers, and
+     * then closes the optional external event-bus adapter.
+     */
     @Override
     public void close() {
         server.stop(0);
+        executor.shutdownNow();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        }
         if (eventBus != null) {
             eventBus.close();
         }
+    }
+
+    /**
+     * Factory: creates named daemon request workers so live event streams cannot
+     * starve regular Studio API calls in the JDK {@link HttpServer}.
+     */
+    private ExecutorService createExecutor() {
+        AtomicInteger sequence = new AtomicInteger();
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(runnable, "unfurl-studio-http-" + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newCachedThreadPool(factory);
     }
 
     private void routes() {

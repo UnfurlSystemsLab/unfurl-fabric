@@ -177,6 +177,11 @@ event: session
 data: <StudioSessionEvent JSON>
 ```
 
+`StudioServer` must run the JDK `HttpServer` with an explicit concurrent executor.
+Live event streams are long-lived by design and must not block same-session
+intent, heartbeat, catalog, dynamic DCP, or layout requests while the stream is
+open.
+
 ## Authoring
 
 | Method | Path | Request | Response |
