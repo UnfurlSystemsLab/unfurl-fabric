@@ -97,7 +97,7 @@ the Studio server.
 | `GET` | `/studio/tenants/{tenantId}/assemblies` | | | `StudioAssemblyListResponse` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies` | | `StudioCreateAssemblyRequest` | `StudioAssemblySummary` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/needs/extract` | | `StudioNeedsExtractionRequest` | `StudioNeedsExtractionResponse` |
-| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp` | | | `StudioDynamicDcpProjection` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp` | `sessionId` optional | | `StudioDynamicDcpProjection` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp/replacements` | `componentNodeId` | | `StudioReplacementCandidatesResponse` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/dynamic-dcp/connection-candidates` | `catalogEntryId` | | `StudioConnectionCandidatesResponse` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/snapshot` | | | `StudioAssemblySnapshot` |
@@ -111,7 +111,7 @@ orchestration needs from recognized source names (`workflow.yaml`/flow files imp
 imply `agent.run`), and only falls back to the historical `<target-application>.run` starter need when no DCP
 capability can be derived. Draft membership remains governed by `StudioIntentRequest` session history.
 
-Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation.
+Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation. When `sessionId` is supplied, the projection is draft-session scoped: Fabric loads the addressed `StudioDraftSession`, replays its accepted `ADD_COMPONENT`, `REMOVE_COMPONENT`, and `REPLACE_COMPONENT` intents, grounds every selected catalog entry in the tenant catalog, and projects only that draft inventory. This session mode must match compile's membership replay so Step 10 and Step 12 inspect the same component set. When `sessionId` is absent, the route remains a catalog projection for catalog browsing and replacement previews before a draft exists.
 
 Assembly snapshots are portable Studio workspace JSON. Saving an assembly captures the assembly summary, saved layout,
 and draft sessions for that tenant/assembly. Loading an assembly writes those records back through Fabric's Studio state

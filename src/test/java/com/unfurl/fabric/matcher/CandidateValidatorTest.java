@@ -71,22 +71,50 @@ class CandidateValidatorTest {
     }
 
     @Test
-    void unresolvedRequiredDependencyIsGateButCustomerOwnedDependencyIsExternal() {
+    void unresolvedRequiredDependencyIsGateButExternallyOwnedDependenciesAreExternal() {
         CatalogEntry unresolved = FabricTestFixtures.entry(
                 "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
                 com.unfurl.dcp.claim.Stability.STABLE,
                 com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
                 Set.of(BindingMode.IN_PROCESS), new Dependencies(List.of("identity.validate@1")), List.of());
-        CatalogEntry external = FabricTestFixtures.entry(
+        CatalogEntry customerControlled = FabricTestFixtures.entry(
                 "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
                 com.unfurl.dcp.claim.Stability.STABLE,
                 com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
                 Set.of(BindingMode.IN_PROCESS),
                 new Dependencies(List.of("identity.validate@1?owner=customer-controlled")), List.of());
+        CatalogEntry hostOwned = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("spring-ai.chat-client@1?owner=host")), List.of());
+        CatalogEntry fabricOwned = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("fabric.authoring.delegate@1?owner=fabric")), List.of());
+        CatalogEntry customerIdpOwned = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("identity-context@v1?owner=customer-idp")), List.of());
+        CatalogEntry customerAuditOwned = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("audit-sink@v1?owner=customer-audit-store")), List.of());
         Need need = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("storage.put", "^1"));
 
         assertThat(validator.validate(List.of(unresolved), need).isValid()).isFalse();
-        assertThat(validator.validate(List.of(external), need).isValid()).isTrue();
+        assertThat(validator.validate(List.of(customerControlled), need).isValid()).isTrue();
+        assertThat(validator.validate(List.of(hostOwned), need).isValid()).isTrue();
+        assertThat(validator.validate(List.of(fabricOwned), need).isValid()).isTrue();
+        assertThat(validator.validate(List.of(customerIdpOwned), need).isValid()).isTrue();
+        assertThat(validator.validate(List.of(customerAuditOwned), need).isValid()).isTrue();
     }
 
     @Test

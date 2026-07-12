@@ -1,0 +1,126 @@
+id: flowfoundry-export-agent
+version: "1.0.0"
+metadata:
+  useCase: flowfoundry-export
+  recursiveCapabilities:
+    - tools
+    - rag
+  boundary: foundry-workload-agent
+defaultModelRef: customer-configured
+toolRefs:
+  - fabric.catalog-query
+  - fabric.needs-emitter
+  - fabric.intent-emitter
+  - fabric.compile-preview
+  - fabric.deployment-resolve
+inputSchema:
+  type: object
+  required:
+    - tenantId
+    - assemblyId
+    - sessionId
+    - userRequest
+  properties:
+    tenantId:
+      type: string
+    assemblyId:
+      type: string
+    sessionId:
+      type: string
+    userRequest:
+      type: string
+    catalog:
+      type: array
+    draft:
+      type: object
+phases:
+  - id: classify-request
+    promptTemplateRef: flowfoundry.classify-request
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.catalog-query
+    ragQueryRef: flowfoundry.runbook-context
+    input:
+      phaseObjective: Classify the requested Flowfoundry export scope and confirm tools/RAG recursive closure is required.
+      requiredCapabilities:
+        - workflow.execute
+        - agent.run
+        - tool.call
+        - rag.search
+    maxToolIterations: 1
+  - id: retrieve-context
+    promptTemplateRef: flowfoundry.retrieve-context
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.catalog-query
+    ragQueryRef: flowfoundry.runbook-context
+    input:
+      phaseObjective: Retrieve runbook, catalog, and design context needed to ground the export assembly proposal.
+      contextSources:
+        - unfurl-fabric/docs/Flowfoundry.md
+        - unfurl-fabric/docs/HLD-unfurl-fabric.md
+        - unfurl-foundry/docs/HLD-agent-context-and-memory.md
+    dependencies:
+      - classify-request
+    maxToolIterations: 1
+  - id: propose-needs
+    promptTemplateRef: flowfoundry.propose-needs
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.needs-emitter
+    ragQueryRef: flowfoundry.runbook-context
+    input:
+      phaseObjective: Emit Flowfoundry needs for workflow execution, Foundry agent execution, tools, RAG, and provider access.
+      priorOutput: $.phases.retrieve-context.output
+    dependencies:
+      - retrieve-context
+    maxToolIterations: 1
+  - id: propose-composition
+    promptTemplateRef: flowfoundry.propose-composition
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.catalog-query
+      - fabric.intent-emitter
+    ragQueryRef: flowfoundry.catalog-context
+    input:
+      phaseObjective: Select catalog-backed components and emit ADD_COMPONENT intents without inventing entries.
+      needs: $.phases.propose-needs.output.needs
+    dependencies:
+      - propose-needs
+    maxToolIterations: 2
+  - id: verify-recursive-closure
+    promptTemplateRef: flowfoundry.verify-recursive-closure
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.catalog-query
+      - fabric.compile-preview
+    ragQueryRef: flowfoundry.runbook-context
+    input:
+      phaseObjective: Verify recursive Flow and Foundry closure, including tools, RAG, model provider, embedding provider, and vector store bindings.
+      proposedIntents: $.phases.propose-composition.output.intents
+    dependencies:
+      - propose-composition
+    maxToolIterations: 1
+  - id: prepare-deployment-resolution
+    promptTemplateRef: flowfoundry.prepare-deployment-resolution
+    modelRef: customer-configured
+    allowedToolRefs:
+      - fabric.deployment-resolve
+    ragQueryRef: flowfoundry.runbook-context
+    input:
+      phaseObjective: Prepare the deployment policy for containerized Flow, Foundry, provider, tools, and RAG runtime resolution.
+      closureReport: $.phases.verify-recursive-closure.output
+    dependencies:
+      - verify-recursive-closure
+    maxToolIterations: 1
+edges:
+  - from: classify-request
+    to: retrieve-context
+  - from: retrieve-context
+    to: propose-needs
+  - from: propose-needs
+    to: propose-composition
+  - from: propose-composition
+    to: verify-recursive-closure
+  - from: verify-recursive-closure
+    to: prepare-deployment-resolution

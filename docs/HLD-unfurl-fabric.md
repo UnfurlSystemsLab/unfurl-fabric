@@ -35,11 +35,11 @@
 
 ## Core Flow
 
-1. Catalog scan reads component artifacts and produces content-pinned catalog entries.
+1. Catalog scan reads component artifacts and produces content-pinned catalog entries. Studio upload admission follows the same manifest model: when an uploaded artifact contains `catalog.component_shape_profile`, the visual read model persists that profile metadata so restart, snapshot, compile, and deployment resolution do not degrade product runtimes to visual fallback shapes.
 2. Needs loading parses the required capabilities and constraints.
-3. Matching creates composition candidates and validates dependency bindings.
+3. Matching creates composition candidates and validates dependency bindings. Dependencies marked `owner=host`, `owner=fabric`, `owner=customer-controlled`, or a concrete customer owner such as `owner=customer-idp` are external runtime/profile bindings, not peer catalog gates. The binding must still be preserved in the candidate audit and deployment handoff so production packaging can require the real customer system.
 4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
-5. Deployment resolution selects supported runtime shapes and records rejected shapes.
+5. Deployment resolution selects supported runtime shapes and records rejected shapes. Product runtimes such as Flow and Foundry must resolve from their catalog `component_shape_profile`; substrate libraries and adapters may resolve in-process when they are bundled inside those product runtimes.
 6. Substrate profile derivation emits the required runtime profile without secret values.
 7. Compilation writes the unsigned contract and profile hash.
 8. Signing wraps the compiled contract in a signed contract artifact.
@@ -51,7 +51,9 @@ Fabric Studio uses `StudioServer`, `StudioTenantHandler`, `StudioAuthoringHandle
 
 The Studio API is intentionally lightweight and currently built on `com.sun.net.httpserver.HttpServer`, not Spring MVC. Route contracts are represented by Java records in `com.unfurl.fabric.studio` and mirrored in the TypeScript client under `unfurl-ui/packages/fabric-validation-client`.
 
-Studio state is tenant and assembly scoped. Draft sessions support intent history, collaborator heartbeat, compile, layout persistence, and server-sent event updates. Event transport can be in-memory, Redis, or Kafka depending on `StudioMicroserviceConfig`.
+Studio state is tenant and assembly scoped. Draft sessions support intent history, collaborator heartbeat, compile, layout persistence, dynamic DCP projection, and server-sent event updates. Event transport can be in-memory, Redis, or Kafka depending on `StudioMicroserviceConfig`.
+
+Dynamic DCP has two read-model modes. Catalog mode is available when no draft session is supplied and is used only for catalog browsing or preview guidance. Draft-session mode is authoritative for Studio composition inspection: it replays the accepted session intent log to derive the same catalog-entry inventory that compile uses, grounds those entries in the tenant catalog, and projects only that draft inventory.
 
 ## Architectural Invariants
 

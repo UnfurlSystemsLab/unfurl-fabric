@@ -173,7 +173,10 @@ public final class StudioTenantHandler {
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.dynamicDcp()) {
-                write(exchange, 200, service.dynamicDcpProjection(route.tenantId(), route.assemblyId()));
+                write(exchange, 200, service.dynamicDcpProjection(
+                        route.tenantId(),
+                        route.assemblyId(),
+                        queryParam(exchange, "sessionId")));
                 return;
             }
             if ("POST".equals(exchange.getRequestMethod()) && route.dynamicDcpProjection()) {

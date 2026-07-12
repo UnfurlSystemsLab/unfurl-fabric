@@ -174,20 +174,32 @@ Expected behavior:
 
 Current status:
 
-- `foundry-substrate-offers/FoundryClaimProjector` turns `AgentDefinition`, `SkillDefinition`, `ToolDefinition`, prompt refs, RAG refs, and model refs into DCP claims with `metadata.extensions.contains`.
+- `foundry-substrate-offers/FoundryClaimProjector` turns `AgentDefinition`, `AgentPhase`, `SkillDefinition`, `ToolDefinition`, prompt refs, RAG refs, and model refs into DCP claims with `metadata.extensions.contains`.
 - `foundry-substrate-offers/FlowClaimProjector` turns `WorkflowDefinition` and `NodeDefinition` into DCP claims with containment.
 - Flow workflow claims contain node claims.
 - Flow node claims contain their `uses` component, except `SUBGRAPH` nodes contain and recurse into sub-workflows.
 - Flow nodes whose `uses` starts with `agent:` bridge to the shared `urn:unfurl:foundry:agent:<id>` URI.
+- Foundry agent claims contain phase claims; phase claims contain prompt/model/RAG/tool/skill refs.
 - Merging Flow and Foundry claim maps gives one recursive graph:
 
 ```text
-Flow Workflow -> Node -> Agent -> Skill -> Tool/Prompt/RAG/Model
+Flow Workflow -> Node -> Agent -> Phase -> Tool/Prompt/RAG/Model
+Agent -> Skill -> Tool/Prompt/RAG/Model
 ```
 
 Fabric does not need a compile-time dependency on either substrate projector. It accepts the merged DCP
 claim map through the `dynamic-dcp/project` route, runs `DcpProjectionProjector`, and maps the result to
 the existing Studio DTO.
+
+For Flowfoundry environment assembly, use the session-scoped projection as the Step 10 gate:
+
+- `GET /dynamic-dcp?sessionId=...` verifies draft membership from the Step 9 session inventory.
+
+`POST /dynamic-dcp/project` is still the adapter for inspecting concrete Flow workflow and Foundry
+agent DAGs, but it is not required to assemble the integrated Flow/Foundry environment. Workload DAGs
+can be installed after the environment is deployed. Fabric must not fabricate Flow workflow nodes or
+Foundry phase/tool/RAG nodes from selected catalog entries alone; those nodes come from workload source
+definitions or from a product bridge that emits the equivalent DCP claim map.
 
 ### Historical Foundry-only notes
 
@@ -197,7 +209,8 @@ were added. They are retained only as rationale for why the projectors live in t
 A second composition graph exists in `foundry-substrate` and should drill in the same navigator:
 
 ```text
-Foundry -> Agent -> { Skill -> {Tool, Prompt, RAG, Model}, Tool, Prompt, Model } -> ...
+Foundry -> Agent -> Phase -> {Tool, Prompt, RAG, Model, Skill}
+Agent -> Skill -> {Tool, Prompt, RAG, Model}
 ```
 
 The reference data is present in the domain model:

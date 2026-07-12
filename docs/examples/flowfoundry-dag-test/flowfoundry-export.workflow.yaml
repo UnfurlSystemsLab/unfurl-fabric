@@ -1,0 +1,85 @@
+id: flowfoundry-export
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Export DAG Validation
+  description: Flow workflow that exercises Fabric, Flow, and Foundry integration for a Flowfoundry export assembly.
+  labels:
+    useCase: flowfoundry-export
+    validationScope: flow-foundry-dag
+inputSchema:
+  type: object
+  required:
+    - tenantId
+    - assemblyId
+    - sessionId
+    - userRequest
+  properties:
+    tenantId:
+      type: string
+    assemblyId:
+      type: string
+    sessionId:
+      type: string
+    userRequest:
+      type: string
+nodes:
+  - id: collect-request
+    type: ACTION
+    uses: fabric.request.collect
+    name: Collect Request
+    description: Normalize the user request and current Studio session state.
+  - id: run-authoring-agent
+    type: ACTION
+    uses: agent:flowfoundry-export-agent
+    name: Run Flowfoundry Export Agent
+    description: Invoke the Foundry workload agent for needs, composition, and closure decisions.
+    dependencies:
+      - collect-request
+  - id: validate-needs
+    type: ACTION
+    uses: fabric.needs.validate
+    name: Validate Needs
+    description: Validate emitted needs against DCP capabilities and the admitted catalog.
+    dependencies:
+      - run-authoring-agent
+  - id: apply-composition-intents
+    type: ACTION
+    uses: fabric.intent.apply
+    name: Apply Composition Intents
+    description: Apply catalog-backed ADD/REPLACE/CONFIGURE intents to the Studio draft session.
+    dependencies:
+      - validate-needs
+  - id: compile-contract
+    type: ACTION
+    uses: fabric.contract.compile
+    name: Compile Contract
+    description: Compile the draft assembly into a governed contract candidate.
+    dependencies:
+      - apply-composition-intents
+  - id: inspect-recursive-dcp
+    type: ACTION
+    uses: fabric.dcp.inspect
+    name: Inspect Recursive DCP
+    description: Inspect draft membership and recursive Flow/Foundry runtime topology before deployment.
+    dependencies:
+      - compile-contract
+  - id: resolve-deployment
+    type: ACTION
+    uses: fabric.deployment.resolve
+    name: Resolve Deployment
+    description: Resolve containerized runtime choices for Flow, Foundry, providers, tools, and RAG.
+    dependencies:
+      - inspect-recursive-dcp
+edges:
+  - from: collect-request
+    to: run-authoring-agent
+  - from: run-authoring-agent
+    to: validate-needs
+  - from: validate-needs
+    to: apply-composition-intents
+  - from: apply-composition-intents
+    to: compile-contract
+  - from: compile-contract
+    to: inspect-recursive-dcp
+  - from: inspect-recursive-dcp
+    to: resolve-deployment

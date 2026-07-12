@@ -286,6 +286,56 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Regression test: the HTTP Dynamic DCP route honors sessionId so Studio Step
+     * 10 renders the accepted draft inventory, not the whole catalog.
+     */
+    @Test
+    void servesDraftScopedDynamicDcpProjectionWhenSessionIdIsSupplied() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
+                    {
+                      "baseCatalogHash": "sha256:catalog",
+                      "needsId": "",
+                      "initialCandidateId": "",
+                      "collaboratorId": "alice",
+                      "collaboratorName": "Alice"
+                    }
+                    """);
+            assertThat(created.statusCode()).isEqualTo(200);
+            StudioCreateDraftCompositionResponse createdBody = StudioJson.mapper()
+                    .readValue(created.body(), StudioCreateDraftCompositionResponse.class);
+            String sessionId = createdBody.session().sessionId();
+
+            HttpResponse<String> intent = post(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/" + sessionId + "/intents",
+                    """
+                    {
+                      "tenantId": "tenant-a",
+                      "assemblyId": "assembly-demo",
+                      "sessionId": "%s",
+                      "baseRevision": 0,
+                      "type": "ADD_COMPONENT",
+                      "collaboratorId": "alice",
+                      "collaboratorName": "Alice",
+                      "catalogEntryId": "com.unfurl:validation-service:1.1.0"
+                    }
+                    """.formatted(sessionId));
+            assertThat(intent.statusCode()).isEqualTo(200);
+            assertThat(intent.body()).contains("\"status\":\"VALID\"");
+
+            HttpResponse<String> projection = get(
+                    server,
+                    "/studio/tenants/tenant-a/assemblies/assembly-demo/dynamic-dcp?sessionId=" + sessionId);
+
+            assertThat(projection.statusCode()).isEqualTo(200);
+            assertThat(projection.body())
+                    .contains("\"catalogEntryId\":\"com.unfurl:validation-service:1.1.0\"")
+                    .doesNotContain("\"catalogEntryId\":\"com.unfurl:storage-s3:1.2.0\"");
+        }
+    }
+
     @Test
     void servesCompiledExportArtifactContent() throws Exception {
         StudioCatalogService service = new StudioCatalogService();

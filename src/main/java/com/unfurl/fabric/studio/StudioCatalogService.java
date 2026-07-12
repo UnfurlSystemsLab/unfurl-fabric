@@ -75,6 +75,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -244,12 +245,13 @@ public final class StudioCatalogService {
             String claimHash = "sha256:" + new com.unfurl.fabric.catalog.CatalogManifestCodec()
                     .computeClaimHash(validation.claim());
             String artifactSha = artifactSha(artifact, validation);
-            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, validation.claim(), claimHash, artifactSha);
+            CatalogEntry runtimeEntry = admittedCatalogEntry(entryId, validation, artifactSha);
+            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha);
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
             catalogEntriesByTenant
                     .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
-                    .put(entryId, admittedCatalogEntry(entryId, validation, artifactSha));
+                    .put(entryId, runtimeEntry);
             resolvedClaims.add(new ResolvedClaimBundleEntry(
                     artifact.fileName(),
                     entryId,
@@ -518,18 +520,29 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Projector: turns a verified uploaded DCP claim into the Studio visual-catalog shape.
-     * The catalog entry id stays upload-scoped, but ports and dynamic metadata come directly
-     * from the validated claim so Studio reflects the actual DCP surface.
+     * Projector: turns a verified uploaded catalog entry into the Studio visual-catalog
+     * shape. The catalog entry id stays upload-scoped, while the visual and dynamic
+     * metadata preserve the parsed manifest shape profile so persisted Studio state can
+     * later reconstruct deployment-resolution inputs without the original uploaded JAR.
      */
-    private StudioVisualCatalogEntry admittedVisualEntry(String entryId, Claim claim, String claimHash, String artifactSha) {
+    private StudioVisualCatalogEntry admittedVisualEntry(
+            String entryId,
+            CatalogEntry runtimeEntry,
+            String claimHash,
+            String artifactSha
+    ) {
+        Claim claim = runtimeEntry.claimDescriptor().claim();
         List<String> capabilities = claim.offers() == null
                 ? List.of()
                 : claim.offers().stream().map(Offer::capability).toList();
         List<String> requiredCapabilities = requiredCapabilitiesFromClaim(claim);
-        String category = claim.identity() == null || claim.identity().kind() == null
-                ? "COMPONENT"
-                : claim.identity().kind().toString();
+        ComponentShapeProfile shapeProfile = runtimeEntry.componentShapeProfile();
+        String category = shapeProfile == null
+                ? claim.identity() == null || claim.identity().kind() == null
+                        ? "COMPONENT"
+                        : claim.identity().kind().toString()
+                : shapeProfile.defaultShape().name();
+        String fallbackKind = shapeProfile == null ? "CUBE" : fallbackShapeKindFor(shapeProfile.defaultShape().name());
         List<String> rawNeeds = claim.dependencies() == null || claim.dependencies().needs() == null
                 ? List.of()
                 : List.copyOf(claim.dependencies().needs());
@@ -537,8 +550,8 @@ public final class StudioCatalogService {
                 entryId,
                 claimHash,
                 artifactSha,
-                visual(category, "CUBE", capabilities, requiredCapabilities),
-                dynamicComposition("COMPONENT", List.of(), rawNeeds),
+                visual(category, fallbackKind, capabilities, requiredCapabilities),
+                dynamicComposition("COMPONENT", List.of(), rawNeeds, shapeProfile),
                 Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
                 List.of());
     }
@@ -1007,9 +1020,45 @@ public final class StudioCatalogService {
                 .toList());
     }
 
+    /**
+     * Read-model projector: builds a catalog-scoped Dynamic DCP view for
+     * catalog browsing before a governed draft session exists.
+     */
     public StudioDynamicDcpProjection dynamicDcpProjection(String tenantId, String assemblyId) {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        return dynamicDcpProjectionForEntries(tenant, assembly, entries, List.of());
+    }
+
+    /**
+     * Read-model projector: builds a draft-session Dynamic DCP view by replaying
+     * the accepted membership intents. This mirrors compile's inventory source
+     * so the UI inspects the same component set that Step 12 will compile.
+     */
+    public StudioDynamicDcpProjection dynamicDcpProjection(String tenantId, String assemblyId, String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return dynamicDcpProjection(tenantId, assemblyId);
+        }
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        List<StudioVisualCatalogEntry> entries = selectedVisualEntriesForSession(session);
+        List<String> warnings = entries.isEmpty()
+                ? List.of("draft session contains no selected catalog components")
+                : List.of();
+        return dynamicDcpProjectionForEntries(session.tenantId(), session.assemblyId(), entries, warnings);
+    }
+
+    /**
+     * Adapter: turns an already-selected catalog entry list into the aggregate DCP
+     * claim graph consumed by {@link DcpProjectionProjector}.
+     */
+    private StudioDynamicDcpProjection dynamicDcpProjectionForEntries(
+            String tenant,
+            String assembly,
+            List<StudioVisualCatalogEntry> selectedEntries,
+            List<String> sourceWarnings
+    ) {
+        List<StudioVisualCatalogEntry> entries = selectedEntries == null ? List.of() : List.copyOf(selectedEntries);
         Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
         StudioAssemblySummary summary = assemblies.getOrDefault(assembly, fixtureAssemblies(tenant).get("assembly-demo"));
         String target = summary == null || summary.targetApplicationName().isBlank()
@@ -1017,7 +1066,6 @@ public final class StudioCatalogService {
                 : summary.targetApplicationName();
         String rootNodeId = "company:" + slug(target);
         String focusNodeId = "assembly:" + slug(assembly);
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
         Map<URI, StudioVisualCatalogEntry> entryByClaimUri = entries.stream()
                 .collect(java.util.stream.Collectors.toMap(
                         entry -> claimUriForEntry(entry.catalogEntryId()),
@@ -1073,7 +1121,8 @@ public final class StudioCatalogService {
                 dcpProjection,
                 nodeIdsByClaimUri,
                 entryByClaimUri,
-                entries);
+                entries,
+                sourceWarnings);
     }
 
     public StudioDynamicDcpProjection dynamicDcpProjection(
@@ -1128,6 +1177,7 @@ public final class StudioCatalogService {
                 dcpProjection,
                 nodeIdsByClaimUri,
                 Map.of(),
+                List.of(),
                 List.of());
     }
 
@@ -1139,7 +1189,8 @@ public final class StudioCatalogService {
             DcpProjection dcpProjection,
             Map<URI, String> nodeIdsByClaimUri,
             Map<URI, StudioVisualCatalogEntry> entryByClaimUri,
-            List<StudioVisualCatalogEntry> entries
+            List<StudioVisualCatalogEntry> entries,
+            List<String> sourceWarnings
     ) {
         List<StudioDynamicDcpNode> nodes = dcpProjection.nodes().stream()
                 .map(node -> studioNodeFromDcp(node, nodeIdsByClaimUri, entryByClaimUri))
@@ -1157,6 +1208,11 @@ public final class StudioCatalogService {
 
         List<StudioSubstratePort> substratePorts = deriveSubstratePorts(childNodes, entries);
         List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries, substratePorts);
+        List<String> warnings = new ArrayList<>();
+        if (sourceWarnings != null) {
+            warnings.addAll(sourceWarnings);
+        }
+        warnings.addAll(dcpProjection.warnings());
 
         StudioDynamicDcpProjection projection = new StudioDynamicDcpProjection(
                 tenant,
@@ -1168,7 +1224,7 @@ public final class StudioCatalogService {
                 edges,
                 substratePorts,
                 connections,
-                dcpProjection.warnings());
+                warnings);
         return new StudioDynamicDcpProjection(
                 projection.tenantId(),
                 projection.assemblyId(),
@@ -2449,23 +2505,18 @@ public final class StudioCatalogService {
      * current candidate pointer.
      */
     private CandidateBuild candidateForSession(StudioDraftSession session, Need need) {
-        List<StudioVisualCatalogEntry> catalog = entriesByTenant.computeIfAbsent(session.tenantId(), this::fixtureEntries);
-        Map<String, StudioVisualCatalogEntry> byId = new LinkedHashMap<>();
-        catalog.forEach(entry -> byId.put(entry.catalogEntryId(), entry));
-        LinkedHashSet<String> selectedIds = selectedCatalogEntryIds(session);
-        if (selectedIds.isEmpty()) {
+        List<StudioVisualCatalogEntry> selectedVisuals;
+        try {
+            selectedVisuals = selectedVisualEntriesForSession(session);
+        } catch (IllegalArgumentException ex) {
+            return CandidateBuild.invalid(new InvalidDraft("CATALOG_ENTRY_NOT_FOUND", ex.getMessage()));
+        }
+        if (selectedVisuals.isEmpty()) {
             return CandidateBuild.invalid(new InvalidDraft("EMPTY_DRAFT", "draft contains no components"));
         }
         List<CatalogEntry> selected = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        for (String entryId : selectedIds) {
-            StudioVisualCatalogEntry visual = byId.get(entryId);
-            if (visual == null) {
-                return CandidateBuild.invalid(new InvalidDraft(
-                        "CATALOG_ENTRY_NOT_FOUND",
-                        "draft references catalog entry '" + entryId + "' that is not registered in tenant '"
-                                + session.tenantId() + "'"));
-            }
+        for (StudioVisualCatalogEntry visual : selectedVisuals) {
             selected.add(catalogEntryForVisual(session.tenantId(), visual));
             warnings.addAll(visual.warnings());
         }
@@ -2487,6 +2538,27 @@ public final class StudioCatalogService {
                 List.<PlanningWarning>of(),
                 new Scorer().score(selected, need));
         return CandidateBuild.valid(candidate, warnings);
+    }
+
+    /**
+     * Adapter: grounds the replayed draft inventory in the tenant catalog so
+     * projection, deployment resolution, and compile share one source of truth.
+     */
+    private List<StudioVisualCatalogEntry> selectedVisualEntriesForSession(StudioDraftSession session) {
+        List<StudioVisualCatalogEntry> catalog = entriesByTenant.computeIfAbsent(session.tenantId(), this::fixtureEntries);
+        Map<String, StudioVisualCatalogEntry> byId = new LinkedHashMap<>();
+        catalog.forEach(entry -> byId.put(entry.catalogEntryId(), entry));
+        List<StudioVisualCatalogEntry> selected = new ArrayList<>();
+        for (String entryId : selectedCatalogEntryIds(session)) {
+            StudioVisualCatalogEntry visual = byId.get(entryId);
+            if (visual == null) {
+                throw new IllegalArgumentException(
+                        "draft references catalog entry '" + entryId + "' that is not registered in tenant '"
+                                + session.tenantId() + "'");
+            }
+            selected.add(visual);
+        }
+        return List.copyOf(selected);
     }
 
     /**
@@ -2566,10 +2638,16 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Projector: infers a component shape profile from visual fallback metadata when no
-     * parsed catalog manifest is available.
+     * Projector: restores a component shape profile from Studio's persisted dynamic
+     * metadata before falling back to the visual badge category. This keeps uploaded
+     * manifest entries deployment-resolvable after a server restart or catalog snapshot
+     * load, where the original runtime catalog entry map is not persisted.
      */
     private ComponentShapeProfile shapeProfileFromVisual(StudioVisualCatalogEntry entry) {
+        ComponentShapeProfile dynamicProfile = componentShapeProfileFromDynamic(entry.dynamicComposition());
+        if (dynamicProfile != null) {
+            return dynamicProfile;
+        }
         Object fallback = entry.visualManifest().get("fallbackShape");
         if (!(fallback instanceof Map<?, ?> map)) {
             return null;
@@ -2578,6 +2656,37 @@ public final class StudioCatalogService {
         try {
             DeploymentShape shape = DeploymentShape.valueOf(category);
             return new ComponentShapeProfile(shape, Set.of(shape), Map.of());
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Adapter: decodes the deployment shape profile stored in
+     * {@code dynamicComposition.componentShapeProfile}. The map is deliberately
+     * string/list based so Studio JSON snapshots remain stable and UI clients can
+     * ignore it without depending on deployment-domain classes.
+     */
+    private ComponentShapeProfile componentShapeProfileFromDynamic(Map<String, Object> dynamicComposition) {
+        Object profile = dynamicComposition == null ? null : dynamicComposition.get("componentShapeProfile");
+        if (!(profile instanceof Map<?, ?> map)) {
+            return null;
+        }
+        try {
+            DeploymentShape defaultShape = DeploymentShape.valueOf(stringValue(map.get("defaultShape"), ""));
+            EnumSet<DeploymentShape> supported = EnumSet.noneOf(DeploymentShape.class);
+            Object supportedRaw = map.get("supportedShapes");
+            if (supportedRaw instanceof List<?> list) {
+                for (Object item : list) {
+                    if (item instanceof String text && !text.isBlank()) {
+                        supported.add(DeploymentShape.valueOf(text));
+                    }
+                }
+            }
+            if (supported.isEmpty()) {
+                supported.add(defaultShape);
+            }
+            return new ComponentShapeProfile(defaultShape, supported, Map.of());
         } catch (IllegalArgumentException ex) {
             return null;
         }
@@ -2616,7 +2725,7 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Projector: records component-to-component and host-bound dependency bindings for the
+     * Projector: records component-to-component and external dependency bindings for the
      * selected entry set so the compiled audit has a truthful draft dependency view.
      */
     private List<DependencyBinding> dependencyBindings(List<CatalogEntry> entries) {
@@ -2638,7 +2747,7 @@ public final class StudioCatalogService {
                 String capability = capabilityNameFromDependencyUri(dep);
                 String provider = capability == null ? null : providersByCapability.get(capability);
                 boolean hostBound = provider == null
-                        && (dep.contains("substrate=true") || dep.contains("owner=customer-controlled"));
+                        && (dep.contains("substrate=true") || CandidateValidator.isExternallyOwnedDependency(dep));
                 bindings.add(new DependencyBinding(dep, provider, hostBound));
             }
         }
@@ -3006,7 +3115,11 @@ public final class StudioCatalogService {
         String fallbackKind = entry.optionalComponentShapeProfile()
                 .map(profile -> fallbackShapeKindFor(profile.defaultShape().name()))
                 .orElse("CUBE");
-        Map<String, Object> dynamicComposition = dynamicComposition("COMPONENT", List.of(), rawNeeds);
+        Map<String, Object> dynamicComposition = dynamicComposition(
+                "COMPONENT",
+                List.of(),
+                rawNeeds,
+                entry.componentShapeProfile());
         return new StudioVisualCatalogEntry(
                 entry.artifact().coordinates(),
                 entry.claimDescriptor().claimHash(),
@@ -3224,6 +3337,21 @@ public final class StudioCatalogService {
             List<String> compatibleDescendants,
             List<String> rawNeeds
     ) {
+        return dynamicComposition(dcpType, compatibleDescendants, rawNeeds, null);
+    }
+
+    /**
+     * Builder: creates Studio's dynamic-composition metadata block with optional raw
+     * dependency strings and optional deployment shape profile metadata from catalog
+     * manifests. The shape profile is kept as primitive JSON values so persisted Studio
+     * state remains a portable read model rather than a Java-domain serialization.
+     */
+    private Map<String, Object> dynamicComposition(
+            String dcpType,
+            List<String> compatibleDescendants,
+            List<String> rawNeeds,
+            ComponentShapeProfile shapeProfile
+    ) {
         Map<String, Object> dynamic = new LinkedHashMap<>();
         dynamic.put("compositionMode", "DYNAMIC");
         dynamic.put("dcpType", dcpType);
@@ -3232,6 +3360,14 @@ public final class StudioCatalogService {
         dynamic.put("binding", Map.of("mode", "LATE_BOUND", "validation", "REQUIRED_BEFORE_ACTIVATION"));
         if (rawNeeds != null && !rawNeeds.isEmpty()) {
             dynamic.put("rawNeeds", List.copyOf(rawNeeds));
+        }
+        if (shapeProfile != null) {
+            dynamic.put("componentShapeProfile", Map.of(
+                    "defaultShape", shapeProfile.defaultShape().name(),
+                    "supportedShapes", shapeProfile.supportedShapes().stream()
+                            .map(DeploymentShape::name)
+                            .sorted()
+                            .toList()));
         }
         return Map.copyOf(dynamic);
     }

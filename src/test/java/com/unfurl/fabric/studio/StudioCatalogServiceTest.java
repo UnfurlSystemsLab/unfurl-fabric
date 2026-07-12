@@ -411,6 +411,43 @@ class StudioCatalogServiceTest {
                 .containsOnly("CONTAINERIZED_SERVICE");
     }
 
+    /**
+     * Regression test: uploaded manifest shape profiles must survive Studio state
+     * persistence. Step 11 resolves deployment from a draft session after the
+     * server has restarted, so visual-only reconstruction cannot flatten product
+     * runtimes back to in-process library defaults.
+     */
+    @Test
+    void resolvesDeploymentFromPersistedUploadedManifestShapeProfiles(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService first = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(first);
+        addComponent(first, created.session(), "uploaded:flow.jar", 0);
+        addComponent(first, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioCatalogService restarted = new StudioCatalogService(store, null);
+        StudioDeploymentResolveResponse response = restarted.resolveDeployment(new StudioDeploymentResolveRequest(
+                null,
+                null,
+                null,
+                null,
+                true,
+                containerPolicy(),
+                "tenant-a",
+                "assembly-flow",
+                created.session().sessionId(),
+                "",
+                ""));
+
+        assertThat(response.status()).isEqualTo("RESOLVED");
+        assertThat(response.selections())
+                .extracting(StudioDeploymentSelection::capability)
+                .contains("workflow.execute", "agent.run");
+        assertThat(response.selections())
+                .extracting(selection -> selection.deploymentShape().name())
+                .containsOnly("CONTAINERIZED_SERVICE");
+    }
+
     @Test
     void compilesFullSessionInventoryAndServesExportArtifacts(@TempDir Path dir) throws Exception {
         StudioCatalogService service = flowfoundrySessionService(dir);
@@ -507,6 +544,46 @@ class StudioCatalogServiceTest {
         assertThat(projection.edges())
                 .extracting(StudioDynamicDcpEdge::relationship)
                 .contains("CONTAINS", "REQUIRES");
+    }
+
+    /**
+     * Regression test: draft-session projection must replay Step 9 membership
+     * intents instead of rendering every tenant catalog entry.
+     */
+    @Test
+    void projectsDynamicDcpGraphFromDraftSessionInventory() {
+        StudioCatalogService service = new StudioCatalogService();
+        service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
+                "assembly-checkout",
+                "Checkout Platform",
+                "kubernetes-prod"));
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-checkout",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-checkout",
+                        "sha256:catalog",
+                        "",
+                        "trust-dev",
+                        "",
+                        "alice",
+                        "Alice"));
+        addComponent(service, created.session(), "com.unfurl:validation-service:1.1.0", 0);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection(
+                "tenant-a",
+                "assembly-checkout",
+                created.session().sessionId());
+
+        assertThat(projection.nodes())
+                .filteredOn(StudioDynamicDcpNode::replacementAllowed)
+                .extracting(StudioDynamicDcpNode::catalogEntryId)
+                .containsExactly("com.unfurl:validation-service:1.1.0");
+        assertThat(projection.nodes())
+                .filteredOn(StudioDynamicDcpNode::replacementAllowed)
+                .extracting(StudioDynamicDcpNode::catalogEntryId)
+                .doesNotContain("com.unfurl:storage-s3:1.2.0");
     }
 
     @Test
@@ -964,7 +1041,15 @@ class StudioCatalogServiceTest {
      * workflow/agent needs for a tenant assembly.
      */
     private static StudioCatalogService flowfoundrySessionService(Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        return flowfoundrySessionService(dir, null);
+    }
+
+    /**
+     * Fixture service: optionally uses a persistent Studio state store so tests can
+     * exercise restart behavior without changing the runbook catalog/session setup.
+     */
+    private static StudioCatalogService flowfoundrySessionService(Path dir, StudioStateStore store) throws Exception {
+        StudioCatalogService service = new StudioCatalogService(store, null);
         service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-flow",
                 List.of(

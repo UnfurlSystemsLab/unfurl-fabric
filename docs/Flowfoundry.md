@@ -46,34 +46,32 @@ Prepare these inputs before starting:
 
 ## Step 1: Upload Foundry And Substrate Claims
 
-Foundry and the Foundry Substrate modules already publish or carry DCP claim material for their capability surfaces. For this flow, the operator should collect the existing Foundry, Foundry Substrate, Flow, and application artifact files and upload them through the Studio UI so Fabric can add them to the tenant catalog after DCP validation.
+Foundry and the Foundry Substrate modules already publish or carry DCP claim material for their capability surfaces. For this flow, the operator should collect the existing Foundry product, Foundry Substrate, Flow, provider, runtime-support, and application artifact files and upload them through the Studio UI so Fabric can add them to the tenant catalog after DCP validation.
+
+Foundry deployment-root files are handled separately. Agent YAML, prompt Markdown, ToolPlugin JARs, and copied provider plugins are loaded by Foundry from its deployment root; they are not Fabric catalog-admission artifacts unless their owning package also publishes a DCP catalog claim.
 
 Upload the artifact files that represent the complete deployment capability surface:
 
-1. Foundry product claim and deployment files exposing `agent.run`, and optionally `tool.call`, `rag.search`, and `provider.call`.
+1. Foundry product claim exposing the `agent.run` host capability.
 2. Foundry Substrate artifacts for the AI domain, ports, offers, engine, prompt, tools, RAG, resolver, serialization, adapters, and testing fixtures used by the deployment.
 3. Flow runtime claim exposing `workflow.execute` for durable workflow execution.
 4. Application or workload component artifacts.
 5. Model provider or model gateway adapter artifacts.
 6. Embedding provider adapter artifacts.
 7. Vector store and RAG retriever artifacts.
-8. Tool plugin artifacts for every tool the agent may call.
-9. Authentication, authorization, audit, telemetry, and secrets/config provider artifacts where production deployment needs them.
+8. Authentication, authorization, audit, telemetry, and secrets/config provider artifacts where production deployment needs them.
 
 ### Files To Add To The Catalog
 
 Add these files through the Studio catalog UI, or upload the matching DCP claim YAML for each file when the artifact does not already embed a catalog manifest. JAR uploads should carry `META-INF/unfurl-catalog.yaml`; YAML uploads should be pure DCP `Claim` YAML or the Fabric catalog-manifest envelope with a top-level `claim` block.
 
-Foundry product and deployment artifacts:
+Foundry product artifact:
 
 | File | Catalog role |
 |---|---|
 | `unfurl-foundry/target/unfurl-foundry-0.1.0-SNAPSHOT.jar` | Foundry runtime product artifact exposing the Foundry DCP claim and `agent.run` host capability. |
-| `unfurl-foundry/deployment/agents/fabric-authoring.agent.yaml` | Default Fabric authoring agent definition loaded by Foundry. |
-| `unfurl-foundry/deployment/prompts/fabric-authoring.md` | Prompt material referenced by the authoring agent. |
-| `unfurl-foundry/deployment/tools/fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar` | Sample deployment tool plugin bundle for catalog query, needs emission, and intent emission tools. |
-| `unfurl-foundry/deployment/providers/*.jar` | Provider plugin bundles when using deployment-supplied provider adapters. |
-| `unfurl-foundry/deployment/tools/*.jar` | Additional deployment tool plugin bundles required by the agent. |
+
+Do not add Fabric authoring agent definitions, prompt Markdown files, or authoring ToolPlugin JARs to this catalog list. Fabric authoring is served by Fabric through Foundry, and those files are prepared as Foundry deployment-root inputs in Step 7.
 
 Foundry Substrate module artifacts:
 
@@ -102,13 +100,13 @@ Flow, application, and runtime-support artifacts:
 | Embedding provider adapter package files | Concrete `EmbeddingProvider` bindings. |
 | Vector store adapter or service claim files | Concrete `VectorStore` binding for the RAG pipeline. |
 | RAG retriever adapter or service claim files | Concrete `RagRetriever` binding when RAG is deployed as a separate capability. |
-| Authentication provider claim file | Verified identity source represented as a DCP port/runtime binding. |
-| Authorization or policy-engine claim file | Authorization decision owner represented as a DCP port/runtime binding and mapped to Foundry `PermissionBridge`. |
-| Audit sink claim file | Audit event destination represented as a DCP port/runtime binding. |
-| Telemetry sink claim file | Metrics/traces destination represented as a DCP port/runtime binding. |
-| Secret/config provider claim file | Secret and config reference provider used by runtime bindings. |
+| Authentication provider claim file | Optional for the current runbook; required for production when a verified identity source must be represented as a DCP port/runtime binding. |
+| Authorization or policy-engine claim file | Optional for the current runbook; required for production when an authorization decision owner must be represented as a DCP port/runtime binding and mapped to Foundry `PermissionBridge`. |
+| Audit sink claim file | Optional for the current runbook; required for production when audit events must be routed to a governed destination. |
+| Telemetry sink claim file | Optional for the current runbook; required for production when metrics, traces, and correlation signals must be routed to a governed destination. |
+| Secret/config provider claim file | Optional for the current runbook; required for production when secret and config references must be resolved through a governed provider. |
 
-Represent cross-cutting concerns through DCP constructs:
+For now, the five cross-cutting claim rows above are non-blocking catalog inputs. Before production promotion, represent cross-cutting concerns through DCP constructs:
 
 - Authentication: claim/runtime-binding port for verified identity source.
 - Authorization: claim/runtime-binding port plus Foundry `PermissionBridge`.
@@ -164,12 +162,12 @@ Example `catalog-admission.json` shape:
   "tenantId": "tenant-a",
   "artifacts": [
     {
-      "fileName": "foundry-agent.jar",
+      "fileName": "foundry-runtime.jar",
       "sha256": "sha256:<artifact-sha>",
       "artifactBase64": "<base64-encoded JAR bytes>"
     },
     {
-      "fileName": "foundry-agent.yaml",
+      "fileName": "workflow-runtime-claim.yaml",
       "sha256": "sha256:<claim-file-sha>",
       "claimYaml": "<pure DCP claim YAML or META-INF/unfurl-catalog.yaml contents>"
     }
@@ -266,7 +264,7 @@ requiredCapabilities:
 ```
 
 This extraction seeds composition; it does not prove Flow or Foundry artifacts are already part of the assembly draft.
-Verify draft membership after Step 8 by checking the session intent log or assembly snapshot for the accepted
+Verify draft membership after Step 9 by checking the session intent log or assembly snapshot for the accepted
 `uploaded:unfurl-flow-...` and `uploaded:unfurl-foundry-...` catalog entry ids.
 
 Download the needs diagnostic artifact from the response or UI before continuing; it preserves both the suggested
@@ -299,7 +297,41 @@ Record the returned `sessionId` and current revision.
 Download the draft-session diagnostic artifact so the starting revision, catalog hash, needs id, trust policy id, and
 collaborator context are captured before intents are applied.
 
-## Step 7: Use Foundry Authoring From Studio
+## Step 7: Build And Copy Foundry Authoring Tool JARs
+
+Fabric authoring is serviced by Fabric through Foundry. The Fabric authoring agent definition, authoring prompt, and authoring ToolPlugin JARs belong to the Foundry deployment root, not to the Fabric catalog envelope.
+
+Build the sample authoring tool module:
+
+```bash
+mvn -pl unfurl-foundry/sample-authoring-tools -am package
+```
+
+Copy the generated tool JAR into the Foundry deployment root:
+
+```bash
+mkdir -p unfurl-foundry/deployment/tools
+cp unfurl-foundry/sample-authoring-tools/target/fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar \
+  unfurl-foundry/deployment/tools/
+```
+
+PowerShell equivalent:
+
+```powershell
+New-Item -ItemType Directory -Force unfurl-foundry/deployment/tools
+Copy-Item unfurl-foundry/sample-authoring-tools/target/fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar `
+  unfurl-foundry/deployment/tools/
+```
+
+Expected generated deployment artifact:
+
+```text
+unfurl-foundry/deployment/tools/fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar
+```
+
+The tool JAR must declare `META-INF/services/com.unfurl.foundry.tools.ToolPlugin` and provide the tools referenced by `unfurl-foundry/deployment/agents/fabric-authoring.agent.yaml`, such as `fabric.catalog-query`, `fabric.needs-emitter`, and `fabric.intent-emitter`. For production authoring, replace the sample implementation with the deployment's real Foundry ToolPlugin JARs while preserving the same Foundry loading contract.
+
+## Step 8: Use Foundry Authoring From Studio
 
 Start Foundry's DCP server from a deployment root that contains the authoring agent and its substrate-backed tools/providers.
 
@@ -326,7 +358,15 @@ curl -sS -X POST "http://127.0.0.1:7878/studio/authoring/converse" \
 
 Treat every authoring response as advisory. Apply only catalog-backed intents and run them back through validation and compilation.
 
-## Step 8: Apply Composition Intents
+For Flowfoundry, a top-level authoring proposal is not complete merely because it found providers for
+`workflow.execute` and `agent.run`. If the request does not state the recursive Flow and Foundry
+capability scope, the authoring response should be `kind=clarify` and ask which recursive
+capabilities are expected, including Flow runtime closure, Foundry AI/runtime closure, provider
+bindings, runtime/deployment profile, and cross-cutting concerns such as identity, audit,
+telemetry, and secret configuration. Proceed to intent application only after the clarification
+answers or a deterministic resolver can compute the full recursive DCP closure from policy.
+
+## Step 9: Apply Composition Intents
 
 Use session intent APIs to add, replace, or configure catalog-backed components. The exact intent payload depends on the UI action, but every request must include the session identity and base revision.
 
@@ -341,28 +381,38 @@ curl -sS -X POST \
 
 Keep the returned revision. If the server reports a revision conflict, reload the session and replay the operator decision against the latest revision.
 
-## Step 9: Inspect Dynamic DCP Projection
+## Step 10: Inspect Dynamic DCP Projection
 
 Use the dynamic DCP projection to verify the composition tree before compiling.
 
 ```bash
 curl -sS \
-  "http://127.0.0.1:7878/studio/tenants/tenant-a/assemblies/<assemblyId>/dynamic-dcp" \
+  "http://127.0.0.1:7878/studio/tenants/tenant-a/assemblies/<assemblyId>/dynamic-dcp?sessionId=<sessionId>" \
   -H "X-Unfurl-Tenant: tenant-a" \
   -o dynamic-dcp.json
 ```
 
-Check that the projection drills into:
+For runbook execution, always include the Step 6/Step 9 `sessionId`. Without it, the route returns a catalog browsing projection and may include components that are admitted to the tenant catalog but not part of the draft assembly.
 
-- Flow workflow nodes.
-- Foundry agent nodes.
-- Agent phases, tools, prompts, RAG, model providers, embedding providers, and vector store refs.
-- DCP ports for auth/authz/audit/telemetry/secrets where required.
+For this assembly runbook, Step 10 is an environment-closure check, not a workload DAG check. The
+draft projection must show exactly the selected catalog-backed runtime components for the integrated
+Flow/Foundry environment:
+
+- Flow runtime component for `workflow.execute`.
+- Foundry runtime component for `agent.run`, `tool.call`, `rag.search`, `provider.call`, and `skill.invoke`.
+- Foundry substrate engine, tools, RAG, and Spring AI adapter components.
+- Environment and runtime leaf bindings that will be supplied later by runtime binding/deployment
+  packaging, such as model provider beans, embedding provider beans, vector store, RAG corpus, tool
+  implementation JARs, and signed workflow contract.
+
+Do not require a concrete Flow workflow DAG or Foundry workload agent DAG before Step 11. Those DAG
+definitions are deployable workloads that can be installed into the integrated environment after the
+environment itself is assembled, compiled, resolved, and packaged.
 
 Download the dynamic projection diagnostic artifact whenever graph behavior is surprising; it is the source of truth for
 what the UI rendered at this step.
 
-## Step 10: Resolve Containerized Deployment
+## Step 11: Resolve Containerized Deployment
 
 Ask Studio to resolve deployment choices for the draft composition.
 
@@ -389,7 +439,9 @@ curl -sS -X POST "http://127.0.0.1:7878/studio/deployment/resolve" \
   -o deployment-resolve-response.json
 ```
 
-For this runbook, assume the deployment policy selects containerized runtime shapes. The response should identify deployable selections for:
+For this runbook, assume the deployment policy selects containerized runtime shapes for product runtimes. Flow and Foundry product entries must resolve from their admitted `catalog.component_shape_profile` and should select `CONTAINERIZED_SERVICE` when that shape is supported by the catalog, substrate, and policy. Foundry Substrate jars, provider plugins, tools, RAG retrievers, and adapters may legitimately resolve as `IN_PROCESS_LIBRARY` when they are packaged inside the Foundry runtime service.
+
+The response should identify deployable selections for:
 
 - Fabric Studio control-plane service if included.
 - Flow runtime service.
@@ -401,7 +453,7 @@ For this runbook, assume the deployment policy selects containerized runtime sha
 - Tool plugin bundles.
 - Auth, authorization, audit, telemetry, and secret/config services or references.
 
-## Step 11: Compile And Sign The Candidate
+## Step 12: Compile And Sign The Candidate
 
 Compile the session candidate into export artifacts.
 
@@ -430,7 +482,7 @@ Do not deploy raw session state. The signed contract and runtime binding are the
 Download any compile diagnostic artifacts in addition to the contract/profile artifacts. They capture the response
 metadata, warnings, stale-revision details, and artifact hashes used by the handoff UI.
 
-## Step 12: Download Export Artifacts Locally
+## Step 13: Download Export Artifacts Locally
 
 Download every returned artifact by its `url` and verify the `sha256`.
 
@@ -450,7 +502,7 @@ jq -r '.signedContractArtifact.url' compile-response.json | xargs -I{} \
 Compile artifact URLs are hash-pinned Studio export routes. A missing or mismatched `sha256` must fail the download
 rather than returning mutable session state.
 
-## Step 13: Create Runtime Bindings
+## Step 14: Create Runtime Bindings
 
 Create a runtime binding file for the container environment from the signed contract, substrate profile, and deployment
 resolution response. This is the boundary where Studio handoff ends and the deploy emitter/runtime package assembly
@@ -468,7 +520,7 @@ The binding must reference:
 
 Do not inline secrets in the binding. Use secret/config references that the deployment environment resolves.
 
-## Step 14: Assemble Foundry Deployment Root
+## Step 15: Assemble Foundry Deployment Root
 
 Create the Foundry deployment directory that will be mounted into the Foundry container.
 
@@ -481,8 +533,7 @@ foundry-deployment/
     fabric-authoring.md
     workload-agent.md
   tools/
-    catalog-query-tool.jar
-    needs-emitter-tool.jar
+    fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar
     domain-tool.jar
   providers/
     model-provider-plugin.jar
@@ -494,6 +545,8 @@ foundry-deployment/
   runtime-binding.yaml
   signed-contract.json
 ```
+
+The authoring tool JAR under `tools/` is the deployment artifact produced in Step 7. It is loaded by Foundry's ToolPlugin loader and should not be uploaded as a Fabric catalog item.
 
 Bind all Foundry Substrate surfaces through ports:
 
@@ -508,7 +561,7 @@ Bind all Foundry Substrate surfaces through ports:
 - `PermissionBridge`: authorization decision port.
 - `AgentEventSink`: audit/telemetry event publication.
 
-## Step 15: Assemble Flow Deployment Root
+## Step 16: Assemble Flow Deployment Root
 
 Create the Flow deployment directory that will be mounted into the Flow container.
 
@@ -530,7 +583,7 @@ For durable AI phases:
 3. The outer budget envelope is passed in `ExecutionContext.metadata["outerBudgetRemainingUsd"]`.
 4. Foundry applies the lower of the outer envelope and the agent budget policy.
 
-## Step 16: Build Container Images
+## Step 17: Build Container Images
 
 Build images for the runtime services. A minimal containerized export contains:
 
@@ -557,7 +610,7 @@ Container expectations:
 - Provider SDKs are present only in provider adapter/plugin images or Foundry adapter packages.
 - Secrets are mounted or injected by reference; they are not baked into images.
 
-## Step 17: Run The Containerized Deployment
+## Step 18: Run The Containerized Deployment
 
 Example service shape:
 
@@ -601,7 +654,7 @@ UNFURL_FOUNDRY_DCP_ENDPOINT=http://foundry:7979/dcp/agent.run
 
 In production, this endpoint should be bound through the DCP transport security and governance ports, not a naked URL.
 
-## Step 18: Verify Runtime
+## Step 19: Verify Runtime
 
 Run these checks after the containers start:
 
@@ -622,7 +675,32 @@ Run these checks after the containers start:
 10. `CostGuardrail` trips before an over-budget model call.
 11. `AgentEventSink` emits metadata-only events with correlation id.
 
-## Step 19: Promote The Export
+Optional workload DAG smoke test:
+
+After the integrated environment is running, install a concrete Flow workflow and Foundry agent DAG and
+project it through Fabric's generic DCP adapter to verify that recursive workload topology renders
+correctly:
+
+```bash
+mvn -q -pl unfurl-foundry-substrate/foundry-substrate-offers -am -DskipTests package
+
+mvn -q -pl unfurl-foundry-substrate/foundry-substrate-offers exec:java \
+  -Dexec.mainClass=com.unfurl.foundry.substrate.offers.RecursiveProjectionRequestCli \
+  -Dexec.args="--workflow workflow.yaml --agent workload-agent.agent.yaml --output recursive-projection-request.json"
+
+curl -sS -X POST \
+  "http://127.0.0.1:7878/studio/tenants/tenant-a/assemblies/<assemblyId>/dynamic-dcp/project" \
+  -H "content-type: application/json" \
+  -H "X-Unfurl-Tenant: tenant-a" \
+  -d @recursive-projection-request.json \
+  -o recursive-dcp.json
+```
+
+For a reusable smoke fixture, use `unfurl-fabric/docs/examples/flowfoundry-dag-test/`. This test must
+not gate environment assembly; it only proves that an installed workload DAG can drill into Flow
+workflow nodes, Foundry agent phases, prompts, model refs, RAG refs, and tools.
+
+## Step 20: Promote The Export
 
 Before promoting the export:
 
