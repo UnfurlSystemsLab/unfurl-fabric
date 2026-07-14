@@ -102,7 +102,7 @@ class FabricToFlowEndToEndIT {
     }
 
     @Test
-    void fabricContainerPolicyIsRejectedByFlowStrictShapeGate() throws Exception {
+    void fabricContainerPolicyWithoutRuntimePortsIsRejectedByFlowStrictBootGate() throws Exception {
         Path flowJar = flowJar();
         Assumptions.assumeTrue(Files.isRegularFile(flowJar),
                 "set -Dunfurl.flow.jar=<path-to-unfurl-flow-shaded-jar> or run mvn package in ../unfurl-flow");
@@ -141,7 +141,10 @@ class FabricToFlowEndToEndIT {
             assertThat(flow.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(flow.exitValue()).isNotZero();
             assertThat(Files.readString(flowLog, StandardCharsets.UTF_8))
-                    .contains("deployment shape is not supported: CONTAINERIZED_SERVICE");
+                    .contains("flow substrate claim is incompatible")
+                    .contains("required capability is not offered: substrate.container.runtime")
+                    .contains("required capability is not offered: substrate.endpoint.discovery")
+                    .contains("required capability is not offered: substrate.http.client");
         } finally {
             flow.destroyForcibly();
             flow.waitFor();

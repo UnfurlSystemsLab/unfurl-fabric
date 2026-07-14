@@ -126,6 +126,7 @@ Tests cover:
 - Ambiguous candidate behavior.
 - Substrate profile determinism and secret exclusion.
 - Studio API record round trips and route behavior.
+- Foundry-compatible Studio tool gateway route behavior for HTTP authoring tools.
 - Dynamic DCP projection, layout, catalog, and session behavior.
 - Deployment policy and shape resolution.
 - Fabric-to-Flow integration scenarios.

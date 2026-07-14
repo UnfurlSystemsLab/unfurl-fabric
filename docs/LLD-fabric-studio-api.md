@@ -190,6 +190,40 @@ open.
 
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
 
+## Authoring Tool Gateway
+
+| Method | Path | Request | Response |
+|---|---|---|---|
+| `POST` | `/studio/tools/{toolName}` | `StudioToolCallRequest` | `StudioToolCallResult` |
+
+The tool gateway is the HTTP adapter for Foundry-managed authoring tools. Foundry remains the tool runtime:
+authoring agents invoke logical tools through Foundry's `ToolRegistry`, and HTTP tool bindings call this route only
+when the operation must cross into Fabric Studio state. Fabric does not import Foundry runtime classes here; it mirrors
+the stable tool-call JSON shape (`callId`, `toolName`, `arguments`, `metadata`) and converts tool arguments into the
+existing Studio API records before calling `StudioCatalogService`.
+
+The gateway is intentionally limited to Studio-owned state transitions and read models:
+
+- `fabric.catalog-admit`
+- `fabric.catalog-verify`
+- `fabric.assembly-create`
+- `fabric.needs-extract`
+- `fabric.session-start`
+- `fabric.authoring-converse`
+- `fabric.session-intent-apply`
+- `fabric.dynamic-dcp-project`
+- `fabric.deployment-resolve`
+- `fabric.candidate-compile`
+- `fabric.export-download`
+
+Filesystem inventory, runtime-binding generation, deployment-root assembly, and image build tools are not implemented
+inside Studio. They must be separate Foundry `pluginJar` or HTTP bindings owned by a deployment runner because those
+tools need filesystem, signing, or Docker authority outside Studio's tenant catalog/session boundary.
+
+Tool responses always include a structured runbook status in `output.status` when the call itself was understood:
+`PASS` for successful Studio operations and `GAP` for blocking design/input gaps that should stop the runbook. Unexpected
+handler/runtime failures return `success=false` with `errorCode` and `errorMessage`.
+
 ## Deployment Resolution
 
 | Method | Path | Request | Response |

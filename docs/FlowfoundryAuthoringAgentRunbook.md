@@ -47,9 +47,17 @@ Every response must include:
 The agent must not invent catalog ids, needs, contract ids, runtime-binding ids, endpoints, or hashes. Those values must
 come from tool outputs.
 
-## Current Tools
+## Foundry Tool Construct
 
-The deployment authoring agent already has these Foundry ToolPlugin tools:
+The authoring agent must use Foundry's normal agent/tool constructs:
+
+- The agent declares logical tool names in `toolRefs` and phase `allowedToolRefs`.
+- Foundry resolves those names through its tenant-scoped `ToolRegistry`.
+- Concrete execution is supplied by a `ToolExecutor` binding. Valid binding types include deployment `pluginJar`
+  tools loaded by Foundry and HTTP tools that call Fabric Studio or Fabric-owned execution endpoints.
+- The agent never implements catalog, assembly, export, deployment, Docker, filesystem, or CLI behavior locally.
+
+The deployment authoring agent already names these proposal tools:
 
 | Tool | Current purpose |
 |---|---|
@@ -57,35 +65,65 @@ The deployment authoring agent already has these Foundry ToolPlugin tools:
 | `fabric.needs-emitter` | Emit deterministic needs YAML for selected capabilities. |
 | `fabric.intent-emitter` | Emit Studio `ADD_COMPONENT` intents for selected catalog entry ids. |
 
-These are enough to propose catalog-backed Assembly intents. They are not enough to execute all 17 runbook steps. The
-phase execution tools below should be added as Fabric-owned ToolPlugin wrappers over Studio APIs, Fabric CLI commands,
-and deployment emitter operations.
+These are enough to propose catalog-backed Assembly intents. They are not enough to execute all 17 runbook steps.
+The phase execution tools below should be added as Foundry `ToolRegistry` entries. Use `pluginJar` bindings for
+in-process deployment tools and HTTP bindings for calls to Fabric Studio or a Fabric-owned execution endpoint. A
+plugin JAR is valid when the tool logic belongs in the customer deployment root and is loaded by Foundry; an HTTP tool
+is preferred when the operation must cross into Fabric Studio, a deployment runner, Docker, or another governed
+service boundary. In both cases, Foundry should see a tool name, permission scope, binding type, request schema,
+response schema, timeout, and any secret/config refs.
+
+## Flow Tool Execution Decision
+
+Flow-side tool execution must use DCP hydration for product deployments. The authoring agent must not wire Flow
+directly to Foundry's internal `ToolRegistry` or `ToolExecutor` implementations.
+
+The distinction is:
+
+- `toolRef` is a definition reference. It resolves a pinned Foundry `ToolDefinition` for schema, version,
+  provenance, and audit context.
+- `uses: tool.call` is an executable Flow capability. It is runnable only after Flow hydrates an accepted DCP child
+  contract for the `tool.call` capability.
+
+When a workflow contains a node that uses `tool.call`, the generated deployment artifacts must include:
+
+1. A provider claim that offers `tool.call`, normally from Foundry or another tool-provider component.
+2. A frozen child DCP contract binding Flow's `tool.call` need to that provider offer.
+3. A `runtime-binding.yaml` entry for the child contract, with the provider endpoint or runtime instance reference.
+4. Flow deployment-root placement of the child claim, frozen contract, runtime binding, trust keys, and workflow file.
+
+Flow then registers `tool.call` through `DcpDeploymentHydrator` and `FlowCapabilityRegistrar`, which installs a
+contract-backed Flow `NodeExecutor`. The Foundry-side provider remains responsible for resolving the actual tool name
+through its `ToolRegistry` and invoking the bound `ToolExecutor`.
+
+The Foundry-substrate `ToolExecutorNodeExecutor` adapter remains valid for co-packaged embedded hosts and tests, but
+it is not the Flowfoundry product deployment path.
 
 ## Phase Tool Set
 
-| Tool | Backing operation | Output artifact |
-|---|---|---|
-| `fabric.artifact-inventory` | Inspect expected files and compute local existence/hash metadata. | `step-01-artifact-inventory.json` |
-| `fabric.catalog-admit` | `POST /studio/tenants/{tenant}/catalog/admissions` | `step-02-catalog-admission-response.json`, claim bundle |
-| `fabric.catalog-verify` | `GET /studio/tenants/{tenant}/catalog` and capability scan | `step-03-capability-verification.json` |
-| `fabric.assembly-create` | `POST /studio/tenants/{tenant}/assemblies` | `step-04-assembly-response.json` |
-| `fabric.needs-extract` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/needs/extract` | `step-05-needs-extraction-response.json`, `step-05-needs.yaml` |
-| `fabric.session-start` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions` | `step-06-draft-session-response.json` |
-| `fabric.authoring-tooljar-build` | `mvn -pl unfurl-foundry/sample-authoring-tools -am package` and copy to deployment root | `step-07-build-summary.json` |
-| `fabric.authoring-converse` | `POST /studio/authoring/converse` backed by Foundry `agent.run` | `step-08-authoring-response.json` |
-| `fabric.session-intent-apply` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/intents` | `step-09-session-after.json` |
-| `fabric.dynamic-dcp-project` | `GET /studio/tenants/{tenant}/assemblies/{assembly}/dynamic-dcp?sessionId=...` | `step-10-dynamic-dcp.json` |
-| `fabric.deployment-resolve` | `POST /studio/deployment/resolve` in Studio session mode | `step-11-deployment-resolve-response.json` |
-| `fabric.candidate-compile` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/compile` | `step-12-compile-response.json` |
-| `fabric.export-download` | `GET /studio/tenants/{tenant}/exports/{artifact}/content?sha256=...` | downloaded contract/profile/signed-contract artifacts |
-| `fabric.runtime-binding-generate` | `fabric runtime-bindings --signed-contract ...` | `step-14-runtime-binding.yaml`, validation report |
-| `fabric.foundry-root-assemble` | Copy agent, prompt, tool/provider jars, registries, signed contract, runtime binding | `step-15-foundry-deployment-inventory.json` |
-| `fabric.flow-root-assemble` | Copy workflows, DCP child contracts, runtime binding refs, trust keys | `step-16-flow-deployment-inventory.json` |
-| `fabric.container-image-build` | Build Flow and Foundry images from deployment roots | `step-17-container-image-validation.json` |
+| Tool | Foundry binding | Backing operation | Output artifact |
+|---|---|---|---|
+| `fabric.artifact-inventory` | `pluginJar` or HTTP tool | Deployment-local inventory tool or Fabric execution endpoint inspects expected files and computes local existence/hash metadata. | `step-01-artifact-inventory.json` |
+| `fabric.catalog-admit` | HTTP tool | `POST /studio/tenants/{tenant}/catalog/admissions` | `step-02-catalog-admission-response.json`, claim bundle |
+| `fabric.catalog-verify` | HTTP tool | `GET /studio/tenants/{tenant}/catalog` and capability scan | `step-03-capability-verification.json` |
+| `fabric.assembly-create` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies` | `step-04-assembly-response.json` |
+| `fabric.needs-extract` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies/{assembly}/needs/extract` | `step-05-needs-extraction-response.json`, `step-05-needs.yaml` |
+| `fabric.session-start` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions` | `step-06-draft-session-response.json` |
+| `fabric.authoring-tool-registry-verify` | `pluginJar`, HTTP tool, or Foundry management/status tool | Verify Foundry deployment root contains the required tool registry bindings. | `step-07-tool-registry-verification.json` |
+| `fabric.authoring-converse` | HTTP tool or direct Studio route | `POST /studio/authoring/converse` backed by Foundry `agent.run` | `step-08-authoring-response.json` |
+| `fabric.session-intent-apply` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/intents` | `step-09-session-after.json` |
+| `fabric.dynamic-dcp-project` | HTTP tool | `GET /studio/tenants/{tenant}/assemblies/{assembly}/dynamic-dcp?sessionId=...` | `step-10-dynamic-dcp.json` |
+| `fabric.deployment-resolve` | HTTP tool | `POST /studio/deployment/resolve` in Studio session mode | `step-11-deployment-resolve-response.json` |
+| `fabric.candidate-compile` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/compile` | `step-12-compile-response.json` |
+| `fabric.export-download` | HTTP tool | `GET /studio/tenants/{tenant}/exports/{artifact}/content?sha256=...` | downloaded contract/profile/signed-contract artifacts |
+| `fabric.runtime-binding-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint wraps `fabric runtime-bindings --signed-contract ...` | `step-14-runtime-binding.yaml`, validation report |
+| `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed contract, runtime binding, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
+| `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
+| `fabric.container-image-build` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint builds Flow and Foundry images from deployment roots. | `step-17-container-image-validation.json` |
 
-Tool wrappers must return structured status: `PASS`, `GAP`, or `ERROR`. `GAP` means the runbook should stop and the
-agent should ask the operator or engineer for a design decision. `ERROR` means the tool failed unexpectedly and should
-include logs.
+All tool bindings must return structured status: `PASS`, `GAP`, or `ERROR`. `GAP` means the runbook should stop and the
+agent should ask the operator or engineer for a design decision. `ERROR` means the binding failed unexpectedly and
+should include logs.
 
 ## Phase 1: Catalog Creation
 
@@ -121,6 +159,8 @@ Ask these before applying intents:
 - Which recursive Foundry capabilities are required? For the current Flowfoundry run, tools and RAG must be explicit
   when needed.
 - Which model provider, embedding provider, vector store, tool bundles, and runtime profile should be used?
+- Do any Flow workflow nodes call tools directly with `uses: tool.call`, and if so which provider claim should satisfy
+  the `tool.call` child DCP contract?
 - Are cross-cutting claims optional for this development run or required for production readiness?
 - Should deployment resolution prefer local Docker Compose, Kubernetes, or another target?
 
@@ -131,7 +171,7 @@ Ask these before applying intents:
 | 4 | `fabric.assembly-create` | verified catalog snapshot | `step-04-assembly-response.json` | Assembly cannot be created. |
 | 5 | `fabric.needs-extract` or `fabric.needs-emitter` | source bundle or operator answers | `step-05-needs.yaml` | Needs omit `workflow.execute` or `agent.run` for Flowfoundry. |
 | 6 | `fabric.session-start` | assembly response + needs | `step-06-draft-session-response.json` | Session cannot be created. |
-| 7 | `fabric.authoring-tooljar-build` | Foundry authoring tool source | `step-07-build-summary.json` | Tool JAR missing `ToolPlugin` service or required tools. |
+| 7 | `fabric.authoring-tool-registry-verify` | Foundry deployment root | `step-07-tool-registry-verification.json` | Missing required `pluginJar` or HTTP tool binding for any required authoring tool. |
 | 8 | `fabric.authoring-converse` | catalog snapshot + needs + recursive-scope answers | `step-08-authoring-response.json` | Agent returns `clarify` or `gap`; do not apply intents. |
 | 9 | `fabric.session-intent-apply` | proposal intents | `step-09-session-after.json` | Any intent is rejected or revision is stale. |
 | 10 | `fabric.dynamic-dcp-project` | session after intents | `step-10-dynamic-dcp.json` | Projection does not match draft inventory or recursive DCP closure. |
@@ -152,6 +192,8 @@ Ask these before compiling and signing:
 - What Flow and Foundry service base URLs should be written into runtime bindings?
 - Which provider, embedding, vector, RAG, tool, auth, telemetry, audit, and secret/config refs should be represented
   as DCP runtime-binding child refs?
+- Which workflow-required `tool.call` capabilities require Flow child contracts, and what provider endpoint should each
+  runtime binding target?
 
 ### Tool flow
 
@@ -170,7 +212,8 @@ The Phase 3 exit artifact is a signed contract plus DCP runtime-binding set. Pha
 Ask these before assembling roots and images:
 
 - Which Foundry agent definitions, prompts, tool JARs, provider plugins, and registries should be included?
-- Which Flow workflows, child contracts, trust keys, and runtime binding refs should be mounted?
+- Which Flow workflows, child contracts for `agent.run` / `tool.call`, trust keys, and runtime binding refs should be
+  mounted?
 - Which image tags should be built for Flow and Foundry?
 - Should local Docker image build be performed now, or should the runbook emit image build instructions only?
 
@@ -179,7 +222,7 @@ Ask these before assembling roots and images:
 | Step | Tool call | Input artifact | Output artifact | Stop condition |
 |---:|---|---|---|---|
 | 15 | `fabric.foundry-root-assemble` | signed contract + runtime binding + Foundry deployment inputs | `step-15-foundry-deployment-inventory.json` | Missing agent, prompt, tool/provider plugin, registry, or signed contract. |
-| 16 | `fabric.flow-root-assemble` | signed contract + runtime binding + Flow workflow inputs | `step-16-flow-deployment-inventory.json` | Missing workflow, child DCP contract refs, trust keys, or runtime binding ref. |
+| 16 | `fabric.flow-root-assemble` | signed contract + runtime binding + Flow workflow inputs | `step-16-flow-deployment-inventory.json` | Missing workflow, `agent.run` / `tool.call` child DCP contract refs, trust keys, or runtime binding ref. |
 | 17 | `fabric.container-image-build` | Flow and Foundry deployment roots | `step-17-container-image-validation.json` | Image build fails or image lacks required deployment-root files. |
 
 The Phase 4 exit artifact is a local container-image validation report. Runtime execution should continue with Step 18
@@ -221,11 +264,39 @@ step must consume ledger artifacts.
 - Keep secrets out of artifacts. Use `SecretRef` and `ConfigRef`; never echo raw keys.
 - Use DCP child contracts/runtime-binding child refs for aggregation; do not introduce product-specific runtime closure blocks.
 
+## Current Deployment Status
+
+The Flowfoundry deployment should satisfy the Foundry tool-loading part of this design as follows:
+
+- `foundry-deployment/registries/tools.yaml` declares `pluginJar` metadata for
+  `fabric-authoring-tools-sample-0.1.0-SNAPSHOT.jar`.
+- `AgentRunBootstrap` hydrates `registries/tools.yaml` through Foundry's deployment tool-registry loader.
+- `pluginJar` bindings resolve through `DeploymentToolLoader`; HTTP bindings resolve through Foundry's generic HTTP
+  `ToolExecutor` adapter.
+- The deployed Foundry server exposes `/health`, `/dcp/agent.run`, and `/status/tools`.
+
+The authoring agent should call `/status/tools` during Step 7 and return a `gap` if any required authoring or phase
+tool is absent, bound to the wrong type, or missing the expected tenant scope. A development run may use the sample
+Java plugin JAR for the three proposal tools, but runbook-compliant phase execution still requires every needed tool to
+be represented as a Foundry registry binding.
+
+Studio-backed phase tools are exposed through Fabric's Foundry-compatible HTTP gateway:
+
+```text
+POST /studio/tools/{toolName}
+```
+
+This route accepts the canonical Foundry tool-call JSON shape and delegates to the existing Studio API/service methods.
+It currently covers the Studio-owned tools for catalog admission/verification, assembly/session creation, needs
+extraction, authoring converse, intent application, Dynamic DCP projection, deployment resolution, candidate compile,
+and export download. Deployment-local tools that need filesystem, runtime-binding, deployment-root, Docker, or
+Kubernetes authority remain separate `pluginJar` or HTTP bindings owned by a deployment runner.
+
 ## Implementation Notes
 
 The existing `fabric.catalog-query`, `fabric.needs-emitter`, and `fabric.intent-emitter` tools should remain the
-proposal tools used inside the authoring phase. The additional phase tools should be implemented as Fabric-owned
-ToolPlugin wrappers and registered in Foundry's deployment root, with permission scopes that match their authority:
+proposal tool names used inside the authoring phase. The additional phase tools should be registered as Foundry tool
+definitions with `pluginJar` or HTTP bindings and permission scopes that match their authority:
 
 | Permission | Tools |
 |---|---|
@@ -238,3 +309,13 @@ ToolPlugin wrappers and registered in Foundry's deployment root, with permission
 
 Foundry must enforce these permission scopes through `PermissionBridge`; Fabric should revalidate every write through
 Studio/API checks even after Foundry authoring succeeds.
+
+The Foundry-side product path is a registry-driven binding loader/status path, not a Fabric-specific local
+implementation:
+
+1. Define the deployment-root tool binding schema for `pluginJar` and HTTP bindings, including jar path or endpoint,
+   headers/config refs, secret refs, request schema, response schema, timeout, and permission scope.
+2. Keep `pluginJar` loading through Foundry's deployment loader and add a generic Foundry `ToolExecutor` adapter for
+   HTTP tool bindings in Foundry product code, not in the substrate.
+3. Hydrate `registries/tools.yaml` as the authoritative tool registry during `AgentRunBootstrap`.
+4. Expose a safe status/diagnostic endpoint or artifact so Step 7 can verify loaded tool bindings.

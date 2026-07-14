@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import com.unfurl.fabric.studio.handlers.ResolveDeploymentHandler;
 import com.unfurl.fabric.studio.handlers.StudioAuthoringHandler;
 import com.unfurl.fabric.studio.handlers.StudioTenantHandler;
+import com.unfurl.fabric.studio.handlers.StudioToolHandler;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -183,6 +184,8 @@ public final class StudioServer implements AutoCloseable {
         server.createContext("/studio/deployment/resolve", withCors(resolveDeployment::handle));
         StudioAuthoringHandler authoringHandler = new StudioAuthoringHandler(catalogService, mapper);
         server.createContext("/studio/authoring", withCors(authoringHandler::handle));
+        StudioToolHandler toolHandler = new StudioToolHandler(new StudioToolGateway(catalogService, mapper), mapper);
+        server.createContext("/studio/tools", withCors(toolHandler::handle));
         StudioTenantHandler tenantHandler = new StudioTenantHandler(catalogService, mapper);
         server.createContext("/studio/tenants", withCors(tenantHandler::handle));
     }

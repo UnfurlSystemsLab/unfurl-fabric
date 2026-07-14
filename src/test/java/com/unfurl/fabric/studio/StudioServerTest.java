@@ -16,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
@@ -620,6 +621,145 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Regression test: Foundry HTTP tools can call Studio through the canonical
+     * `/studio/tools/{toolName}` gateway and still hit the same governed Studio
+     * service paths as the UI.
+     */
+    @Test
+    void servesFoundryCompatibleStudioToolGateway() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> catalogGap = post(server, "/studio/tools/fabric.catalog-verify", """
+                    {
+                      "callId": "catalog-gap",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "requiredCapabilities": ["validate.payment", "missing.capability"]
+                      }
+                    }
+                    """);
+            assertThat(catalogGap.statusCode()).isEqualTo(200);
+            assertThat(catalogGap.body())
+                    .contains("\"success\":true")
+                    .contains("\"status\":\"GAP\"")
+                    .contains("missing.capability");
+
+            HttpResponse<String> assembly = post(server, "/studio/tools/fabric.assembly-create", """
+                    {
+                      "callId": "assembly",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "request": {
+                          "assemblyId": "assembly-tools",
+                          "targetApplicationName": "Tool Gateway",
+                          "defaultDeploymentTarget": "local-compose"
+                        }
+                      }
+                    }
+                    """);
+            assertThat(assembly.statusCode()).isEqualTo(200);
+            assertThat(assembly.body()).contains("\"status\":\"PASS\"", "assembly-tools");
+
+            HttpResponse<String> session = post(server, "/studio/tools/fabric.session-start", """
+                    {
+                      "callId": "session",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-tools",
+                        "request": {
+                          "baseCatalogHash": "sha256:catalog",
+                          "needsId": "",
+                          "collaboratorId": "alice",
+                          "collaboratorName": "Alice"
+                        }
+                      }
+                    }
+                    """);
+            assertThat(session.statusCode()).isEqualTo(200);
+            StudioToolCallResult sessionResult = StudioJson.mapper()
+                    .readValue(session.body(), StudioToolCallResult.class);
+            String sessionId = sessionId(sessionResult);
+            assertThat(sessionId).startsWith("studio-session-");
+
+            HttpResponse<String> intent = post(server, "/studio/tools/fabric.session-intent-apply", """
+                    {
+                      "callId": "intent",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-tools",
+                        "sessionId": "%s",
+                        "request": {
+                          "tenantId": "tenant-a",
+                          "assemblyId": "assembly-tools",
+                          "sessionId": "%s",
+                          "baseRevision": 0,
+                          "type": "ADD_COMPONENT",
+                          "collaboratorId": "alice",
+                          "catalogEntryId": "com.unfurl:validation-service:1.1.0"
+                        }
+                      }
+                    }
+                    """.formatted(sessionId, sessionId));
+            assertThat(intent.statusCode()).isEqualTo(200);
+            assertThat(intent.body()).contains("\"status\":\"PASS\"", "\"status\":\"VALID\"");
+
+            HttpResponse<String> projection = post(server, "/studio/tools/fabric.dynamic-dcp-project", """
+                    {
+                      "callId": "projection",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-tools",
+                        "sessionId": "%s"
+                      }
+                    }
+                    """.formatted(sessionId));
+            assertThat(projection.statusCode()).isEqualTo(200);
+            assertThat(projection.body())
+                    .contains("\"status\":\"PASS\"")
+                    .contains("\"catalogEntryId\":\"com.unfurl:validation-service:1.1.0\"")
+                    .doesNotContain("\"catalogEntryId\":\"com.unfurl:storage-s3:1.2.0\"");
+
+            HttpResponse<String> compiled = post(server, "/studio/tools/fabric.candidate-compile", """
+                    {
+                      "callId": "compile",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-tools",
+                        "sessionId": "%s",
+                        "request": {
+                          "tenantId": "tenant-a",
+                          "assemblyId": "assembly-tools",
+                          "sessionId": "%s",
+                          "expectedRevision": 1,
+                          "sign": false
+                        }
+                      }
+                    }
+                    """.formatted(sessionId, sessionId));
+            assertThat(compiled.statusCode()).isEqualTo(200);
+            assertThat(compiled.body()).contains("\"status\":\"PASS\"", "\"status\":\"COMPILED\"");
+            StudioToolCallResult compileResult = StudioJson.mapper()
+                    .readValue(compiled.body(), StudioToolCallResult.class);
+            Map<?, ?> contractArtifact = contractArtifact(compileResult);
+
+            HttpResponse<String> downloaded = post(server, "/studio/tools/fabric.export-download", """
+                    {
+                      "callId": "download",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "artifactId": "%s",
+                        "sha256": "%s"
+                      }
+                    }
+                    """.formatted(contractArtifact.get("artifactId"), contractArtifact.get("sha256")));
+            assertThat(downloaded.statusCode()).isEqualTo(200);
+            assertThat(downloaded.body())
+                    .contains("\"status\":\"PASS\"")
+                    .contains("\"contentBase64\"")
+                    .contains("\"sha256\":\"" + contractArtifact.get("sha256") + "\"");
+        }
+    }
+
     private StudioServer started() throws Exception {
         return started(new StudioCatalogService());
     }
@@ -659,6 +799,27 @@ class StudioServerTest {
 
     private URI uri(StudioServer server, String path) {
         return URI.create("http://127.0.0.1:" + server.port() + path);
+    }
+
+    /**
+     * Test helper: extracts the nested session id from a generic Studio tool
+     * result map produced by the gateway.
+     */
+    @SuppressWarnings("unchecked")
+    private String sessionId(StudioToolCallResult result) {
+        Map<String, Object> response = (Map<String, Object>) result.output().get("response");
+        Map<String, Object> session = (Map<String, Object>) response.get("session");
+        return String.valueOf(session.get("sessionId"));
+    }
+
+    /**
+     * Test helper: extracts the compiled contract artifact from a generic Studio
+     * tool result map for the export-download tool.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<?, ?> contractArtifact(StudioToolCallResult result) {
+        Map<String, Object> response = (Map<String, Object>) result.output().get("response");
+        return (Map<?, ?>) response.get("contractArtifact");
     }
 
     private static String jsonPath(Path path) {
