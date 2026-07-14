@@ -49,6 +49,9 @@ Prepare these inputs before starting:
 The first 17 steps are grouped into four build phases. Steps 18-20 are post-build runtime execution, verification,
 and promotion gates.
 
+For the phase-gated authoring-agent question and tool execution contract, see
+`FlowfoundryAuthoringAgentRunbook.md`.
+
 | Phase | Name | Steps | Exit criteria |
 |---|---|---|---|
 | 1 | Catalog Creation | 1-3 | Required Flow, Foundry, substrate, provider, RAG/vector, runtime-support, and workload capabilities are admitted and visible in the tenant catalog. |
