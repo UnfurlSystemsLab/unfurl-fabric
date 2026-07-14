@@ -1,22 +1,31 @@
 package com.unfurl.fabric.studio;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.unfurl.dcp.claim.Claim;
 import com.unfurl.dcp.claim.ClaimMetadata;
 import com.unfurl.dcp.claim.ComponentKind;
+import com.unfurl.dcp.claim.Concern;
+import com.unfurl.dcp.claim.ConflictResolution;
 import com.unfurl.dcp.claim.ConsumerAccess;
 import com.unfurl.dcp.claim.Dependencies;
+import com.unfurl.dcp.claim.DomainAssertion;
 import com.unfurl.dcp.claim.Identity;
 import com.unfurl.dcp.claim.IntegrationPorts;
 import com.unfurl.dcp.claim.InterfaceKind;
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.claim.OfferInterface;
+import com.unfurl.dcp.claim.Refusal;
 import com.unfurl.dcp.claim.Stability;
 import com.unfurl.dcp.projection.DcpProjection;
 import com.unfurl.dcp.projection.DcpProjectionEdge;
 import com.unfurl.dcp.projection.DcpProjectionNode;
 import com.unfurl.dcp.projection.DcpProjectionProjector;
 import com.unfurl.dcp.projection.DcpProjectionRequest;
+import com.unfurl.dcp.contract.CompositionContract;
+import com.unfurl.dcp.contract.ContractFreezer;
+import com.unfurl.dcp.trust.SigningKeyRef;
 import com.unfurl.deployment.domain.ComponentShapeProfile;
 import com.unfurl.deployment.domain.DeploymentShape;
 import com.unfurl.deployment.plan.BindingPlan;
@@ -115,6 +124,9 @@ public final class StudioCatalogService {
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
     private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
     private final ObjectMapper jsonMapper = StudioJson.mapper();
+    private final ObjectMapper dcpRuntimeBundleMapper = StudioJson.mapper().copy()
+            .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
+            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
     private final StudioDeploymentService deploymentService = new StudioDeploymentService();
 
     /**
@@ -1296,8 +1308,11 @@ public final class StudioCatalogService {
                 childClaimUris.stream().map(URI::toString).sorted().toList());
         return new Claim(
                 new Identity(claimUri, label, kind, "1.0.0", "Unfurl", URI.create("urn:unfurl")),
-                null,
-                List.of(),
+                reconstructedDomain(label),
+                List.of(new Refusal(
+                        "unmodelled-runtime-concerns",
+                        "runtime-only concerns remain owned by the deployment environment",
+                        "urn:unfurl:deployment-owner")),
                 new Dependencies(dependencies == null ? List.of() : List.copyOf(dependencies)),
                 capabilities.stream()
                         .distinct()
@@ -1312,11 +1327,29 @@ public final class StudioCatalogService {
                                 false,
                                 null))
                         .toList(),
-                null,
+                new ConflictResolution(List.of(), List.of("prefer admitted source claims when available"), false),
                 null,
                 new IntegrationPorts(Map.of()),
                 com.unfurl.dcp.fault.FaultPolicy.empty(),
                 new ClaimMetadata("0.2.0", "1.0.0", Instant.EPOCH, extensions));
+    }
+
+    /**
+     * DCP fallback-domain builder: provides the required claim boundary text when Studio has to
+     * reconstruct a catalog entry from persisted visual metadata after a catalog-map reload.
+     */
+    private DomainAssertion reconstructedDomain(String label) {
+        return new DomainAssertion(
+                "reconstructed Studio catalog claim for " + label,
+                List.of(new Concern(
+                        "runtime-capabilities",
+                        "capability offers and dependencies reconstructed from admitted Studio visual metadata",
+                        "source catalog claims remain preferred whenever available",
+                        List.of(),
+                        List.of())),
+                List.of(
+                        "reconstruction preserves DCP capability and dependency boundaries",
+                        "deployment-owned concerns stay outside the reconstructed component claim"));
     }
 
     /**
@@ -2377,9 +2410,12 @@ public final class StudioCatalogService {
         }
 
         List<String> warnings = new ArrayList<>(build.warnings());
+        List<StudioExportArtifact> diagnosticArtifacts = new ArrayList<>();
         StudioExportArtifact signed = null;
+        Optional<FabricContractSigner> compileSigner = Optional.empty();
         if (request != null && request.sign()) {
-            SignedArtifact signedArtifact = signCompiledContract(compiled.contract());
+            compileSigner = studioSigner();
+            SignedArtifact signedArtifact = signCompiledContract(compiled.contract(), compileSigner);
             if (signedArtifact.invalid() != null) {
                 warnings.add(signedArtifact.invalid().details());
             } else {
@@ -2389,6 +2425,12 @@ public final class StudioCatalogService {
                         "signed-contract.yaml",
                         "application/yaml",
                         signedArtifact.bytes());
+                diagnosticArtifacts.add(exportArtifact(
+                        session.tenantId(),
+                        "dcp-runtime-bundle-" + session.sessionId(),
+                        "dcp-runtime-bundle.zip",
+                        "application/zip",
+                        dcpRuntimeBundle(compiled.contract(), build.candidate(), compileSigner.orElseThrow())));
             }
         }
         StudioExportArtifact contract = exportArtifact(
@@ -2414,6 +2456,7 @@ public final class StudioCatalogService {
                 "",
                 session.sceneRevision(),
                 expected);
+        diagnosticArtifacts.add(diagnosticArtifact(session.tenantId(), "compile-response", "compile-response.json", response));
         return new StudioCompileDraftCandidateResponse(
                 response.status(),
                 response.candidateId(),
@@ -2425,7 +2468,7 @@ public final class StudioCatalogService {
                 response.details(),
                 response.expectedRevision(),
                 response.receivedRevision(),
-                List.of(diagnosticArtifact(session.tenantId(), "compile-response", "compile-response.json", response)));
+                diagnosticArtifacts);
     }
 
     /**
@@ -2771,6 +2814,7 @@ public final class StudioCatalogService {
         SubstrateProfile hashedProfile = profile.withProfileHash(profileCodec.computeProfileHash(profile));
         CompiledContract withProfileHash = new CompiledContract(
                 compiled.contract(),
+                compiled.childContracts(),
                 selectionsWithDeploymentShapes(compiled.selections(), bindingPlan),
                 compiled.audit(),
                 hashedProfile.profileHash(),
@@ -2810,7 +2854,14 @@ public final class StudioCatalogService {
      * configured via properties or environment variables.
      */
     private SignedArtifact signCompiledContract(CompiledContract contract) {
-        Optional<FabricContractSigner> signer = studioSigner();
+        return signCompiledContract(contract, studioSigner());
+    }
+
+    /**
+     * Signing adapter: signs with an already loaded Studio signer so companion artifacts can reuse
+     * the same key without re-reading environment configuration.
+     */
+    private SignedArtifact signCompiledContract(CompiledContract contract, Optional<FabricContractSigner> signer) {
         if (signer.isEmpty()) {
             return SignedArtifact.invalid(new InvalidDraft(
                     "SIGNING_KEY_REQUIRED",
@@ -2822,6 +2873,69 @@ public final class StudioCatalogService {
         } catch (RuntimeException ex) {
             return SignedArtifact.invalid(new InvalidDraft("SIGNING_FAILED", ex.getMessage()));
         }
+    }
+
+    /**
+     * Bundle builder: writes the broker-consumable DCP runtime artifacts needed by Flow and other
+     * hosts: provider claims plus individually frozen child contracts. The aggregate Fabric
+     * contract remains the environment proof, while these child frozen contracts are the runtime
+     * broker inputs.
+     */
+    private byte[] dcpRuntimeBundle(
+            CompiledContract compiled,
+            CompositionCandidate candidate,
+            FabricContractSigner signer
+    ) {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
+                writeRuntimeBundleClaims(zip, candidate);
+                writeRuntimeBundleFrozenContracts(zip, compiled, signer);
+            }
+            return out.toByteArray();
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to write DCP runtime bundle", ex);
+        }
+    }
+
+    /**
+     * Bundle section writer: serializes every selected provider claim using public DCP snake_case
+     * JSON so Flow can present claims to the broker without importing Fabric.
+     */
+    private void writeRuntimeBundleClaims(ZipOutputStream zip, CompositionCandidate candidate) throws IOException {
+        List<CatalogEntry> entries = candidate == null ? List.of() : candidate.entries();
+        for (CatalogEntry entry : entries) {
+            Claim claim = entry.claimDescriptor().claim();
+            String name = "claims/" + slug(claim.identity().uri().toString()) + ".claim.json";
+            writeZipEntry(zip, name, dcpRuntimeBundleMapper.writeValueAsBytes(claim));
+        }
+    }
+
+    /**
+     * Bundle section writer: freezes every child DCP contract independently so the runtime broker
+     * can verify and accept a specific provider capability.
+     */
+    private void writeRuntimeBundleFrozenContracts(
+            ZipOutputStream zip,
+            CompiledContract compiled,
+            FabricContractSigner signer
+    ) throws IOException {
+        ContractFreezer freezer = new ContractFreezer(new SigningKeyRef(signer.keyFingerprint()));
+        for (CompositionContract child : compiled.childContracts()) {
+            String capability = child.binding().providerCapability();
+            String suffix = child.contractId().toString().substring(child.contractId().toString().lastIndexOf(':') + 1);
+            String name = "contracts/frozen/" + slug(capability) + "-" + slug(suffix) + ".frozen.json";
+            writeZipEntry(zip, name, freezer.freeze(child, signer).canonicalBytes());
+        }
+    }
+
+    /**
+     * Zip helper: writes one deterministic entry and leaves stream ownership with the caller.
+     */
+    private void writeZipEntry(ZipOutputStream zip, String name, byte[] bytes) throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(bytes == null ? new byte[0] : bytes);
+        zip.closeEntry();
     }
 
     /**

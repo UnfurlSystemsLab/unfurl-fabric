@@ -19,11 +19,18 @@ class FabricCliEmitInjectsRuntimePathsTest {
     void localEmitInjectsContractAndProfilePaths(@TempDir Path dir) throws Exception {
         CliTestFixtures.SignedPaths paths = CliTestFixtures.compileAndSign(dir);
         Path out = dir.resolve("deploy");
+        Path runtimeBinding = Files.writeString(dir.resolve("runtime-binding.yaml"), "runtime_binding_set: {}\n");
+        Path runtimeBundle = Files.writeString(dir.resolve("dcp-runtime-bundle.zip"), "zip-bytes");
+        Path workflows = Files.createDirectories(dir.resolve("workflows"));
+        Files.writeString(workflows.resolve("workflow.yaml"), "id: wf\n");
 
         CliTestFixtures.CliRun result = CliTestFixtures.run(
                 "emit",
                 "--contract", paths.signed().toString(),
                 "--profile", paths.profile().toString(),
+                "--runtime-binding", runtimeBinding.toString(),
+                "--dcp-runtime-bundle", runtimeBundle.toString(),
+                "--flow-workflows", workflows.toString(),
                 "--target", "local",
                 "--trust-keys", paths.trustKeys().toString(),
                 "--out", out.toString());
@@ -33,7 +40,13 @@ class FabricCliEmitInjectsRuntimePathsTest {
         assertThat(artifact)
                 .contains("fabricContractPath=")
                 .contains("substrateProfilePath=")
+                .contains("runtimeBindingPath=")
+                .contains("dcpRuntimeBundlePath=")
+                .contains("flowWorkflowsPath=")
                 .contains(paths.signed().toAbsolutePath().toString())
-                .contains(paths.profile().toAbsolutePath().toString());
+                .contains(paths.profile().toAbsolutePath().toString())
+                .contains(runtimeBinding.toAbsolutePath().toString())
+                .contains(runtimeBundle.toAbsolutePath().toString())
+                .contains(workflows.toAbsolutePath().toString());
     }
 }

@@ -477,7 +477,12 @@ The response contains:
 - `warnings`: operator-visible export warnings.
 - `expectedRevision` and `receivedRevision`: revision safety details.
 
-Do not deploy raw session state. The signed contract and runtime binding are the deployment handoff.
+The signed contract must contain a DCP contract closure: an aggregate parent contract whose
+`metadata.extensions.contains` references child composition contracts for the selected Flow, Foundry,
+provider, RAG, vector, tool, and substrate edges. A `bindingPlan` may be present for diagnostics, but it
+is not a substitute for referenced child DCP contracts.
+
+Do not deploy raw session state. The signed contract closure and runtime binding tree are the deployment handoff.
 
 Download any compile diagnostic artifacts in addition to the contract/profile artifacts. They capture the response
 metadata, warnings, stale-revision details, and artifact hashes used by the handoff UI.
@@ -496,7 +501,10 @@ jq -r '.substrateProfileArtifact.url' compile-response.json | xargs -I{} \
   curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/substrate-profile.yaml
 
 jq -r '.signedContractArtifact.url' compile-response.json | xargs -I{} \
-  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-contract.json
+  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-contract.yaml
+
+jq -r '.diagnosticArtifacts[] | select(.url | contains("dcp-runtime-bundle.zip")) | .url' compile-response.json | xargs -I{} \
+  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/dcp-runtime-bundle.zip
 ```
 
 Compile artifact URLs are hash-pinned Studio export routes. A missing or mismatched `sha256` must fail the download
@@ -507,6 +515,13 @@ rather than returning mutable session state.
 Create a runtime binding file for the container environment from the signed contract, substrate profile, and deployment
 resolution response. This is the boundary where Studio handoff ends and the deploy emitter/runtime package assembly
 begins.
+
+The binding set must use DCP-native aggregation. Generate an aggregate parent runtime binding whose
+`metadata.extensions.contains` references child runtime bindings for each resolved Flow, Foundry, and
+substrate/provider/tool/RAG edge. Each child is a normal DCP runtime binding with its own child contract pin,
+component instance, endpoint/config refs, secret refs, and runtime policy. Do not add product-specific
+runtime-closure sections such as `flowfoundry_runtime`; recursive child references are the DCP construct
+for aggregation.
 
 The binding must reference:
 
@@ -519,6 +534,19 @@ The binding must reference:
 - Runtime policy: enabled, timeout, telemetry namespace, audit enabled.
 
 Do not inline secrets in the binding. Use secret/config references that the deployment environment resolves.
+Missing child binding refs, containment cycles, or inline secret material in any child binding must block Step 14.
+
+Generate the binding from the signed DCP contract closure, not by hand-copying ids:
+
+```bash
+fabric runtime-bindings \
+  --signed-contract exports/flowfoundry/signed-contract.yaml \
+  --tenant tenant-local \
+  --environment local-dev \
+  --flow-base-url http://flow:8080 \
+  --foundry-base-url http://foundry:7979 \
+  --out exports/flowfoundry/runtime-binding.yaml
+```
 
 ## Step 15: Assemble Foundry Deployment Root
 
@@ -569,10 +597,51 @@ Create the Flow deployment directory that will be mounted into the Flow containe
 flow-deployment/
   workflows/
     workflow.yaml
+  claims/
+    unfurl-foundry.claim.yaml
+  contracts/
+    frozen/
+      agent-run.frozen.json
+  trust-keys/
+    studio-public-key.pem
   signed-contract.json
   runtime-binding.yaml
   substrate-profile.yaml
 ```
+
+`signed-contract.*` and `substrate-profile.yaml` are the aggregate environment handoff artifacts.
+Flow verifies the aggregate substrate profile hash against the signed contract, then scopes its
+process-level boot compatibility to the local Flow runtime profile. Do not generate an unsigned
+Flow-only contract sidecar to make strict boot pass; the aggregate signed DCP handoff remains the
+proof of deployment closure.
+
+For dynamic workflow capabilities such as `agent.run`, the Flow root must also include the
+broker-consumable DCP runtime bundle: provider claims under `claims/`, frozen child contracts under
+`contracts/frozen/`, and the matching child runtime binding in `runtime-binding.yaml`. Flow presents
+the provider claim for the exact requested capability, accepts the matching frozen child contract,
+and registers the resulting `ContractInvocable` as a Flow `NodeExecutor`. Provider claim identity
+alone is not a valid lookup key because Foundry publishes multiple offers from one claim.
+The Flow root must also include the public DCP trust-key directory used to verify those frozen child
+contract signatures; the container receives it through `UNFURL_DCP_TRUST_KEYS_DIR`.
+
+The preferred packaging path is `fabric emit` with the runtime handoff inputs:
+
+```bash
+fabric emit \
+  --contract exports/flowfoundry/signed-contract.yaml \
+  --profile exports/flowfoundry/substrate-profile.yaml \
+  --runtime-binding exports/flowfoundry/runtime-binding.yaml \
+  --dcp-runtime-bundle exports/flowfoundry/dcp-runtime-bundle.zip \
+  --flow-workflows exports/flowfoundry/flow/workflows \
+  --foundry-deployment-root exports/flowfoundry/foundry/foundry-deployment \
+  --trust-keys exports/flowfoundry/trust-keys \
+  --target local \
+  --out exports/flowfoundry/deploy
+```
+
+For the local compose target this emits `deploy/flow-deployment/`, copies the signed contract,
+substrate profile, runtime binding, and workflow files into the root, and safely extracts
+`dcp-runtime-bundle.zip` into `claims/` and `contracts/frozen/`.
 
 Flow should invoke Foundry through DCP or through registered Foundry Substrate node executors, not by importing Foundry internals.
 
@@ -598,6 +667,8 @@ flowfoundry-export/
     flow-deployment/
   foundry/
     foundry-deployment/
+  trust-keys/
+    studio-public-key.pem
   deploy/
     docker-compose.yaml
     k8s/
@@ -653,6 +724,9 @@ UNFURL_FOUNDRY_DCP_ENDPOINT=http://foundry:7979/dcp/agent.run
 ```
 
 In production, this endpoint should be bound through the DCP transport security and governance ports, not a naked URL.
+Foundry also requires `UNFURL_FOUNDRY_CREDENTIAL_KEY` (base64 16/24/32-byte AES key) for its
+credential store. Local compose must read it from the operator environment or secret store; do not
+inline the key in generated artifacts.
 
 ## Step 19: Verify Runtime
 

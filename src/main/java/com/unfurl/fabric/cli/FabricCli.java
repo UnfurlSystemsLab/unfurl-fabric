@@ -24,6 +24,7 @@ public final class FabricCli {
                 case "sign" -> new SignCommand().run(rest, out);
                 case "verify" -> new VerifyCommand().run(rest, out, err);
                 case "emit" -> new EmitCommand().run(rest, out);
+                case "runtime-bindings" -> new RuntimeBindingsCommand().run(rest, out);
                 case "apply" -> new ApplyCommand().run(rest, out);
                 case "deploy" -> new DeployCommand().run(rest, out);
                 case "explain" -> new ExplainCommand().run(rest, out);

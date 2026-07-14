@@ -42,7 +42,16 @@ final class DeployCliSupport {
         Path outDir = args.requiredPath("out");
         Path contractPath = args.requiredPath("contract");
         Path profilePath = args.requiredPath("profile");
-        DeploymentTarget target = withComposeRuntimePaths(loadTarget(args.get("target")), contractPath, profilePath);
+        Path trustKeysPath = args.requiredPath("trust-keys");
+        DeploymentTarget target = withComposeRuntimePaths(
+                loadTarget(args.get("target")),
+                contractPath,
+                profilePath,
+                args.optionalPath("runtime-binding"),
+                args.optionalPath("dcp-runtime-bundle"),
+                args.optionalPath("flow-workflows"),
+                args.optionalPath("foundry-deployment-root"),
+                trustKeysPath);
         EmitterConfig config = new EmitterConfig(target, target.options(), true);
         DeployEmitter backend = new EmitterBootstrap().create(config);
         EmitRequest request = new EmitRequest(
@@ -50,7 +59,7 @@ final class DeployCliSupport {
                 readProfile(profilePath),
                 target,
                 outDir);
-        VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
+        VerificationKeySet keys = new TrustKeyDirectoryLoader().load(trustKeysPath);
         EmitResult result = new EmitPipeline().emit(request, backend, keys);
         return new EmitOutcome(outDir, target, backend, result);
     }
@@ -59,10 +68,19 @@ final class DeployCliSupport {
         Path outDir = args.requiredPath("out");
         Path contractPath = args.requiredPath("contract");
         Path profilePath = args.requiredPath("profile");
+        Path trustKeysPath = args.requiredPath("trust-keys");
         List<DeploymentTarget> targets = loadTargets(args.get("targets")).stream()
-                .map(target -> withComposeRuntimePaths(target, contractPath, profilePath))
+                .map(target -> withComposeRuntimePaths(
+                        target,
+                        contractPath,
+                        profilePath,
+                        args.optionalPath("runtime-binding"),
+                        args.optionalPath("dcp-runtime-bundle"),
+                        args.optionalPath("flow-workflows"),
+                        args.optionalPath("foundry-deployment-root"),
+                        trustKeysPath))
                 .toList();
-        VerificationKeySet keys = new TrustKeyDirectoryLoader().load(args.requiredPath("trust-keys"));
+        VerificationKeySet keys = new TrustKeyDirectoryLoader().load(trustKeysPath);
         StitchResult result = new StitchDriver().stitch(new StitchRequest(
                 readSigned(contractPath),
                 readProfile(profilePath),
@@ -78,18 +96,33 @@ final class DeployCliSupport {
     }
 
     /**
-     * Threads the operator's signed-contract and substrate-profile paths into a
-     * {@code local-compose} target's options so the compose backend emits a
-     * STRICT (closed-world) flow runtime profile rather than LEGACY_OPEN_WORLD.
-     * Explicit values in the target file win ({@code putIfAbsent}).
+     * Threads the operator's signed-contract, substrate-profile, and optional
+     * Flowfoundry deployment-root handoff paths into a {@code local-compose}
+     * target's options. The compose backend uses these options to emit a STRICT
+     * runtime profile and, when the full handoff set is present, a Flow
+     * deployment root. Public DCP trust keys are also threaded through for Flow runtime
+     * verification. Explicit values in the target file win ({@code putIfAbsent}).
      */
-    private static DeploymentTarget withComposeRuntimePaths(DeploymentTarget target, Path contract, Path profile) {
+    private static DeploymentTarget withComposeRuntimePaths(
+            DeploymentTarget target,
+            Path contract,
+            Path profile,
+            Path runtimeBinding,
+            Path dcpRuntimeBundle,
+            Path flowWorkflows,
+            Path foundryDeploymentRoot,
+            Path trustKeysPath) {
         if (!"local-compose".equals(target.kind())) {
             return target;
         }
         Map<String, String> options = new LinkedHashMap<>(target.options());
         options.putIfAbsent("fabricContractPath", contract.toAbsolutePath().toString());
         options.putIfAbsent("substrateProfilePath", profile.toAbsolutePath().toString());
+        putIfPresent(options, "runtimeBindingPath", runtimeBinding);
+        putIfPresent(options, "dcpRuntimeBundlePath", dcpRuntimeBundle);
+        putIfPresent(options, "flowWorkflowsPath", flowWorkflows);
+        putIfPresent(options, "foundryDeploymentRootPath", foundryDeploymentRoot);
+        putIfPresent(options, "trustKeysPath", trustKeysPath);
         return new DeploymentTarget(
                 target.kind(),
                 target.environment(),
@@ -97,6 +130,16 @@ final class DeployCliSupport {
                 target.endpoint(),
                 options,
                 target.credentialRefs());
+    }
+
+    /**
+     * Option helper: writes optional handoff paths as absolute values while respecting
+     * target-file overrides.
+     */
+    private static void putIfPresent(Map<String, String> options, String key, Path path) {
+        if (path != null) {
+            options.putIfAbsent(key, path.toAbsolutePath().toString());
+        }
     }
 
     static ApplyResult apply(Path planDir, DeploymentTarget target, boolean dryRun) {

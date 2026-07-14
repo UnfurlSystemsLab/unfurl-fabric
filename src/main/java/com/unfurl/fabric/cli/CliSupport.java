@@ -111,6 +111,7 @@ final class CliSupport {
         SubstrateProfile hashedProfile = profile.withProfileHash(profileCodec.computeProfileHash(profile));
         CompiledContract withProfileHash = new CompiledContract(
                 compiled.contract(),
+                compiled.childContracts(),
                 selectionsWithDeploymentShapes(compiled.selections(), bindingPlan),
                 compiled.audit().withSelectionMode(selectionMode),
                 hashedProfile.profileHash(),

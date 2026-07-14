@@ -1,7 +1,10 @@
 package com.unfurl.fabric.studio;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.unfurl.dcp.claim.Claim;
 import com.unfurl.dcp.claim.ClaimMetadata;
+import com.unfurl.dcp.claim.ClaimValidator;
 import com.unfurl.dcp.claim.ComponentKind;
 import com.unfurl.dcp.claim.ConsumerAccess;
 import com.unfurl.dcp.claim.Dependencies;
@@ -15,6 +18,7 @@ import com.unfurl.dcp.projection.DcpProjectionProjector;
 import com.unfurl.fabric.needs.CapabilityRequirement;
 import com.unfurl.fabric.needs.Need;
 import com.unfurl.fabric.needs.NeedsCodec;
+import com.unfurl.fabric.signing.SigningTestFixtures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -495,6 +499,75 @@ class StudioCatalogServiceTest {
                 response.contractArtifact().artifactId(),
                 "sha256:wrong"))
                 .isEmpty();
+    }
+
+    /**
+     * Regression test: signed Studio compile must also emit the broker-consumable DCP runtime
+     * bundle that Flow Step 16 hydrates from provider claims and frozen child contracts.
+     */
+    @Test
+    void signedCompileEmitsDcpRuntimeBundleForFlowHydration(@TempDir Path dir) throws Exception {
+        var keys = SigningTestFixtures.generateEcKeyPair();
+        Path privateKey = SigningTestFixtures.writePrivateKeyPem(dir, "studio-private.pem", keys.getPrivate());
+        Path publicKey = SigningTestFixtures.writePublicKeyPem(dir, "studio-public.pem", keys.getPublic());
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+
+            StudioCatalogService service = flowfoundrySessionService(dir);
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+            StudioCompileDraftCandidateResponse response = service.compileCandidate(
+                    "tenant-a",
+                    "assembly-flow",
+                    created.session().sessionId(),
+                    new StudioCompileDraftCandidateRequest(
+                            "tenant-a",
+                            "assembly-flow",
+                            created.session().sessionId(),
+                            2,
+                            true,
+                            containerPolicy()));
+
+            assertThat(response.status())
+                    .as(response.reason() + ": " + response.details())
+                    .isEqualTo("COMPILED");
+            assertThat(response.signedContractArtifact()).isNotNull();
+            assertThat(response.warnings()).isEmpty();
+
+            StudioExportArtifact runtimeBundle = response.diagnosticArtifacts().stream()
+                    .filter(artifact -> "application/zip".equals(artifact.mediaType()))
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(runtimeBundle.url()).contains("dcp-runtime-bundle.zip");
+            assertThat(service.exportArtifactContent("tenant-a", runtimeBundle.artifactId(), runtimeBundle.sha256()))
+                    .hasValueSatisfying(content -> {
+                        assertThat(content.mediaType()).isEqualTo("application/zip");
+                        try {
+                            Set<String> entries = zipEntries(content.bytes());
+                            assertThat(entries)
+                                    .anyMatch(entry -> entry.startsWith("claims/") && entry.endsWith(".claim.json"))
+                                    .anyMatch(entry -> entry.startsWith("contracts/frozen/")
+                                            && entry.contains("agent-run")
+                                            && entry.endsWith(".frozen.json"));
+                            ClaimValidator validator = new ClaimValidator();
+                            assertThat(zipClaims(content.bytes()))
+                                    .isNotEmpty()
+                                    .allSatisfy(claim -> assertThat(validator.validate(claim).valid())
+                                            .as("runtime bundle claim should be DCP-valid: " + claim.identity().uri())
+                                            .isTrue());
+                        } catch (Exception ex) {
+                            throw new AssertionError("DCP runtime bundle is not a readable zip", ex);
+                        }
+                    });
+        } finally {
+            restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+        }
     }
 
     @Test
@@ -1212,5 +1285,38 @@ class StudioCatalogServiceTest {
             }
         }
         return entries;
+    }
+
+    /**
+     * Fixture helper: reads DCP runtime-bundle provider claims so tests can validate the bundle with
+     * DCP's protocol validator, not just assert the ZIP contains files.
+     */
+    private static List<Claim> zipClaims(byte[] bytes) throws Exception {
+        ObjectMapper mapper = StudioJson.mapper().copy()
+                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
+        List<Claim> claims = new java.util.ArrayList<>();
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                if (!entry.isDirectory()
+                        && entry.getName().startsWith("claims/")
+                        && entry.getName().endsWith(".claim.json")) {
+                    claims.add(mapper.readValue(zip.readAllBytes(), Claim.class));
+                }
+            }
+        }
+        return claims;
+    }
+
+    /**
+     * Fixture helper: restores a JVM property after a test mutates Studio signing
+     * configuration, keeping signing-enabled tests isolated from the rest of the suite.
+     */
+    private static void restoreProperty(String key, String previousValue) {
+        if (previousValue == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previousValue);
+        }
     }
 }

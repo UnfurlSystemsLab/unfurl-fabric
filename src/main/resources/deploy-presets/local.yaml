@@ -1,3 +1,5 @@
 kind: local-compose
 environment: local
-options: {}
+options:
+  image.urn-unfurl-catalog-uploaded-unfurl-flow-0-1-0-snapshot-jar: unfurl-flow:0.1.0-SNAPSHOT
+  image.urn-unfurl-catalog-uploaded-unfurl-foundry-0-1-0-snapshot-jar: unfurl-foundry:0.1.0-SNAPSHOT

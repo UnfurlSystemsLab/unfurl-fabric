@@ -37,6 +37,9 @@ final class TestDeployEmitter implements DeployEmitter {
             StringBuilder content = new StringBuilder("target=" + config.target().kind() + "\n");
             appendOption(content, "fabricContractPath");
             appendOption(content, "substrateProfilePath");
+            appendOption(content, "runtimeBindingPath");
+            appendOption(content, "dcpRuntimeBundlePath");
+            appendOption(content, "flowWorkflowsPath");
             Files.writeString(path, content.toString(), StandardCharsets.UTF_8);
             EmittedArtifact artifact = new EmittedArtifact(
                     request.outDir().relativize(path),

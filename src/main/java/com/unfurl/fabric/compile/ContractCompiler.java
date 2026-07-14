@@ -3,6 +3,7 @@ package com.unfurl.fabric.compile;
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.contract.Binding;
 import com.unfurl.dcp.contract.CompositionContract;
+import com.unfurl.dcp.contract.CompositionContractMetadata;
 import com.unfurl.dcp.contract.CreatedBy;
 import com.unfurl.dcp.contract.DataMapping;
 import com.unfurl.dcp.contract.Expectations;
@@ -16,15 +17,14 @@ import com.unfurl.dcp.contract.Transport;
 import com.unfurl.dcp.contract.TransportKind;
 import com.unfurl.dcp.contract.Trust;
 import com.unfurl.dcp.trust.TrustTier;
+import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.ContractCompileException;
 import com.unfurl.fabric.compiler.DecisionAudit;
 import com.unfurl.fabric.compiler.SelectionRecord;
-import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.matcher.CandidateScore;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.PlanningWarning;
-import com.unfurl.fabric.needs.CapabilityRequirement;
 import com.unfurl.fabric.needs.Need;
 import com.unfurl.substrate.api.BindingMode;
 
@@ -42,21 +42,18 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Deterministically compiles a selected {@link CompositionCandidate} (plus the consumer {@link Need}
- * and {@link HostOwnerMeta}) into an immutable DCP {@link CompositionContract} wrapped in a
- * {@link CompiledContract} (contract + selection records + decision audit).
+ * Deterministically compiles a selected {@link CompositionCandidate} into a DCP contract tree.
  *
- * <p>Pattern: <b>Builder/Assembler</b> over the DCP contract schema — it assembles the many small DCP
- * value records (Parties, Binding, Transport, Provenance, Trust, Invalidation) into one contract. It is
- * a pure, stateless translation: the only collaborator is an injected {@link Clock} (so {@code compiledAt}
- * and content-addressed ids are reproducible in tests). No models, no I/O, no reasoning — selection
- * intelligence happened upstream in the matcher; this layer only freezes the chosen result.
+ * <p>Pattern: <b>Builder/Composite Assembler</b>. The compiler emits an aggregate parent
+ * {@link CompositionContract} whose {@link CompositionContractMetadata} references one child contract
+ * per selected provider offer. That keeps Flow/Foundry assemblies inside DCP's normal recursive
+ * containment model instead of hiding the closure in product-specific planner metadata.
  *
- * <p>The compiled contract id is <b>content-addressed</b> (SHA-256 over the selected artifacts, the
- * primary binding, and the compile timestamp), so identical inputs at the same instant yield the same id.
+ * <p>The compiled contract ids are <b>content-addressed</b> (SHA-256 over selected artifacts, offers,
+ * child ids, and the compile timestamp), so identical inputs at the same instant yield identical output.
  */
 public final class ContractCompiler {
-    /** Time source for {@code compiledAt} and the content-addressed contract id; injectable for tests. */
+    /** Time source for {@code compiledAt} and content-addressed ids; injectable for tests. */
     private final Clock clock;
 
     /** Production constructor: uses the system UTC clock. */
@@ -65,7 +62,7 @@ public final class ContractCompiler {
     }
 
     /**
-     * Test/seam constructor: injects the clock used for the compile timestamp and id seed.
+     * Test constructor: injects the clock used for compile timestamps and content-addressed ids.
      *
      * @param clock time source; falls back to {@link Clock#systemUTC()} when null.
      */
@@ -74,18 +71,17 @@ public final class ContractCompiler {
     }
 
     /**
-     * Compile a selected candidate into a signed-shape {@link CompiledContract}.
+     * Compile a selected candidate into a signed-shape {@link CompiledContract} contract closure.
      *
-     * <p>Steps: validate inputs, deterministically sort the selected entries, derive one
-     * {@link SelectionRecord} per entry, choose the single {@link PrimaryBinding} (consumer need →
-     * provider offer), build the decision audit, then assemble the immutable {@link CompositionContract}
-     * with a content-addressed id, NEUTRAL trust, and HARD_FAIL runtime-violation policy.
+     * <p>Steps: validate inputs, deterministically sort selected entries, derive one
+     * {@link SelectionRecord} per entry, build one child DCP {@link CompositionContract} per selected
+     * provider offer, then assemble an aggregate parent whose metadata references those children.
      *
-     * @param candidate     the chosen composition (must contain at least one selected entry).
+     * @param candidate     the chosen composition; must contain at least one selected entry.
      * @param need          the consumer need; defaults to "no required capabilities" when null.
      * @param hostOwnerMeta consumer identity/provenance metadata; defaults applied when null.
-     * @return the compiled contract plus its selection records and decision audit.
-     * @throws ContractCompileException if the candidate is null/empty or has no offer to bind.
+     * @return the compiled root contract, child contracts, selection records, and decision audit.
+     * @throws ContractCompileException if the candidate is null/empty or any selected entry exposes no offers.
      */
     public CompiledContract compile(CompositionCandidate candidate, Need need, HostOwnerMeta hostOwnerMeta) {
         if (candidate == null) {
@@ -101,34 +97,133 @@ public final class ContractCompiler {
         List<SelectionRecord> selections = entries.stream()
                 .map(this::selectionFor)
                 .toList();
-        PrimaryBinding primary = primaryBinding(entries, need);
         Instant compiledAt = clock.instant();
         DecisionAudit audit = auditFor(candidate, need, entries, compiledAt);
-        CompositionContract contract = new CompositionContract(
-                contractId(selections, audit, primary),
+        List<CompositionContract> childContracts = childContracts(entries, hostOwnerMeta, compiledAt);
+        CompositionContract contract = aggregateContract(candidate, hostOwnerMeta, childContracts, audit);
+        return new CompiledContract(contract, childContracts, selections, audit, null, null, null);
+    }
+
+    /**
+     * Composite assembler: creates the aggregate/root contract that references every selected child
+     * contract through DCP containment metadata.
+     *
+     * @param candidate      selected composition.
+     * @param hostOwnerMeta  consumer/host identity metadata.
+     * @param childContracts child DCP contracts already built for selected offers.
+     * @param audit          compile audit carrying the deterministic compile timestamp.
+     * @return aggregate parent contract.
+     */
+    private static CompositionContract aggregateContract(
+            CompositionCandidate candidate,
+            HostOwnerMeta hostOwnerMeta,
+            List<CompositionContract> childContracts,
+            DecisionAudit audit
+    ) {
+        List<Map<String, String>> contains = childContracts.stream()
+                .map(child -> Map.of("contractId", child.contractId().toString()))
+                .toList();
+        Map<String, Object> extensions = new LinkedHashMap<>();
+        extensions.put("dcpType", "COMPOSITION_CONTRACT");
+        extensions.put("level", "CONTRACT_AGGREGATE");
+        extensions.put("candidateId", candidate.candidateId());
+        extensions.put("childContractCount", childContracts.size());
+        extensions.put(CompositionContractMetadata.EXT_CONTAINS, contains);
+
+        URI compositionUri = URI.create("urn:unfurl:fabric:composition:" + candidate.candidateId());
+        return new CompositionContract(
+                aggregateContractId(candidate, childContracts, audit),
                 "0.1.0",
                 new Parties(
                         new Party(hostOwnerMeta.consumerClaimUri(), hostOwnerMeta.consumerClaimVersion()),
-                        new Party(primary.entry().claimDescriptor().claim().identity().uri(),
-                                primary.entry().claimDescriptor().claim().identity().version())),
-                new Binding(primary.consumerNeed(), primary.offer().capability(), primary.offer().version()),
+                        new Party(compositionUri, "0.1.0")),
+                new Binding("assembly.requirements", "assembly.aggregate", "0.1.0"),
                 new DataMapping(Map.of(), Map.of()),
-                new Transport(transportKind(primary.bindingMode()), Map.of("bindingMode", primary.bindingMode().name())),
+                new Transport(TransportKind.IN_PROCESS, Map.of("bindingMode", "AGGREGATE")),
+                new Expectations(null, true, false, false),
+                new Provenance(CreatedBy.FABRIC, NegotiationMode.H2H, null,
+                        hostOwnerMeta.fabricVersion(), false, audit.compiledAt()),
+                new Trust(TrustTier.NEUTRAL),
+                new Invalidation(List.of(), RuntimeViolationPolicy.HARD_FAIL),
+                new CompositionContractMetadata(extensions));
+    }
+
+    /**
+     * Composite assembler: creates one child composition contract for each selected provider offer.
+     *
+     * @param entries       deterministic selected entries.
+     * @param hostOwnerMeta consumer/host identity metadata.
+     * @param compiledAt    compile timestamp used in content-addressed ids and provenance.
+     * @return immutable list of child contracts.
+     */
+    private static List<CompositionContract> childContracts(
+            List<CatalogEntry> entries,
+            HostOwnerMeta hostOwnerMeta,
+            Instant compiledAt
+    ) {
+        List<CompositionContract> contracts = new ArrayList<>();
+        for (CatalogEntry entry : entries) {
+            List<Offer> offers = sortedOffers(entry);
+            if (offers.isEmpty()) {
+                throw new ContractCompileException(
+                        "selected entry has no offers to bind: " + entry.artifact().coordinates());
+            }
+            for (Offer offer : offers) {
+                contracts.add(childContract(entry, offer, hostOwnerMeta, compiledAt));
+            }
+        }
+        return List.copyOf(contracts);
+    }
+
+    /**
+     * Leaf-contract assembler: freezes one selected provider offer as a normal DCP composition edge.
+     *
+     * @param entry         selected catalog entry.
+     * @param offer         selected entry offer.
+     * @param hostOwnerMeta consumer/host identity metadata.
+     * @param compiledAt    compile timestamp used in id/provenance.
+     * @return child composition contract for the offer.
+     */
+    private static CompositionContract childContract(
+            CatalogEntry entry,
+            Offer offer,
+            HostOwnerMeta hostOwnerMeta,
+            Instant compiledAt
+    ) {
+        String capability = requireOfferCapability(entry, offer);
+        String version = requireOfferVersion(entry, offer);
+        BindingMode bindingMode = entry.metadata().binding().defaultMode();
+        Map<String, Object> extensions = new LinkedHashMap<>();
+        extensions.put("dcpType", "COMPOSITION_CONTRACT");
+        extensions.put("level", "CONTRACT_CHILD");
+        extensions.put("artifactCoordinates", entry.artifact().coordinates());
+        extensions.put("artifactSha256", entry.artifact().sha256());
+        extensions.put("claimHash", entry.claimDescriptor().claimHash());
+
+        return new CompositionContract(
+                childContractId(entry, offer, compiledAt),
+                "0.1.0",
+                new Parties(
+                        new Party(hostOwnerMeta.consumerClaimUri(), hostOwnerMeta.consumerClaimVersion()),
+                        new Party(entry.claimDescriptor().claim().identity().uri(),
+                                entry.claimDescriptor().claim().identity().version())),
+                new Binding(capability, capability, version),
+                new DataMapping(Map.of(), Map.of()),
+                new Transport(transportKind(bindingMode), Map.of("bindingMode", bindingMode.name())),
                 new Expectations(null, true, false, false),
                 new Provenance(CreatedBy.FABRIC, NegotiationMode.H2H, null,
                         hostOwnerMeta.fabricVersion(), false, compiledAt),
                 new Trust(TrustTier.NEUTRAL),
-                new Invalidation(List.of(), RuntimeViolationPolicy.HARD_FAIL));
-        return new CompiledContract(contract, selections, audit, null, null);
+                new Invalidation(List.of(), RuntimeViolationPolicy.HARD_FAIL),
+                new CompositionContractMetadata(extensions));
     }
 
     /**
-     * Build the {@link SelectionRecord} for one catalog entry: its artifact, claim hash, binding mode,
-     * and the wire interface kind. The interface kind is taken from the claim's first declared offer
-     * interface, falling back to HTTP_API for remote bindings and IN_PROCESS otherwise.
+     * Build the {@link SelectionRecord} for one catalog entry: artifact, claim hash, binding mode,
+     * and selected interface kind.
      *
      * @param entry the selected catalog entry.
-     * @return the immutable selection record describing how this entry is bound.
+     * @return immutable selection record.
      */
     private SelectionRecord selectionFor(CatalogEntry entry) {
         BindingMode bindingMode = entry.metadata().binding().defaultMode();
@@ -148,54 +243,21 @@ public final class ContractCompiler {
     }
 
     /**
-     * Choose the single contract binding (the DCP {@link Binding} is singular). Scans required
-     * capabilities in order and returns the first entry/offer whose capability matches and whose version
-     * satisfies the requirement. If no required capability matches, falls back to the first offer of the
-     * first (sorted) entry.
+     * Assemble the human-readable {@link DecisionAudit}: alternatives considered, selected reasons,
+     * satisfied capabilities, score breakdown, and planning warnings.
      *
-     * @param entries selected entries in deterministic order.
-     * @param need    the consumer need carrying required capabilities.
-     * @return the chosen primary binding.
-     * @throws ContractCompileException if the fallback entry exposes no offer to bind.
-     */
-    private static PrimaryBinding primaryBinding(List<CatalogEntry> entries, Need need) {
-        List<CapabilityRequirement> required = need.requiredCapabilities();
-        for (CapabilityRequirement requirement : required) {
-            for (CatalogEntry entry : entries) {
-                for (Offer offer : entry.claimDescriptor().claim().offers()) {
-                    if (requirement.capability().equals(offer.capability())
-                            && requirement.capabilityVersion().satisfiedBy(offer.version())) {
-                        return new PrimaryBinding(entry, offer, requirement.capability(), entry.metadata().binding().defaultMode());
-                    }
-                }
-            }
-        }
-        CatalogEntry first = entries.get(0);
-        Offer offer = first.claimDescriptor().claim().offers().isEmpty()
-                ? null
-                : first.claimDescriptor().claim().offers().get(0);
-        if (offer == null) {
-            throw new ContractCompileException("selected entry has no offer to bind");
-        }
-        return new PrimaryBinding(first, offer, offer.capability(), first.metadata().binding().defaultMode());
-    }
-
-    /**
-     * Assemble the human-readable {@link DecisionAudit}: the alternative artifacts considered, a reason
-     * line per selected entry, the satisfied required/optional capabilities, the numeric score breakdown,
-     * and any planning warnings. This is the "show your work" record attached to every compiled contract.
-     *
-     * @param candidate  the chosen candidate (source of satisfied capabilities, score, warnings).
-     * @param need       the consumer need (unused directly but kept for audit-shape stability/extension).
-     * @param entries    the selected entries in deterministic order.
-     * @param compiledAt the compile timestamp.
-     * @return the decision audit.
+     * @param candidate  chosen candidate.
+     * @param need       consumer need retained for audit-shape stability.
+     * @param entries    selected entries in deterministic order.
+     * @param compiledAt compile timestamp.
+     * @return decision audit.
      */
     private static DecisionAudit auditFor(
             CompositionCandidate candidate,
             Need need,
             List<CatalogEntry> entries,
-            Instant compiledAt) {
+            Instant compiledAt
+    ) {
         List<String> alternatives = entries.stream()
                 .map(e -> e.artifact().coordinates())
                 .toList();
@@ -216,7 +278,7 @@ public final class ContractCompiler {
     }
 
     /**
-     * Render an entry's offered capability names as a stable, comma-joined, sorted string for the audit.
+     * Render an entry's offered capability names as a stable, comma-joined, sorted string for audit.
      *
      * @param entry the catalog entry.
      * @return sorted comma-separated capability names.
@@ -229,11 +291,10 @@ public final class ContractCompiler {
     }
 
     /**
-     * Flatten a {@link CandidateScore} into an ordered name→value map for the decision audit, so the
-     * scoring rationale is serializable and stable across runs.
+     * Flatten a {@link CandidateScore} into an ordered name-to-value map for deterministic output.
      *
      * @param score the candidate score.
-     * @return an insertion-ordered map of each score component.
+     * @return insertion-ordered map of score components.
      */
     private static Map<String, Integer> scoreBreakdown(CandidateScore score) {
         Map<String, Integer> out = new LinkedHashMap<>();
@@ -250,11 +311,10 @@ public final class ContractCompiler {
     }
 
     /**
-     * Return the entries in a deterministic order (by artifact coordinates, then SHA-256) so selection
-     * records, the audit, and the content-addressed contract id are reproducible.
+     * Return entries in deterministic order by artifact coordinates, then SHA-256.
      *
-     * @param entries the unsorted selected entries.
-     * @return an immutable, deterministically sorted copy.
+     * @param entries unsorted selected entries.
+     * @return immutable sorted copy.
      */
     private static List<CatalogEntry> sortedEntries(List<CatalogEntry> entries) {
         List<CatalogEntry> sorted = new ArrayList<>(entries);
@@ -264,9 +324,52 @@ public final class ContractCompiler {
     }
 
     /**
+     * Return offers in deterministic order so child contract ids and YAML output are stable.
+     *
+     * @param entry selected catalog entry.
+     * @return immutable, sorted offers.
+     */
+    private static List<Offer> sortedOffers(CatalogEntry entry) {
+        return entry.claimDescriptor().claim().offers().stream()
+                .sorted(Comparator.comparing(Offer::capability)
+                        .thenComparing(Offer::version, Comparator.nullsLast(String::compareTo)))
+                .toList();
+    }
+
+    /**
+     * Offer guard: returns the capability or fails compile rather than fabricating a DCP binding.
+     *
+     * @param entry selected catalog entry used for diagnostics.
+     * @param offer provider offer.
+     * @return non-blank capability.
+     */
+    private static String requireOfferCapability(CatalogEntry entry, Offer offer) {
+        if (offer.capability() == null || offer.capability().isBlank()) {
+            throw new ContractCompileException(
+                    "selected offer has no capability: " + entry.artifact().coordinates());
+        }
+        return offer.capability();
+    }
+
+    /**
+     * Offer guard: returns the version or fails compile rather than emitting an under-specified edge.
+     *
+     * @param entry selected catalog entry used for diagnostics.
+     * @param offer provider offer.
+     * @return non-blank provider capability version.
+     */
+    private static String requireOfferVersion(CatalogEntry entry, Offer offer) {
+        if (offer.version() == null || offer.version().isBlank()) {
+            throw new ContractCompileException(
+                    "selected offer has no capability version: " + entry.artifact().coordinates());
+        }
+        return offer.version();
+    }
+
+    /**
      * Map a substrate {@link BindingMode} to the DCP {@link TransportKind} recorded on the contract.
      *
-     * @param bindingMode the entry's default binding mode.
+     * @param bindingMode entry default binding mode.
      * @return HTTP_JSON for remote bindings, IN_PROCESS otherwise.
      */
     private static TransportKind transportKind(BindingMode bindingMode) {
@@ -277,32 +380,53 @@ public final class ContractCompiler {
     }
 
     /**
-     * Compute the content-addressed contract id (a {@code urn:unfurl:fabric:contract:<sha256>} URI).
-     * The hash seed includes every selected artifact's coordinates/sha/claim-hash, the primary binding
-     * (need + capability + version), and the compile instant — so equal inputs produce an equal id.
+     * Compute the aggregate/root contract id from the candidate id and loaded child contract ids.
      *
-     * @param selections the per-entry selection records.
-     * @param audit      the decision audit (source of the compile instant).
-     * @param primary    the chosen primary binding.
-     * @return the deterministic contract id URI.
+     * @param candidate selected composition.
+     * @param childContracts child contracts referenced by the parent.
+     * @param audit decision audit carrying the compile timestamp.
+     * @return deterministic aggregate contract URI.
      */
-    private static URI contractId(List<SelectionRecord> selections, DecisionAudit audit, PrimaryBinding primary) {
-        String seed = selections.stream()
-                .map(s -> s.artifact().coordinates() + "|" + s.artifact().sha256() + "|" + s.claimHash())
-                .collect(Collectors.joining(";"))
-                + "|" + primary.consumerNeed()
-                + "|" + primary.offer().capability()
-                + "|" + primary.offer().version()
-                + "|" + audit.compiledAt();
-        return URI.create("urn:unfurl:fabric:contract:" + sha256Hex(seed.getBytes(StandardCharsets.UTF_8)));
+    private static URI aggregateContractId(
+            CompositionCandidate candidate,
+            List<CompositionContract> childContracts,
+            DecisionAudit audit
+    ) {
+        String childSeed = childContracts.stream()
+                .map(contract -> contract.contractId().toString())
+                .sorted()
+                .collect(Collectors.joining(";"));
+        String seed = candidate.candidateId() + "|" + childSeed + "|" + audit.compiledAt();
+        return URI.create("urn:unfurl:fabric:contract:aggregate:"
+                + sha256Hex(seed.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * Compute a child contract id from the selected artifact, provider offer, binding mode, and time.
+     *
+     * @param entry selected catalog entry.
+     * @param offer selected provider offer.
+     * @param compiledAt compile timestamp.
+     * @return deterministic child contract URI.
+     */
+    private static URI childContractId(CatalogEntry entry, Offer offer, Instant compiledAt) {
+        String seed = entry.artifact().coordinates()
+                + "|" + entry.artifact().sha256()
+                + "|" + entry.claimDescriptor().claimHash()
+                + "|" + entry.claimDescriptor().claim().identity().uri()
+                + "|" + offer.capability()
+                + "|" + offer.version()
+                + "|" + entry.metadata().binding().defaultMode()
+                + "|" + compiledAt;
+        return URI.create("urn:unfurl:fabric:contract:child:"
+                + sha256Hex(seed.getBytes(StandardCharsets.UTF_8)));
     }
 
     /**
      * Compute a lowercase hex SHA-256 digest of the given bytes.
      *
-     * @param data the input bytes.
-     * @return the 64-character lowercase hex digest.
-     * @throws IllegalStateException if SHA-256 is unavailable on the JVM (a programmer/environment error).
+     * @param data input bytes.
+     * @return 64-character lowercase hex digest.
      */
     private static String sha256Hex(byte[] data) {
         try {
@@ -316,17 +440,5 @@ public final class ContractCompiler {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 not available on this JVM", ex);
         }
-    }
-
-    /**
-     * Internal value object (Parameter Object) carrying the single chosen binding: the provider entry,
-     * the bound offer, the consumer need string, and the binding mode. Lives only within compilation.
-     *
-     * @param entry        the provider catalog entry.
-     * @param offer        the provider offer being bound.
-     * @param consumerNeed the consumer need/capability name driving the binding.
-     * @param bindingMode  the substrate binding mode for the provider entry.
-     */
-    private record PrimaryBinding(CatalogEntry entry, Offer offer, String consumerNeed, BindingMode bindingMode) {
     }
 }

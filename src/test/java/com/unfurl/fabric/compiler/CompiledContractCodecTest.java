@@ -21,6 +21,7 @@ class CompiledContractCodecTest {
 
         assertThat(parsed.contract().contractId()).isEqualTo(compiled.contract().contractId());
         assertThat(parsed.contract().binding()).isEqualTo(compiled.contract().binding());
+        assertThat(parsed.childContracts()).isEqualTo(compiled.childContracts());
         assertThat(parsed.selections()).isEqualTo(compiled.selections());
         assertThat(parsed.audit().scoreBreakdown()).isEqualTo(compiled.audit().scoreBreakdown());
         assertThat(parsed.substrateProfileHash()).isNull();
@@ -44,6 +45,7 @@ class CompiledContractCodecTest {
 
         CompiledContract withPlan = new CompiledContract(
                 compiled.contract(),
+                compiled.childContracts(),
                 compiled.selections(),
                 compiled.audit(),
                 compiled.substrateProfileHash(),

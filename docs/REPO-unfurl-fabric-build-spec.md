@@ -92,6 +92,7 @@ explain-substrate
 ask-advisor
 analyze-workflow
 emit
+runtime-bindings
 deploy
 apply
 explain-deployment
@@ -110,6 +111,12 @@ deployment plan output
 ```
 
 The substrate profile hash is embedded in the compiled contract. Signed contracts cover the resolved binding plan.
+The packaged Studio/CLI jar must also include the runtime deploy-emitter provider modules needed by the bundled
+deployment target presets, and the shade step must merge `META-INF/services` entries so `fabric emit` can discover
+`local-compose` and `k8s` backends through the deploy-emitter SPI.
+For local Flowfoundry compose emits, the CLI must pass the `--trust-keys` directory through to the
+target options as `trustKeysPath` so the deploy emitter can copy public DCP verification keys into
+the Flow deployment root and wire `UNFURL_DCP_TRUST_KEYS_DIR` for runtime child-contract hydration.
 
 ## Test Expectations
 
