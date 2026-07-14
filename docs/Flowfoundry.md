@@ -44,6 +44,20 @@ Prepare these inputs before starting:
 | Foundry deployment root | Foundry | Contains agent definitions, prompts, tool plugins, provider plugins, and registry config. |
 | Runtime binding file | DCP / deployment owner | Binds frozen contracts to container endpoints, secret refs, config refs, telemetry namespace, and audit behavior. |
 
+## Runbook Phases
+
+The first 17 steps are grouped into four build phases. Steps 18-20 are post-build runtime execution, verification,
+and promotion gates.
+
+| Phase | Name | Steps | Exit criteria |
+|---|---|---|---|
+| 1 | Catalog Creation | 1-3 | Required Flow, Foundry, substrate, provider, RAG/vector, runtime-support, and workload capabilities are admitted and visible in the tenant catalog. |
+| 2 | Assembly | 4-11 | A Studio assembly draft exists, needs are captured, authoring has produced catalog-backed intents, dynamic DCP projection is valid, and deployment choices resolve. |
+| 3 | Export | 12-14 | The candidate is compiled, signed, downloaded, hash-verified, and converted into DCP runtime bindings without inline secrets. |
+| 4 | Deployment | 15-17 | Foundry and Flow deployment roots are assembled and container images are built from the exported contract and runtime-binding artifacts. |
+
+## Phase 1: Catalog Creation
+
 ## Step 1: Upload Foundry And Substrate Claims
 
 Foundry and the Foundry Substrate modules already publish or carry DCP claim material for their capability surfaces. For this flow, the operator should collect the existing Foundry product, Foundry Substrate, Flow, provider, runtime-support, and application artifact files and upload them through the Studio UI so Fabric can add them to the tenant catalog after DCP validation.
@@ -215,6 +229,8 @@ Check that the catalog contains offers for:
 
 Studio UI should show a download action for the catalog snapshot diagnostic artifact so this exact catalog view can be
 attached to support tickets or replayed in CI.
+
+## Phase 2: Assembly
 
 ## Step 4: Create A Studio Assembly
 
@@ -453,6 +469,8 @@ The response should identify deployable selections for:
 - Tool plugin bundles.
 - Auth, authorization, audit, telemetry, and secret/config services or references.
 
+## Phase 3: Export
+
 ## Step 12: Compile And Sign The Candidate
 
 Compile the session candidate into export artifacts.
@@ -547,6 +565,8 @@ fabric runtime-bindings \
   --foundry-base-url http://foundry:7979 \
   --out exports/flowfoundry/runtime-binding.yaml
 ```
+
+## Phase 4: Deployment
 
 ## Step 15: Assemble Foundry Deployment Root
 
