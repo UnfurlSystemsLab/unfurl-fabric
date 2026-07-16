@@ -1,6 +1,6 @@
 # Flowfoundry Authoring Agent Runbook
 
-This runbook defines how the Fabric authoring agent should guide and execute the first 17 Flowfoundry export steps.
+This runbook defines how the Fabric authoring agent should guide and execute the first 18 Flowfoundry export steps.
 The agent is advisory until Fabric validates each artifact through Studio, CLI, DCP, and deployment tooling.
 
 The authoring agent must be phase-gated:
@@ -19,8 +19,9 @@ The canonical build phases are:
 | Assembly | 4-11 | Create the Studio draft, ask recursive-scope questions, apply validated intents, and resolve deployment shape. |
 | Export | 12-14 | Compile, sign, download, verify hashes, and generate DCP runtime bindings. |
 | Deployment | 15-17 | Assemble Foundry and Flow deployment roots and build runtime container images. |
+| API Documentation | 18 | Generate OpenAPI documents and a static Swagger UI bundle from the signed export handoff. |
 
-Steps 18-20 remain runtime run, verification, and promotion gates. The authoring agent can prepare their inputs, but it
+Steps 19-21 remain runtime run, verification, and promotion gates. The authoring agent can prepare their inputs, but it
 must not claim the deployment is complete until those gates pass.
 
 ## Agent Contract
@@ -36,7 +37,7 @@ The authoring agent response must be one of:
 
 Every response must include:
 
-- `phase`: one of `catalog-creation`, `assembly`, `export`, `deployment`.
+- `phase`: one of `catalog-creation`, `assembly`, `export`, `deployment`, `api-documentation`.
 - `step`: the current runbook step number.
 - `assistantMessage`: concise operator-facing status.
 - `questions`: unanswered phase questions, when `kind=clarify`.
@@ -120,6 +121,7 @@ it is not the Flowfoundry product deployment path.
 | `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed contract, runtime binding, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
 | `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
 | `fabric.container-image-build` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint builds Flow and Foundry images from deployment roots. | `step-17-container-image-validation.json` |
+| `fabric.swagger-ui-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint projects OpenAPI from the signed contract, runtime binding, substrate profile, service route descriptors, and Foundry tool schemas, then emits a static Swagger UI bundle. | `step-18-swagger-ui-generation-report.json`, OpenAPI files, Swagger UI directory |
 
 All tool bindings must return structured status: `PASS`, `GAP`, or `ERROR`. `GAP` means the runbook should stop and the
 agent should ask the operator or engineer for a design decision. `ERROR` means the binding failed unexpectedly and
@@ -225,8 +227,29 @@ Ask these before assembling roots and images:
 | 16 | `fabric.flow-root-assemble` | signed contract + runtime binding + Flow workflow inputs | `step-16-flow-deployment-inventory.json` | Missing workflow, `agent.run` / `tool.call` child DCP contract refs, trust keys, or runtime binding ref. |
 | 17 | `fabric.container-image-build` | Flow and Foundry deployment roots | `step-17-container-image-validation.json` | Image build fails or image lacks required deployment-root files. |
 
-The Phase 4 exit artifact is a local container-image validation report. Runtime execution should continue with Step 18
+The Phase 4 exit artifact is a local container-image validation report. API documentation should continue with Step 18
 only after this report passes.
+
+## Phase 5: API Documentation
+
+### Questions
+
+Ask these before generating OpenAPI and Swagger UI:
+
+- Which API surfaces should be documented: Flow DCP endpoints, Foundry DCP endpoints, Fabric Studio tool gateway, or
+  all deployed operator/client endpoints?
+- Should generated server URLs target local Docker Compose, Kubernetes service DNS, or external ingress URLs?
+- Are Swagger UI artifacts allowed to use CDN assets, or must the bundle be fully static and offline?
+- Which authentication schemes should be represented as OpenAPI security schemes from DCP auth/runtime-binding refs?
+
+### Tool flow
+
+| Step | Tool call | Input artifact | Output artifact | Stop condition |
+|---:|---|---|---|---|
+| 18 | `fabric.swagger-ui-generate` | signed contract + runtime binding + substrate profile + deployment resolution + route/tool schemas | `step-18-swagger-ui-generation-report.json`, OpenAPI files, Swagger UI directory | Missing endpoint/schema metadata, unresolved OpenAPI refs, inline secrets, sensitive examples, or docs that describe endpoints absent from the signed handoff. |
+
+The Phase 5 exit artifact is a hash-pinned API documentation bundle. Runtime execution should continue with Step 19
+only after the generation report passes.
 
 ## Artifact Ledger
 
@@ -289,8 +312,8 @@ POST /studio/tools/{toolName}
 This route accepts the canonical Foundry tool-call JSON shape and delegates to the existing Studio API/service methods.
 It currently covers the Studio-owned tools for catalog admission/verification, assembly/session creation, needs
 extraction, authoring converse, intent application, Dynamic DCP projection, deployment resolution, candidate compile,
-and export download. Deployment-local tools that need filesystem, runtime-binding, deployment-root, Docker, or
-Kubernetes authority remain separate `pluginJar` or HTTP bindings owned by a deployment runner.
+and export download. Deployment-local tools that need filesystem, runtime-binding, deployment-root, OpenAPI/Swagger UI,
+Docker, or Kubernetes authority remain separate `pluginJar` or HTTP bindings owned by a deployment runner.
 
 ## Implementation Notes
 
@@ -306,6 +329,7 @@ definitions with `pluginJar` or HTTP bindings and permission scopes that match t
 | `fabric.needs.propose` | `fabric.needs-emitter`, `fabric.needs-extract` |
 | `fabric.export.write` | `fabric.candidate-compile`, `fabric.export-download`, `fabric.runtime-binding-generate` |
 | `fabric.deployment.write` | `fabric.foundry-root-assemble`, `fabric.flow-root-assemble`, `fabric.container-image-build` |
+| `fabric.documentation.write` | `fabric.swagger-ui-generate` |
 
 Foundry must enforce these permission scopes through `PermissionBridge`; Fabric should revalidate every write through
 Studio/API checks even after Foundry authoring succeeds.

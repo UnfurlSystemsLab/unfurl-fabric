@@ -2,6 +2,11 @@
 
 Fabric Studio API is served by `com.unfurl.fabric.studio.StudioServer`. It uses the JDK `HttpServer` and JSON records, not generated OpenAPI.
 
+The Flowfoundry export runbook may generate OpenAPI and Swagger UI artifacts for deployed operator/client endpoints
+from the signed DCP contract, runtime bindings, service route descriptors, and tool schemas. That documentation phase
+does not make Studio's server implementation OpenAPI-generated; Studio remains the source-owned HTTP adapter and the
+generated OpenAPI is an export artifact.
+
 Default bind address is `127.0.0.1` and default port is `7878`.
 
 ## Configuration

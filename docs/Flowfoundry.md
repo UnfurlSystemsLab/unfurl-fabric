@@ -46,7 +46,7 @@ Prepare these inputs before starting:
 
 ## Runbook Phases
 
-The first 17 steps are grouped into four build phases. Steps 18-20 are post-build runtime execution, verification,
+The first 18 steps are grouped into five build phases. Steps 19-21 are post-build runtime execution, verification,
 and promotion gates.
 
 For the phase-gated authoring-agent question and tool execution contract, see
@@ -58,6 +58,7 @@ For the phase-gated authoring-agent question and tool execution contract, see
 | 2 | Assembly | 4-11 | A Studio assembly draft exists, needs are captured, authoring has produced catalog-backed intents, dynamic DCP projection is valid, and deployment choices resolve. |
 | 3 | Export | 12-14 | The candidate is compiled, signed, downloaded, hash-verified, and converted into DCP runtime bindings without inline secrets. |
 | 4 | Deployment | 15-17 | Foundry and Flow deployment roots are assembled and container images are built from the exported contract and runtime-binding artifacts. |
+| 5 | API Documentation | 18 | OpenAPI documents and a Swagger UI bundle are generated from the signed DCP contract, runtime bindings, and service route/tool descriptors. |
 
 ## Phase 1: Catalog Creation
 
@@ -355,7 +356,7 @@ The tool JAR must declare `META-INF/services/com.unfurl.foundry.tools.ToolPlugin
 Start Foundry's DCP server from a deployment root that contains the authoring agent and its substrate-backed tools/providers.
 
 ```bash
-java -cp <foundry-classpath> com.unfurl.foundry.runtime.FoundryDcpServerLauncher \
+java -cp <foundry-classpath> com.unfurl.foundry.server.FoundryDcpServerLauncher \
   --port 7979 \
   --deployment-root /path/to/unfurl-foundry/deployment
 ```
@@ -704,7 +705,54 @@ Container expectations:
 - Provider SDKs are present only in provider adapter/plugin images or Foundry adapter packages.
 - Secrets are mounted or injected by reference; they are not baked into images.
 
-## Step 18: Run The Containerized Deployment
+## Phase 5: API Documentation
+
+## Step 18: Generate OpenAPI And Swagger UI
+
+Generate API documentation from the frozen export, not from conversation state or hand-written endpoint lists. This
+phase documents the API surface that operators and clients will use after deployment:
+
+- Flow DCP endpoints, such as `workflow.execute`, `workflow.observe`, and `workflow.trigger`.
+- Foundry DCP endpoints, such as `agent.run`, `tool.call`, `provider.call`, `rag.search`, and `skill.invoke`.
+- Fabric Studio tool-gateway endpoints only when the authoring surface is part of the deployed environment.
+- Health, readiness, and status endpoints that are intentionally exposed to operators.
+
+Inputs:
+
+- `signed-contract.yaml`.
+- `runtime-binding.yaml`.
+- `substrate-profile.yaml`.
+- Deployment resolution and container manifest artifacts.
+- Flow and Foundry route descriptors or generated route metadata.
+- Foundry tool registry metadata for request/response schemas of exposed tools.
+
+The generator must project OpenAPI from DCP contract/runtime-binding facts and service-owned route descriptors. It must
+not infer request/response schemas from model output, logs, or live traffic. When a DCP capability lacks a request or
+response schema, Step 18 must return a gap instead of emitting incomplete Swagger UI.
+
+Expected outputs:
+
+```text
+exports/flowfoundry/openapi/flowfoundry-openapi.yaml
+exports/flowfoundry/openapi/flow-openapi.yaml
+exports/flowfoundry/openapi/foundry-openapi.yaml
+exports/flowfoundry/swagger-ui/
+target/flowfoundry-run/step-18-swagger-ui-generation-report.json
+```
+
+The Swagger UI bundle should be static and deployable inside the customer environment. Avoid CDN dependencies unless
+the deployment policy explicitly allows them.
+
+Block Step 18 when:
+
+- Any public DCP endpoint is missing request or response schema metadata.
+- A server URL cannot be derived from the runtime binding or deployment target.
+- The generated OpenAPI contains unresolved references.
+- Secret values, bearer tokens, API keys, prompts with sensitive data, raw model outputs, or retrieved RAG chunks appear
+  in the OpenAPI examples or Swagger UI bundle.
+- The generated docs describe endpoints that are not present in the signed contract/runtime-binding handoff.
+
+## Step 19: Run The Containerized Deployment
 
 Example service shape:
 
@@ -719,7 +767,7 @@ services:
   foundry:
     image: unfurl-foundry:<version>
     command:
-      - com.unfurl.foundry.runtime.FoundryDcpServerLauncher
+      - com.unfurl.foundry.server.FoundryDcpServerLauncher
       - --bind
       - 0.0.0.0
       - --port
@@ -751,7 +799,7 @@ Foundry also requires `UNFURL_FOUNDRY_CREDENTIAL_KEY` (base64 16/24/32-byte AES 
 credential store. Local compose must read it from the operator environment or secret store; do not
 inline the key in generated artifacts.
 
-## Step 19: Verify Runtime
+## Step 20: Verify Runtime
 
 Run these checks after the containers start:
 
@@ -797,7 +845,7 @@ For a reusable smoke fixture, use `unfurl-fabric/docs/examples/flowfoundry-dag-t
 not gate environment assembly; it only proves that an installed workload DAG can drill into Flow
 workflow nodes, Foundry agent phases, prompts, model refs, RAG refs, and tools.
 
-## Step 20: Promote The Export
+## Step 21: Promote The Export
 
 Before promoting the export:
 
@@ -806,6 +854,7 @@ Before promoting the export:
 - Confirm all deployment image digests are pinned.
 - Confirm all secret/config references resolve in the target environment.
 - Confirm auth/authz/audit/telemetry ports are bound.
+- Confirm OpenAPI and Swagger UI artifacts match the signed contract/runtime-binding handoff.
 - Confirm no provider credentials, prompts with sensitive data, raw model outputs, or retrieved chunks are logged by default.
 
 ## Output Checklist
@@ -820,6 +869,7 @@ A complete Flowfoundry export contains:
 - Flow workflow definitions and runtime config.
 - Foundry agent definitions, prompts, provider/tool/skill registry files, and plugin JARs.
 - Container manifests for Flow, Foundry, vector/RAG, auth/authz, telemetry, and any provider adapter services.
+- OpenAPI documents and a static Swagger UI bundle generated from signed contract/runtime-binding artifacts.
 - Local SHA-256 verification for every downloaded artifact.
 - Operator notes for warnings and accepted risk.
 
