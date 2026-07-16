@@ -311,8 +311,9 @@ be represented as a Foundry registry binding.
 
 The deployment `fabric-authoring` agent must route explicit runbook execution requests before proposal generation. For
 Step 2 it uses a route phase to detect catalog admission, then runs an `execute-catalog-admission` phase whose
-`allowedToolRefs` contains `fabric.catalog-admit`. The phase returns `kind=execution` only after Foundry executes the
-tool and the result is available in the phase tool-output map; otherwise it returns `gap`.
+`allowedToolRefs` contains `fabric.catalog-admit`. The phase output is mapped deterministically from the Foundry
+tool-output map (`$.tools.step-02-catalog-admit.output`) and returns `kind=execution` only after Foundry executes the
+tool; otherwise it returns `gap`.
 
 Studio-backed phase tools are exposed through Fabric's Foundry-compatible HTTP gateway:
 
