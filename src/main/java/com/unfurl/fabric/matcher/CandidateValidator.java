@@ -68,10 +68,17 @@ public final class CandidateValidator {
         boolean allMet = true;
         for (CapabilityRequirement req : need.requiredCapabilities()) {
             if (!hasMatchingOffer(entries, req)) {
-                conflicts.add(new Conflict.VersionConflict(
-                        req.capability(),
-                        req.capabilityVersion().range(),
-                        firstSeenVersion(entries, req.capability())));
+                if (hasVersionMatchingOffer(entries, req) && !req.requiredOfferDetails().isEmpty()) {
+                    conflicts.add(new Conflict.OfferDetailConflict(
+                            req.capability(),
+                            req.capabilityVersion().range(),
+                            req.requiredOfferDetails()));
+                } else {
+                    conflicts.add(new Conflict.VersionConflict(
+                            req.capability(),
+                            req.capabilityVersion().range(),
+                            firstSeenVersion(entries, req.capability())));
+                }
                 allMet = false;
             }
         }
@@ -234,10 +241,25 @@ public final class CandidateValidator {
     private static boolean hasMatchingOffer(List<CatalogEntry> entries, CapabilityRequirement req) {
         for (CatalogEntry e : entries) {
             for (Offer o : e.claimDescriptor().claim().offers()) {
-                if (!o.capability().equals(req.capability())) {
-                    continue;
+                if (CapabilityOfferMatcher.matches(o, req)) {
+                    return true;
                 }
-                if (req.capabilityVersion().satisfiedBy(o.version())) {
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether any entry offers the required capability at a satisfying version before detail matching.
+     *
+     * @param entries the entries.
+     * @param req     the capability requirement.
+     * @return true iff a name/version-matching offer exists.
+     */
+    private static boolean hasVersionMatchingOffer(List<CatalogEntry> entries, CapabilityRequirement req) {
+        for (CatalogEntry e : entries) {
+            for (Offer o : e.claimDescriptor().claim().offers()) {
+                if (CapabilityOfferMatcher.matchesNameAndVersion(o, req)) {
                     return true;
                 }
             }

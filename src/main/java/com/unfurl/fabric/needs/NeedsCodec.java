@@ -1,5 +1,6 @@
 package com.unfurl.fabric.needs;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +28,8 @@ import java.util.Set;
  * requiredCapabilities:
  *   - capability: storage.put
  *     capabilityVersion: "^1"
+ *     requiredOfferDetails:
+ *       execution_modes: [harness]
  * optionalCapabilities:
  *   - capability: audit.write
  *     capabilityVersion: "^1"
@@ -167,7 +170,11 @@ public final class NeedsCodec {
         List<CapabilityRequirement> out = new ArrayList<>();
         for (CapabilityRequirementCarrier c : raw) {
             String range = c.capabilityVersion == null || c.capabilityVersion.isBlank() ? "*" : c.capabilityVersion;
-            out.add(new CapabilityRequirement(c.capability, new CapabilityVersionRange(range), required));
+            out.add(new CapabilityRequirement(
+                    c.capability,
+                    new CapabilityVersionRange(range),
+                    required,
+                    c.requiredOfferDetails));
         }
         return out;
     }
@@ -209,6 +216,9 @@ public final class NeedsCodec {
             CapabilityRequirementCarrier carrier = new CapabilityRequirementCarrier();
             carrier.capability = r.capability();
             carrier.capabilityVersion = r.capabilityVersion().range();
+            if (!r.requiredOfferDetails().isEmpty()) {
+                carrier.requiredOfferDetails = new LinkedHashMap<>(r.requiredOfferDetails());
+            }
             out.add(carrier);
         }
         return out;
@@ -236,6 +246,9 @@ public final class NeedsCodec {
         public String capability;
         /** Capability version range (npm-style); blank means any. */
         public String capabilityVersion;
+        /** DCP offer-interface detail subset required from the selected provider offer. */
+        @JsonAlias({"offerDetails", "details", "requiredDetails"})
+        public Map<String, Object> requiredOfferDetails;
     }
 
     /** Jackson-bound wire shape of one artifact constraint. */

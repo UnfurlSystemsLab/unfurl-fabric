@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,6 +20,8 @@ class NeedsCodecTest {
                 requiredCapabilities:
                   - capability: storage.put
                     capabilityVersion: ^1
+                    requiredOfferDetails:
+                      execution_modes: [harness]
                 optionalCapabilities:
                   - capability: audit.write
                     capabilityVersion: ^1
@@ -35,6 +39,8 @@ class NeedsCodecTest {
 
         assertThat(need.requiredCapabilities()).extracting(CapabilityRequirement::capability)
                 .containsExactly("storage.put");
+        assertThat(need.requiredCapabilities().getFirst().requiredOfferDetails())
+                .containsEntry("execution_modes", List.of("harness"));
         assertThat(need.optionalCapabilities()).extracting(CapabilityRequirement::capability)
                 .containsExactly("audit.write");
         assertThat(need.artifactConstraints()).hasSize(1);
@@ -46,7 +52,10 @@ class NeedsCodecTest {
     @Test
     void writesAndReadsNeed(@TempDir Path dir) {
         Need original = new Need(
-                java.util.List.of(CapabilityRequirement.requiredOf("storage.put", "^1")),
+                java.util.List.of(CapabilityRequirement.requiredOf(
+                        "storage.put",
+                        "^1",
+                        Map.of("execution_modes", List.of("harness")))),
                 java.util.List.of(CapabilityRequirement.optionalOf("audit.write", "*")),
                 java.util.List.of(new ArtifactConstraint("com.unfurl", "storage-s3", new ArtifactVersionRange("^1"))),
                 java.util.Set.of("identity-management"),

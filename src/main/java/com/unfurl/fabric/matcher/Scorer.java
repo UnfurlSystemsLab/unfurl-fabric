@@ -57,8 +57,7 @@ public final class Scorer {
             outer:
             for (CatalogEntry e : entries) {
                 for (Offer o : e.claimDescriptor().claim().offers()) {
-                    if (o.capability().equals(req.capability())
-                            && req.capabilityVersion().satisfiedBy(o.version())) {
+                    if (CapabilityOfferMatcher.matches(o, req)) {
                         count++;
                         break outer;
                     }
@@ -84,8 +83,7 @@ public final class Scorer {
         for (CapabilityRequirement req : need.requiredCapabilities()) {
             for (CatalogEntry e : entries) {
                 for (Offer o : e.claimDescriptor().claim().offers()) {
-                    if (o.capability().equals(req.capability())
-                            && req.capabilityVersion().satisfiedBy(o.version())) {
+                    if (CapabilityOfferMatcher.matches(o, req)) {
                         matches++;
                         break;
                     }

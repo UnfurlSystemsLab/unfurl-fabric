@@ -175,7 +175,7 @@ Ask these before applying intents:
 | Step | Tool call | Input artifact | Output artifact | Stop condition |
 |---:|---|---|---|---|
 | 4 | `fabric.assembly-create` | verified catalog snapshot | `step-04-assembly-response.json` | Assembly cannot be created. |
-| 5 | `fabric.needs-extract` or `fabric.needs-emitter` | source bundle or operator answers | `step-05-needs.yaml` | Needs omit `workflow.execute` or `agent.run` for Flowfoundry. |
+| 5 | `fabric.needs-extract` or `fabric.needs-emitter` | source bundle or operator answers | `step-05-needs.yaml` | Needs omit `workflow.execute`, `agent.run`, or the `agent.run.requiredOfferDetails.execution_modes: [harness]` constraint for Flowfoundry. |
 | 6 | `fabric.session-start` | assembly response + needs | `step-06-draft-session-response.json` | Session cannot be created. |
 | 7 | `fabric.authoring-tool-registry-verify` | Foundry deployment root | `step-07-tool-registry-verification.json` | Missing required `pluginJar` or HTTP tool binding for any required authoring tool. |
 | 8 | `fabric.authoring-converse` | catalog snapshot + needs + recursive-scope answers | `step-08-authoring-response.json` | Agent returns `clarify` or `gap`; do not apply intents. |

@@ -699,7 +699,7 @@ public final class StudioCatalogService {
             addRequiredCapability(required, "workflow.execute", "^1");
         }
         if (isAgentSource(fileName)) {
-            addRequiredCapability(required, "agent.run", "^1");
+            addRequiredCapability(required, "agent.run", "^1", Map.of("execution_modes", List.of("harness")));
         }
     }
 
@@ -769,10 +769,33 @@ public final class StudioCatalogService {
             String capability,
             String versionRange
     ) {
+        addRequiredCapability(required, capability, versionRange, Map.of());
+    }
+
+    /**
+     * Builder helper: adds or upgrades a required capability with governed DCP offer-detail constraints.
+     *
+     * @param required             insertion-ordered capability accumulator.
+     * @param capability           DCP capability name.
+     * @param versionRange         acceptable capability version range.
+     * @param requiredOfferDetails DCP offer-interface detail subset that must match.
+     */
+    private void addRequiredCapability(
+            Map<String, CapabilityRequirement> required,
+            String capability,
+            String versionRange,
+            Map<String, Object> requiredOfferDetails
+    ) {
         if (capability == null || capability.isBlank()) {
             return;
         }
-        required.putIfAbsent(capability, CapabilityRequirement.requiredOf(capability, versionRange));
+        CapabilityRequirement next = CapabilityRequirement.requiredOf(capability, versionRange, requiredOfferDetails);
+        required.merge(capability, next, (existing, candidate) -> {
+            if (existing.requiredOfferDetails().isEmpty() && !candidate.requiredOfferDetails().isEmpty()) {
+                return candidate;
+            }
+            return existing;
+        });
     }
 
     /**
@@ -933,9 +956,12 @@ public final class StudioCatalogService {
         input.put("conversation", conversation);
         input.put("catalog", catalog);
 
+        // DCP invocation metadata: request Foundry's governed harness mode so the
+        // authoring agent can execute tools in a loop before returning a terminal answer.
+        Map<String, Object> metadata = Map.of("executionMode", "harness");
         ContractInvocation invocation = new ContractInvocation(
                 "urn:unfurl:fabric:authoring", "agent.run", "unfurl-fabric", "unfurl-foundry",
-                input, session.sessionId(), Map.of(), null, Map.of());
+                input, session.sessionId(), Map.of(), null, metadata);
         ContractInvocationResult result = authoringInvocable.invoke(invocation, ExecutionContext.empty());
         if (!result.success()) {
             return StudioAuthoringConverseResponse.gap(session.sessionId(),

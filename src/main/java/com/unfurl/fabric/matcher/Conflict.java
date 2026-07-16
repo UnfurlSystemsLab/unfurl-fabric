@@ -10,6 +10,7 @@ package com.unfurl.fabric.matcher;
  */
 public sealed interface Conflict
         permits Conflict.VersionConflict,
+                Conflict.OfferDetailConflict,
                 Conflict.ArtifactConflict,
                 Conflict.RefusalConflict,
                 Conflict.BindingConflict,
@@ -33,6 +34,32 @@ public sealed interface Conflict
             this(capability, requestedRange, availableVersion,
                     "no offer of capability " + capability + " satisfies range " + requestedRange
                             + " (saw version " + availableVersion + ")");
+        }
+    }
+
+    /**
+     * A required capability version exists, but its DCP offer details do not satisfy the need.
+     *
+     * @param capability      the required capability.
+     * @param requestedRange  the requested version range.
+     * @param requiredDetails the DCP offer-detail subset that was required.
+     * @param detail          human-readable explanation.
+     */
+    record OfferDetailConflict(
+            String capability,
+            String requestedRange,
+            java.util.Map<String, Object> requiredDetails,
+            String detail
+    ) implements Conflict {
+        /** Convenience constructor deriving the detail message. */
+        public OfferDetailConflict(
+                String capability,
+                String requestedRange,
+                java.util.Map<String, Object> requiredDetails
+        ) {
+            this(capability, requestedRange, requiredDetails,
+                    "no offer of capability " + capability + " satisfies required DCP offer details "
+                            + requiredDetails + " within range " + requestedRange);
         }
     }
 

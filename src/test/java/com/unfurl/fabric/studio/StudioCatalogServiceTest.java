@@ -334,6 +334,8 @@ class StudioCatalogServiceTest {
         assertThat(parsed.requiredCapabilities())
                 .extracting(CapabilityRequirement::capability)
                 .containsExactly("workflow.execute", "agent.run");
+        assertThat(parsed.requiredCapabilities().get(1).requiredOfferDetails())
+                .containsEntry("execution_modes", List.of("harness"));
         assertThat(response.suggestedNeedsYaml()).doesNotContain("flowfoundry.export.run");
         assertThat(response.defaultDeploymentTarget()).isEqualTo("containerized-local");
         assertThat(response.warnings()).containsExactly(
@@ -1129,7 +1131,7 @@ class StudioCatalogServiceTest {
                     consumer_access: ANY
                     offer_interface:
                       interface_kind: IN_PROCESS
-                      details: {}
+%s
                     stability: STABLE
                     version: 1.0.0
                     metered: false
@@ -1141,7 +1143,28 @@ class StudioCatalogServiceTest {
                   dcp_version: 0.2.0
                   claim_version: 1.0.0
                   created_at: 1970-01-01T00:00:00Z
-                """.formatted(name, name, name, capability, capability, capability, capability);
+                """.formatted(
+                name,
+                name,
+                name,
+                capability,
+                capability,
+                capability,
+                capability,
+                indent(offerDetailsYaml(capability), 22));
+    }
+
+    /**
+     * Fixture formatter: returns DCP offer details for capabilities whose tests need governed modes.
+     */
+    private static String offerDetailsYaml(String capability) {
+        if ("agent.run".equals(capability)) {
+            return """
+                    details:
+                      execution_modes: [simple, harness]
+                    """.stripTrailing();
+        }
+        return "details: {}";
     }
 
     /**
@@ -1158,7 +1181,7 @@ class StudioCatalogServiceTest {
      */
     private static StudioCatalogService flowfoundrySessionService(Path dir, StudioStateStore store) throws Exception {
         StudioCatalogService service = new StudioCatalogService(store, null);
-        service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+        StudioCatalogAdmissionResponse admission = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-flow",
                 List.of(
                         new StudioComponentArtifactDraft(
@@ -1175,6 +1198,8 @@ class StudioCatalogServiceTest {
                                 Base64.getEncoder().encodeToString(jarWithManifest(
                                         dir,
                                         catalogManifestYaml("foundry", "agent.run")))))));
+        assertThat(admission.status()).as("flowfoundry fixture admission results: %s", admission.results())
+                .isEqualTo("VERIFIED");
         service.extractNeeds(
                 "tenant-a",
                 "assembly-flow",
@@ -1249,8 +1274,6 @@ class StudioCatalogServiceTest {
         return """
                 claim:
                 %s
-                  faults:
-                    emitted: []
                 catalog:
                   lifecycle:
                     status: ACTIVE

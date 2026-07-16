@@ -49,6 +49,23 @@ class CandidateValidatorTest {
     }
 
     @Test
+    void requiredOfferDetailsAreValidityGate() {
+        CatalogEntry simpleAgent = FabricTestFixtures.entryWithOfferDetails(
+                "foundry-simple",
+                "agent.run",
+                Map.of("execution_modes", List.of("simple")));
+        Need need = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf(
+                "agent.run",
+                "^1",
+                Map.of("execution_modes", List.of("harness"))));
+
+        CandidateValidity validity = validator.validate(List.of(simpleAgent), need);
+
+        assertThat(validity.isValid()).isFalse();
+        assertThat(validity.conflicts()).anyMatch(Conflict.OfferDetailConflict.class::isInstance);
+    }
+
+    @Test
     void bindingPreferenceIsGateNotScoreDimension() {
         CatalogEntry entry = FabricTestFixtures.entry(
                 "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",

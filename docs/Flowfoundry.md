@@ -281,9 +281,13 @@ requiredCapabilities:
     capabilityVersion: ^1
   - capability: agent.run
     capabilityVersion: ^1
+    requiredOfferDetails:
+      execution_modes: [harness]
 ```
 
 This extraction seeds composition; it does not prove Flow or Foundry artifacts are already part of the assembly draft.
+The `requiredOfferDetails` block is a DCP resolver constraint: the selected Foundry provider must advertise harness
+execution in its `agent.run` offer details before it can satisfy the Flowfoundry authoring/runtime need.
 Verify draft membership after Step 9 by checking the session intent log or assembly snapshot for the accepted
 `uploaded:unfurl-flow-...` and `uploaded:unfurl-foundry-...` catalog entry ids.
 

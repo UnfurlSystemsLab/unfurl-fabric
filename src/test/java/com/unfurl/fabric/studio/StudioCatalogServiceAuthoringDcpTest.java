@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,6 +39,37 @@ class StudioCatalogServiceAuthoringDcpTest {
         assertThat(response.assistantMessage()).isEqualTo("Proposed by the agent.");
         assertThat(response.proposal().needsYaml()).contains("bot");
         assertThat(response.proposal().intents()).hasSize(1);
+    }
+
+    @Test
+    void requestsHarnessModeWhenDelegatingToFoundry() {
+        AtomicReference<ContractInvocation> seen = new AtomicReference<>();
+        StudioCatalogService service = new StudioCatalogService()
+                .useAuthoringInvocable(new ContractInvocable() {
+                    @Override
+                    public String contractId() {
+                        return "urn:unfurl:fabric:authoring";
+                    }
+
+                    @Override
+                    public String contractVersion() {
+                        return "1.0.0";
+                    }
+
+                    @Override
+                    public ContractInvocationResult invoke(ContractInvocation invocation, ExecutionContext context) {
+                        seen.set(invocation);
+                        return new ContractInvocationResult(true, Map.of(
+                                "kind", "gap",
+                                "assistantMessage", "captured",
+                                "unmet", List.of()), null, null, Map.of());
+                    }
+                });
+
+        service.converseAuthoring(REQUEST);
+
+        assertThat(seen.get()).isNotNull();
+        assertThat(seen.get().metadata()).containsEntry("executionMode", "harness");
     }
 
     @Test

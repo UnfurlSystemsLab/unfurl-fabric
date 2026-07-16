@@ -164,8 +164,7 @@ public final class StructuralMatcher {
             List<CatalogEntry> providers = new ArrayList<>();
             for (CatalogEntry entry : entries) {
                 for (Offer offer : entry.claimDescriptor().claim().offers()) {
-                    if (req.capability().equals(offer.capability())
-                            && req.capabilityVersion().satisfiedBy(offer.version())) {
+                    if (CapabilityOfferMatcher.matches(offer, req)) {
                         providers.add(entry);
                         break;
                     }
@@ -188,10 +187,14 @@ public final class StructuralMatcher {
         List<UnmetCapabilityRequirement> unmet = new ArrayList<>();
         for (CapabilityRequirement req : need.requiredCapabilities()) {
             if (providers.getOrDefault(req.capability(), List.of()).isEmpty()) {
+                String detailSuffix = req.requiredOfferDetails().isEmpty()
+                        ? ""
+                        : " with offer details " + req.requiredOfferDetails();
                 unmet.add(new UnmetCapabilityRequirement(
                         req.capability(), req.capabilityVersion().range(),
                         "no allowed catalog entry provides " + req.capability()
-                                + " matching " + req.capabilityVersion().range()));
+                                + " matching " + req.capabilityVersion().range()
+                                + detailSuffix));
             }
         }
         return unmet;
@@ -292,8 +295,7 @@ public final class StructuralMatcher {
         for (CapabilityRequirement req : need.requiredCapabilities()) {
             for (CatalogEntry e : entries) {
                 for (Offer o : e.claimDescriptor().claim().offers()) {
-                    if (req.capability().equals(o.capability())
-                            && req.capabilityVersion().satisfiedBy(o.version())) {
+                    if (CapabilityOfferMatcher.matches(o, req)) {
                         satisfied.add(req.capability());
                     }
                 }
@@ -314,8 +316,7 @@ public final class StructuralMatcher {
         for (CapabilityRequirement req : need.optionalCapabilities()) {
             for (CatalogEntry e : entries) {
                 for (Offer o : e.claimDescriptor().claim().offers()) {
-                    if (req.capability().equals(o.capability())
-                            && req.capabilityVersion().satisfiedBy(o.version())) {
+                    if (CapabilityOfferMatcher.matches(o, req)) {
                         satisfied.add(req.capability());
                     }
                 }

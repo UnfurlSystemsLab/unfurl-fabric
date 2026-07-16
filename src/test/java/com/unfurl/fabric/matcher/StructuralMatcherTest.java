@@ -9,6 +9,7 @@ import com.unfurl.fabric.trust.RejectionReason;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +45,30 @@ class StructuralMatcherTest {
         assertThat(ambiguous.candidates()).hasSize(2);
         assertThat(ambiguous.candidates().get(0).entries().get(0).artifact().coordinates())
                 .isLessThan(ambiguous.candidates().get(1).entries().get(0).artifact().coordinates());
+    }
+
+    @Test
+    void filtersProvidersByRequiredOfferDetails() {
+        CatalogEntry simpleAgent = FabricTestFixtures.entryWithOfferDetails(
+                "foundry-simple",
+                "agent.run",
+                Map.of("execution_modes", List.of("simple")));
+        CatalogEntry harnessAgent = FabricTestFixtures.entryWithOfferDetails(
+                "foundry-harness",
+                "agent.run",
+                Map.of("execution_modes", List.of("simple", "harness")));
+
+        MatchResult result = matcher.match(
+                List.of(simpleAgent, harnessAgent),
+                Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf(
+                        "agent.run",
+                        "^1",
+                        Map.of("execution_modes", List.of("harness")))),
+                List.of());
+
+        assertThat(result).isInstanceOf(MatchResult.ExactMatch.class);
+        MatchResult.ExactMatch exact = (MatchResult.ExactMatch) result;
+        assertThat(exact.candidate().entries()).containsExactly(harnessAgent);
     }
 
     @Test

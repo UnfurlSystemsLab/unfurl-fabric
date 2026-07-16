@@ -116,6 +116,9 @@ files. Fabric derives `requiredCapabilities` by analyzing inline workflow YAML `
 orchestration needs from recognized source names (`workflow.yaml`/flow files imply `workflow.execute`, agent manifests
 imply `agent.run`), and only falls back to the historical `<target-application>.run` starter need when no DCP
 capability can be derived. Draft membership remains governed by `StudioIntentRequest` session history.
+Needs may constrain DCP offer-interface details with `requiredOfferDetails`; Studio assembly matching uses the same
+deterministic subset semantics as the DCP resolver. For example, Flowfoundry can require Foundry's `agent.run` offer to
+advertise `execution_modes: [harness]` without introducing a Fabric-specific execution flag.
 
 Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation. When `sessionId` is supplied, the projection is draft-session scoped: Fabric loads the addressed `StudioDraftSession`, replays its accepted `ADD_COMPONENT`, `REMOVE_COMPONENT`, and `REPLACE_COMPONENT` intents, grounds every selected catalog entry in the tenant catalog, and projects only that draft inventory. This session mode must match compile's membership replay so Step 10 and Step 12 inspect the same component set. When `sessionId` is absent, the route remains a catalog projection for catalog browsing and replacement previews before a draft exists.
 
@@ -202,6 +205,8 @@ open.
 | `POST` | `/studio/authoring/converse` | `StudioAuthoringConverseRequest` | `StudioAuthoringConverseResponse` |
 
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
+Fabric sets `invocation.metadata.executionMode=harness` on Foundry-backed authoring calls so the governed Foundry
+agent harness can call tools until a terminal `clarify`, `gap`, `proposal`, or `execution` response is produced.
 Foundry-backed authoring responses may be `clarify`, `gap`, `proposal`, or `execution`. `execution` responses are used
 only for runbook phases where Foundry has already invoked a declared tool through its `ToolRegistry`; Fabric preserves
 the returned `phase`, `step`, `toolCalls`, and `artifacts` fields so the next runbook step consumes real tool output
