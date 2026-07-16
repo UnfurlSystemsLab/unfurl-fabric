@@ -44,6 +44,7 @@ import com.unfurl.fabric.compile.ContractCompiler;
 import com.unfurl.fabric.compile.HostOwnerMeta;
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.CompiledContractCodec;
+import com.unfurl.fabric.compiler.CompositionContractCodec;
 import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.matcher.CandidateValidity;
 import com.unfurl.fabric.matcher.CandidateValidator;
@@ -980,6 +981,29 @@ public final class StudioCatalogService {
             case "gap" -> {
                 return StudioAuthoringConverseResponse.gap(sessionId, message, asStringList(output.get("unmet")));
             }
+            case "execution" -> {
+                List<Map<String, Object>> toolCalls = asListOfMap(output.get("toolCalls"));
+                List<Map<String, Object>> artifacts = asListOfMap(output.get("artifacts"));
+                Map<String, Object> toolResult = asMap(output.get("toolResult"));
+                String toolStatus = asString(toolResult.get("status"));
+                if ("GAP".equals(toolStatus) || "ERROR".equals(toolStatus)) {
+                    return StudioAuthoringConverseResponse.gap(sessionId,
+                            message.isBlank() ? "The authoring execution tool reported a gap." : message,
+                            asStringList(toolResult.get("diagnostics")));
+                }
+                if (toolCalls.isEmpty()) {
+                    return StudioAuthoringConverseResponse.gap(sessionId,
+                            "The authoring agent reported execution without a recorded tool call.",
+                            List.of("toolCalls"));
+                }
+                return StudioAuthoringConverseResponse.execution(
+                        sessionId,
+                        message,
+                        asString(output.get("phase")),
+                        asInteger(output.get("step")),
+                        toolCalls,
+                        artifacts);
+            }
             default -> {
                 List<StudioAuthoringQuestion> questions = new ArrayList<>();
                 for (Map<String, Object> q : asListOfMap(output.get("questions"))) {
@@ -1022,6 +1046,16 @@ public final class StudioCatalogService {
 
     private static String asString(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private static Integer asInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
+        }
+        return Integer.parseInt(String.valueOf(value));
     }
 
     public StudioAssemblyListResponse listAssemblies(String tenantId) {
@@ -2410,22 +2444,34 @@ public final class StudioCatalogService {
         }
 
         List<String> warnings = new ArrayList<>(build.warnings());
+        List<StudioExportArtifact> supportArtifacts = new ArrayList<>();
         List<StudioExportArtifact> diagnosticArtifacts = new ArrayList<>();
         StudioExportArtifact signed = null;
         Optional<FabricContractSigner> compileSigner = Optional.empty();
         if (request != null && request.sign()) {
             compileSigner = studioSigner();
-            SignedArtifact signedArtifact = signCompiledContract(compiled.contract(), compileSigner);
-            if (signedArtifact.invalid() != null) {
-                warnings.add(signedArtifact.invalid().details());
+            SignedArtifact signedRoot = signRootContract(compiled.contract().contract(), compileSigner);
+            if (signedRoot.invalid() != null) {
+                warnings.add(signedRoot.invalid().details());
             } else {
                 signed = exportArtifact(
                         session.tenantId(),
                         "signed-contract-" + session.sessionId(),
-                        "signed-contract.yaml",
-                        "application/yaml",
-                        signedArtifact.bytes());
-                diagnosticArtifacts.add(exportArtifact(
+                        "signed-contract.json",
+                        "application/json",
+                        signedRoot.bytes());
+                SignedArtifact signedEnvelope = signCompiledContract(compiled.contract(), compileSigner);
+                if (signedEnvelope.invalid() != null) {
+                    warnings.add(signedEnvelope.invalid().details());
+                } else {
+                    supportArtifacts.add(exportArtifact(
+                            session.tenantId(),
+                            "signed-compiled-contract-" + session.sessionId(),
+                            "signed-compiled-contract.yaml",
+                            "application/yaml",
+                            signedEnvelope.bytes()));
+                }
+                supportArtifacts.add(exportArtifact(
                         session.tenantId(),
                         "dcp-runtime-bundle-" + session.sessionId(),
                         "dcp-runtime-bundle.zip",
@@ -2438,13 +2484,19 @@ public final class StudioCatalogService {
                 "contract-" + session.sessionId(),
                 "contract.yaml",
                 "application/yaml",
-                compiled.contractBytes());
+                compiled.rootContractBytes());
         StudioExportArtifact profile = exportArtifact(
                 session.tenantId(),
                 "substrate-profile-" + session.sessionId(),
                 "substrate-profile.yaml",
                 "application/yaml",
                 compiled.profileBytes());
+        diagnosticArtifacts.add(diagnosticFileArtifact(
+                session.tenantId(),
+                "compiled-contract-envelope-" + session.sessionId(),
+                "compiled-contract-envelope.yaml",
+                "application/yaml",
+                compiled.compiledEnvelopeBytes()));
         StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
                 "COMPILED",
                 build.candidate().candidateId(),
@@ -2456,7 +2508,24 @@ public final class StudioCatalogService {
                 "",
                 session.sceneRevision(),
                 expected);
-        diagnosticArtifacts.add(diagnosticArtifact(session.tenantId(), "compile-response", "compile-response.json", response));
+        StudioCompileDraftCandidateResponse responseSnapshot = new StudioCompileDraftCandidateResponse(
+                response.status(),
+                response.candidateId(),
+                response.contractArtifact(),
+                response.substrateProfileArtifact(),
+                response.signedContractArtifact(),
+                response.warnings(),
+                response.reason(),
+                response.details(),
+                response.expectedRevision(),
+                response.receivedRevision(),
+                supportArtifacts,
+                diagnosticArtifacts);
+        diagnosticArtifacts.add(diagnosticArtifact(
+                session.tenantId(),
+                "compile-response",
+                "compile-response.json",
+                responseSnapshot));
         return new StudioCompileDraftCandidateResponse(
                 response.status(),
                 response.candidateId(),
@@ -2468,6 +2537,7 @@ public final class StudioCatalogService {
                 response.details(),
                 response.expectedRevision(),
                 response.receivedRevision(),
+                supportArtifacts,
                 diagnosticArtifacts);
     }
 
@@ -2810,6 +2880,8 @@ public final class StudioCatalogService {
                 .compile(candidate, need, new HostOwnerMeta(null, null, null));
         BindingPlan bindingPlan = resolved.plan();
         SubstrateProfile profile = new SubstrateProfileDeriver().derive(candidate, bindingPlan);
+        CompositionContractCodec rootCodec = new CompositionContractCodec();
+        CompiledContractCodec compiledCodec = new CompiledContractCodec();
         SubstrateProfileCodec profileCodec = new SubstrateProfileCodec();
         SubstrateProfile hashedProfile = profile.withProfileHash(profileCodec.computeProfileHash(profile));
         CompiledContract withProfileHash = new CompiledContract(
@@ -2822,7 +2894,8 @@ public final class StudioCatalogService {
                 compiled.signature());
         return new CompiledArtifacts(
                 withProfileHash,
-                new CompiledContractCodec().write(withProfileHash),
+                rootCodec.write(withProfileHash.contract()),
+                compiledCodec.write(withProfileHash),
                 profileCodec.write(hashedProfile));
     }
 
@@ -2855,6 +2928,24 @@ public final class StudioCatalogService {
      */
     private SignedArtifact signCompiledContract(CompiledContract contract) {
         return signCompiledContract(contract, studioSigner());
+    }
+
+    /**
+     * Signing adapter: freezes and signs the light root DCP contract as the primary
+     * deployment handoff artifact.
+     */
+    private SignedArtifact signRootContract(CompositionContract contract, Optional<FabricContractSigner> signer) {
+        if (signer.isEmpty()) {
+            return SignedArtifact.invalid(new InvalidDraft(
+                    "SIGNING_KEY_REQUIRED",
+                    "signing requested but Studio signing keys are not configured"));
+        }
+        try {
+            ContractFreezer freezer = new ContractFreezer(new SigningKeyRef(signer.get().keyFingerprint()));
+            return SignedArtifact.valid(freezer.freeze(contract, signer.get()).canonicalBytes());
+        } catch (RuntimeException ex) {
+            return SignedArtifact.invalid(new InvalidDraft("SIGNING_FAILED", ex.getMessage()));
+        }
     }
 
     /**
@@ -3097,6 +3188,33 @@ public final class StudioCatalogService {
         return new StudioCatalogVisualsResponse(
                 sha256(entries.stream().map(StudioVisualCatalogEntry::catalogEntryId).sorted().toList().toString()),
                 entries);
+    }
+
+    /**
+     * Factory: stores immutable non-JSON diagnostic bytes and returns the hash-pinned
+     * diagnostic endpoint metadata used by Studio support downloads.
+     */
+    private StudioExportArtifact diagnosticFileArtifact(
+            String tenantId,
+            String kind,
+            String fileName,
+            String mediaType,
+            byte[] bytes
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String artifactId = kind + "-" + UUID.randomUUID();
+        byte[] safeBytes = bytes == null ? new byte[0] : bytes.clone();
+        String sha = sha256(safeBytes);
+        String safeMediaType = mediaType == null || mediaType.isBlank() ? "application/octet-stream" : mediaType;
+        diagnosticArtifactsByTenant
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                .put(artifactId, new StudioAssetContent(safeBytes, safeMediaType, sha));
+        return new StudioExportArtifact(
+                artifactId,
+                safeMediaType,
+                sha,
+                "/studio/tenants/" + tenant + "/diagnostic-artifacts/" + artifactId
+                        + "/content?sha256=" + sha + "&fileName=" + fileName);
     }
 
     /**
@@ -3962,26 +4080,42 @@ public final class StudioCatalogService {
 
     /**
      * Value object: compile/export artifact bytes before they are registered in the
-     * tenant export store.
+     * tenant export or diagnostic stores.
      */
     private record CompiledArtifacts(
             CompiledContract contract,
-            byte[] contractBytes,
+            byte[] rootContractBytes,
+            byte[] compiledEnvelopeBytes,
             byte[] profileBytes
     ) {
         /**
          * Invariant constructor: clones mutable byte arrays.
          */
         CompiledArtifacts {
-            contractBytes = contractBytes == null ? new byte[0] : contractBytes.clone();
+            rootContractBytes = rootContractBytes == null ? new byte[0] : rootContractBytes.clone();
+            compiledEnvelopeBytes = compiledEnvelopeBytes == null ? new byte[0] : compiledEnvelopeBytes.clone();
             profileBytes = profileBytes == null ? new byte[0] : profileBytes.clone();
         }
 
+        /**
+         * Defensive accessor: returns a copy of the primary root DCP contract bytes.
+         */
         @Override
-        public byte[] contractBytes() {
-            return contractBytes.clone();
+        public byte[] rootContractBytes() {
+            return rootContractBytes.clone();
         }
 
+        /**
+         * Defensive accessor: returns a copy of the full Fabric compiler diagnostic envelope.
+         */
+        @Override
+        public byte[] compiledEnvelopeBytes() {
+            return compiledEnvelopeBytes.clone();
+        }
+
+        /**
+         * Defensive accessor: returns a copy of the substrate profile export bytes.
+         */
         @Override
         public byte[] profileBytes() {
             return profileBytes.clone();

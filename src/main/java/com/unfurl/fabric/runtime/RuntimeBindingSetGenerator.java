@@ -335,10 +335,10 @@ public final class RuntimeBindingSetGenerator {
             String foundryBaseUrl,
             int timeoutMs
     ) {
-        /** Default local-dev options used by the Flowfoundry runbook. */
+        /** Default local-dev options used by the Flowfoundry runbook's signed support envelope. */
         public static Options defaults() {
             return new Options(
-                    Path.of("signed-contract.yaml"),
+                    Path.of("signed-compiled-contract.yaml"),
                     "",
                     "",
                     "",

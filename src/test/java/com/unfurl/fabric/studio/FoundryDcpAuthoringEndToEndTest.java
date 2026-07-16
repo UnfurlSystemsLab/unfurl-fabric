@@ -3,7 +3,7 @@ package com.unfurl.fabric.studio;
 import com.unfurl.foundry.providers.InMemoryProviderRegistry;
 import com.unfurl.foundry.registries.InMemoryToolRegistry;
 import com.unfurl.foundry.runtime.AgentRunInvocable;
-import com.unfurl.foundry.runtime.FoundryDcpServer;
+import com.unfurl.foundry.server.FoundryDcpServer;
 import com.unfurl.foundry.substrate.agent.AgentDefinition;
 import com.unfurl.foundry.substrate.agent.AgentPhase;
 import com.unfurl.foundry.substrate.engine.EmbeddedAgentRuntime;

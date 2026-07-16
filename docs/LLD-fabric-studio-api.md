@@ -83,12 +83,13 @@ and catalog hash Fabric currently serves to Studio. Loading a catalog replaces o
 route tenant remains the isolation boundary even when the JSON was saved from another tenant. The loaded entries remain
 subject to the same downstream intent validation and catalog-grounding checks as admitted entries.
 
-Studio responses that produce or transform operator-visible state may also include `diagnosticArtifacts`. These artifacts
-use the same `StudioExportArtifact` shape and point at the tenant-scoped diagnostic-artifact endpoint. Diagnostic
-artifacts are immutable, hash-pinned snapshots intended for support, CI replay, and step-by-step Flowfoundry debugging.
-Catalog admissions, catalog removals, catalog snapshots, needs extraction, dynamic DCP projections, saved draft
-summaries, created draft sessions, and compile responses should all expose a downloadable diagnostic artifact when the
-response is produced by a tenant-scoped route.
+Studio responses that produce or transform operator-visible state may also include `supportArtifacts` and
+`diagnosticArtifacts`. Support artifacts use the export endpoint and are required companions for later packaging or
+runtime hydration, but are not the primary DCP handoff. Diagnostic artifacts use the tenant-scoped diagnostic-artifact
+endpoint and are immutable, hash-pinned snapshots intended for support, CI replay, and step-by-step Flowfoundry
+debugging. Catalog admissions, catalog removals, catalog snapshots, needs extraction, dynamic DCP projections, saved
+draft summaries, created draft sessions, and compile responses should all expose a downloadable diagnostic artifact when
+the response is produced by a tenant-scoped route.
 
 Tenant-scoped handlers must not silently drop HTTP connections for recoverable route failures. Validation errors,
 runtime exceptions, and classpath/linkage mismatches at the handler boundary are converted to JSON error responses so
@@ -161,10 +162,17 @@ responses echo `expectedRevision` and `receivedRevision` with the revision
 checked by the server; stale responses use `expectedRevision` for the current
 server revision and `receivedRevision` for the caller-supplied revision.
 
-Export artifacts are not synthetic URLs. The contract, substrate profile, and
-signed-contract artifacts returned by compile are stored as immutable,
-hash-pinned tenant-scoped bytes and served through
+Export artifacts are not synthetic URLs. The root contract, substrate profile,
+signed root contract, and support artifacts returned by compile are stored as
+immutable, hash-pinned tenant-scoped bytes and served through
 `/studio/tenants/{tenantId}/exports/{artifactId}/content?sha256=...`.
+`contractArtifact` is the light root DCP `CompositionContract`, not the full
+Fabric compiler envelope. `signedContractArtifact` is the signed/frozen root
+DCP handoff when signing is requested. `supportArtifacts` may include the signed
+compiled-envelope artifact needed by Fabric runtime-binding tools and DCP
+runtime bundles used by Flow hydration. `diagnosticArtifacts` may include the
+unsigned compiled envelope and response snapshots; these are analogous to
+compiler debug symbols and must not be required by production handoff consumers.
 Signing requires an operator-configured Studio signing key pair; when signing is
 requested without configured keys, Studio emits unsigned artifacts with an
 explicit warning rather than fabricating a signature.
@@ -194,6 +202,10 @@ open.
 | `POST` | `/studio/authoring/converse` | `StudioAuthoringConverseRequest` | `StudioAuthoringConverseResponse` |
 
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
+Foundry-backed authoring responses may be `clarify`, `gap`, `proposal`, or `execution`. `execution` responses are used
+only for runbook phases where Foundry has already invoked a declared tool through its `ToolRegistry`; Fabric preserves
+the returned `phase`, `step`, `toolCalls`, and `artifacts` fields so the next runbook step consumes real tool output
+instead of conversation text.
 
 ## Authoring Tool Gateway
 
@@ -224,6 +236,12 @@ The gateway is intentionally limited to Studio-owned state transitions and read 
 Filesystem inventory, runtime-binding generation, deployment-root assembly, and image build tools are not implemented
 inside Studio. They must be separate Foundry `pluginJar` or HTTP bindings owned by a deployment runner because those
 tools need filesystem, signing, or Docker authority outside Studio's tenant catalog/session boundary.
+
+`fabric.catalog-admit` accepts the normal `StudioCatalogAdmissionRequest` shape. For local Flowfoundry runbook execution
+it may also accept `artifactInventoryPath` or an inline `artifactInventory` object produced by Step 1; the gateway turns
+inventory entries into JAR `artifactBase64` drafts and delegates to the same catalog admission service. This is a local
+tool-runner convenience for already-inventoried files, not a public tenant upload shortcut. When `outputPath` is
+provided, the gateway writes the admission response to that local run artifact path and returns its SHA-256.
 
 Tool responses always include a structured runbook status in `output.status` when the call itself was understood:
 `PASS` for successful Studio operations and `GAP` for blocking design/input gaps that should stop the runbook. Unexpected

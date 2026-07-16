@@ -41,8 +41,12 @@
 4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
 5. Deployment resolution selects supported runtime shapes and records rejected shapes. Product runtimes such as Flow and Foundry must resolve from their catalog `component_shape_profile`; substrate libraries and adapters may resolve in-process when they are bundled inside those product runtimes.
 6. Substrate profile derivation emits the required runtime profile without secret values.
-7. Compilation writes the unsigned contract and profile hash.
-8. Signing wraps the compiled contract in a signed contract artifact.
+7. Compilation writes a light unsigned root DCP contract, the substrate profile, and support/diagnostic compiler
+   envelopes. The full `CompiledContract` remains useful for Fabric explain/replay tooling, but it is not the default
+   deployment handoff.
+8. Signing freezes the root DCP contract as the primary signed handoff artifact. When downstream Fabric tools still need
+   selection audit, binding plan, or child-contract closure, Studio also emits a signed compiled-envelope support
+   artifact.
 9. Verification checks signature, catalog drift, and trust keys.
 
 ## Studio Flow
@@ -59,7 +63,7 @@ Dynamic DCP has two read-model modes. Catalog mode is available when no draft se
 
 - Contracts are deterministic for the same inputs.
 - Contract validity comes from catalog claims, needs, trust policy, substrate support, and deployment policy.
-- Signed contracts are the handoff artifact; UI state must not change validity.
+- Signed root DCP contracts are the handoff artifact; support and diagnostic artifacts must not change validity.
 - Catalog entries and claims are content pinned.
 - Ambiguous selection requires an explicit operator or CLI choice.
 - Studio endpoints are development-oriented unless surrounded by an authenticated deployment boundary.

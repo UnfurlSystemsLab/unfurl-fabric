@@ -18,12 +18,15 @@ import com.unfurl.dcp.projection.DcpProjectionProjector;
 import com.unfurl.fabric.needs.CapabilityRequirement;
 import com.unfurl.fabric.needs.Need;
 import com.unfurl.fabric.needs.NeedsCodec;
-import com.unfurl.fabric.signing.SigningTestFixtures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.net.URI;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -486,9 +489,32 @@ class StudioCatalogServiceTest {
                 .hasValueSatisfying(content -> {
                     String contract = new String(content.bytes(), StandardCharsets.UTF_8);
                     assertThat(contract)
-                            .contains("com.unfurl:flow:1.0.0")
-                            .contains("com.unfurl:foundry:1.0.0");
+                            .contains("providerCapability: assembly.aggregate")
+                            .contains("childContractCount: 2")
+                            .doesNotContain("childContracts")
+                            .doesNotContain("bindingPlan")
+                            .doesNotContain("selections");
                 });
+        StudioExportArtifact compiledEnvelope = response.diagnosticArtifacts().stream()
+                .filter(artifact -> artifact.url().contains("compiled-contract-envelope.yaml"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.diagnosticArtifactContent(
+                "tenant-a",
+                compiledEnvelope.artifactId(),
+                compiledEnvelope.sha256()))
+                .hasValueSatisfying(content -> {
+                    String envelope = new String(content.bytes(), StandardCharsets.UTF_8);
+                    assertThat(envelope)
+                            .contains("com.unfurl:flow:1.0.0")
+                            .contains("com.unfurl:foundry:1.0.0")
+                            .contains("bindingPlan")
+                            .contains("selections");
+                });
+        assertThat(response.diagnosticArtifacts())
+                .extracting(StudioExportArtifact::url)
+                .anyMatch(url -> url.contains("compiled-contract-envelope.yaml"))
+                .anyMatch(url -> url.contains("compile-response.json"));
         assertThat(service.exportArtifactContent(
                 "tenant-a",
                 response.substrateProfileArtifact().artifactId(),
@@ -507,9 +533,9 @@ class StudioCatalogServiceTest {
      */
     @Test
     void signedCompileEmitsDcpRuntimeBundleForFlowHydration(@TempDir Path dir) throws Exception {
-        var keys = SigningTestFixtures.generateEcKeyPair();
-        Path privateKey = SigningTestFixtures.writePrivateKeyPem(dir, "studio-private.pem", keys.getPrivate());
-        Path publicKey = SigningTestFixtures.writePublicKeyPem(dir, "studio-public.pem", keys.getPublic());
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
         String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
         String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
         try {
@@ -539,7 +565,16 @@ class StudioCatalogServiceTest {
             assertThat(response.signedContractArtifact()).isNotNull();
             assertThat(response.warnings()).isEmpty();
 
-            StudioExportArtifact runtimeBundle = response.diagnosticArtifacts().stream()
+            assertThat(response.supportArtifacts())
+                    .extracting(StudioExportArtifact::url)
+                    .anyMatch(url -> url.contains("signed-compiled-contract.yaml"))
+                    .anyMatch(url -> url.contains("dcp-runtime-bundle.zip"));
+            assertThat(response.diagnosticArtifacts())
+                    .extracting(StudioExportArtifact::url)
+                    .anyMatch(url -> url.contains("compiled-contract-envelope.yaml"))
+                    .anyMatch(url -> url.contains("compile-response.json"));
+
+            StudioExportArtifact runtimeBundle = response.supportArtifacts().stream()
                     .filter(artifact -> "application/zip".equals(artifact.mediaType()))
                     .findFirst()
                     .orElseThrow();
@@ -1306,6 +1341,46 @@ class StudioCatalogServiceTest {
             }
         }
         return claims;
+    }
+
+    /**
+     * Test Fixture Factory: creates a P-256 signing key pair that matches the
+     * Studio signing configuration contract without depending on another test package.
+     */
+    private static KeyPair generateStudioSigningKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp256r1"));
+        return generator.generateKeyPair();
+    }
+
+    /**
+     * Test Fixture Writer: writes the private signing key in PKCS#8 PEM form so
+     * Studio can load it through the same file-based configuration path used in runtime.
+     */
+    private static Path writePrivateKeyPem(Path dir, String fileName, KeyPair keys) throws IOException {
+        return writePem(dir, fileName, "PRIVATE KEY", keys.getPrivate().getEncoded());
+    }
+
+    /**
+     * Test Fixture Writer: writes the public signing key in X.509 PEM form so
+     * Studio can verify signatures through the same file-based configuration path used in runtime.
+     */
+    private static Path writePublicKeyPem(Path dir, String fileName, KeyPair keys) throws IOException {
+        return writePem(dir, fileName, "PUBLIC KEY", keys.getPublic().getEncoded());
+    }
+
+    /**
+     * Test Fixture Encoder: writes a PEM block with conventional 64-character
+     * Base64 lines, matching the format accepted by the Studio signing loader.
+     */
+    private static Path writePem(Path dir, String fileName, String type, byte[] der) throws IOException {
+        Path path = dir.resolve(fileName);
+        String encoded = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(der);
+        String pem = "-----BEGIN " + type + "-----\n"
+                + encoded
+                + "\n-----END " + type + "-----\n";
+        Files.writeString(path, pem, StandardCharsets.US_ASCII);
+        return path;
     }
 
     /**

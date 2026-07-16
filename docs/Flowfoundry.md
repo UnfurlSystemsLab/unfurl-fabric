@@ -105,7 +105,7 @@ Foundry Substrate module artifacts:
 | `unfurl-foundry-substrate/foundry-substrate-rag/target/foundry-substrate-rag-0.1.0-SNAPSHOT.jar` | RAG helper implementation over the vector-store port. |
 | `unfurl-foundry-substrate/foundry-substrate-resolver/target/foundry-substrate-resolver-0.1.0-SNAPSHOT.jar` | Agent and data reference resolution support. |
 | `unfurl-foundry-substrate/foundry-substrate-serialization/target/foundry-substrate-serialization-0.1.0-SNAPSHOT.jar` | Stable JSON/YAML codec for Foundry Substrate public shapes. |
-| `unfurl-foundry-substrate/foundry-substrate-springai-adapter/target/foundry-substrate-springai-adapter-0.1.0-SNAPSHOT.jar` | Optional Spring AI adapter when a deployment supplies Spring AI model, embedding, or vector bindings. |
+| `unfurl-foundry-substrate/foundry-substrate-springai-adapter/target/foundry-substrate-springai-adapter-0.1.0-SNAPSHOT.jar` | Standard Foundry provider bridge for this runbook; wraps deployment-supplied Spring AI model, embedding, or vector bindings behind neutral Foundry ports. |
 | `unfurl-foundry-substrate/foundry-substrate-testing/target/foundry-substrate-testing-0.1.0-SNAPSHOT.jar` | Test/dev fixtures only; add to catalog only for local demos, examples, or non-production validation flows. |
 
 Flow, application, and runtime-support artifacts:
@@ -114,7 +114,7 @@ Flow, application, and runtime-support artifacts:
 |---|---|
 | `unfurl-flow/target/*.jar` or the Flow runtime package | Flow runtime component exposing `workflow.execute`. |
 | Application/workload component package files | Deployable application components selected by the composition. |
-| Model provider adapter package files | Concrete `ModelProvider` bindings, such as Anthropic, Gemini, OpenAI, Azure OpenAI, Ollama, or customer adapters. |
+| Model provider adapter package files | Spring AI provider module or explicit provider plugin selected by the deployment profile. Direct provider-specific bindings are valid only when the deployment intentionally opts out of the standard Spring AI bridge. |
 | Embedding provider adapter package files | Concrete `EmbeddingProvider` bindings. |
 | Vector store adapter or service claim files | Concrete `VectorStore` binding for the RAG pipeline. |
 | RAG retriever adapter or service claim files | Concrete `RagRetriever` binding when RAG is deployed as a separate capability. |
@@ -493,9 +493,13 @@ curl -sS -X POST \
 
 The response contains:
 
-- `contractArtifact`: unsigned DCP composition contract.
+- `contractArtifact`: unsigned root DCP composition contract. This is the light handoff view, not the full compiler
+  envelope.
 - `substrateProfileArtifact`: runtime/substrate profile.
-- `signedContractArtifact`: signed contract handoff artifact when signing is enabled.
+- `signedContractArtifact`: signed/frozen root DCP contract handoff artifact when signing is enabled.
+- `supportArtifacts`: required companion artifacts for deployment packaging, such as the signed compiled envelope and
+  `dcp-runtime-bundle.zip`.
+- `diagnosticArtifacts`: compiler/debug snapshots such as the unsigned compiled envelope and compile response.
 - `warnings`: operator-visible export warnings.
 - `expectedRevision` and `receivedRevision`: revision safety details.
 
@@ -506,8 +510,8 @@ is not a substitute for referenced child DCP contracts.
 
 Do not deploy raw session state. The signed contract closure and runtime binding tree are the deployment handoff.
 
-Download any compile diagnostic artifacts in addition to the contract/profile artifacts. They capture the response
-metadata, warnings, stale-revision details, and artifact hashes used by the handoff UI.
+Download compile support artifacts needed by later deployment steps. Download diagnostics when support, replay, or
+debugging is needed; diagnostics must not be the only source of the production handoff.
 
 ## Step 13: Download Export Artifacts Locally
 
@@ -523,9 +527,12 @@ jq -r '.substrateProfileArtifact.url' compile-response.json | xargs -I{} \
   curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/substrate-profile.yaml
 
 jq -r '.signedContractArtifact.url' compile-response.json | xargs -I{} \
-  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-contract.yaml
+  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-contract.json
 
-jq -r '.diagnosticArtifacts[] | select(.url | contains("dcp-runtime-bundle.zip")) | .url' compile-response.json | xargs -I{} \
+jq -r '.supportArtifacts[] | select(.url | contains("signed-compiled-contract.yaml")) | .url' compile-response.json | xargs -I{} \
+  curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/signed-compiled-contract.yaml
+
+jq -r '.supportArtifacts[] | select(.url | contains("dcp-runtime-bundle.zip")) | .url' compile-response.json | xargs -I{} \
   curl -sS "http://127.0.0.1:7878{}" -o exports/flowfoundry/dcp-runtime-bundle.zip
 ```
 
@@ -534,9 +541,10 @@ rather than returning mutable session state.
 
 ## Step 14: Create Runtime Bindings
 
-Create a runtime binding file for the container environment from the signed contract, substrate profile, and deployment
-resolution response. This is the boundary where Studio handoff ends and the deploy emitter/runtime package assembly
-begins.
+Create a runtime binding file for the container environment from the signed compiled support envelope, substrate profile,
+and deployment resolution response. The signed root DCP contract remains the deployment handoff; the signed compiled
+support envelope is a Fabric tooling input that supplies selection and binding-plan context. This is the boundary where
+Studio handoff ends and the deploy emitter/runtime package assembly begins.
 
 The binding set must use DCP-native aggregation. Generate an aggregate parent runtime binding whose
 `metadata.extensions.contains` references child runtime bindings for each resolved Flow, Foundry, and
@@ -558,11 +566,11 @@ The binding must reference:
 Do not inline secrets in the binding. Use secret/config references that the deployment environment resolves.
 Missing child binding refs, containment cycles, or inline secret material in any child binding must block Step 14.
 
-Generate the binding from the signed DCP contract closure, not by hand-copying ids:
+Generate the binding from the signed compiled support envelope, not by hand-copying ids:
 
 ```bash
 fabric runtime-bindings \
-  --signed-contract exports/flowfoundry/signed-contract.yaml \
+  --signed-contract exports/flowfoundry/signed-compiled-contract.yaml \
   --tenant tenant-local \
   --environment local-dev \
   --flow-base-url http://flow:8080 \
@@ -596,6 +604,7 @@ foundry-deployment/
     skills.yaml
   runtime-binding.yaml
   signed-contract.json
+  signed-compiled-contract.yaml
 ```
 
 The authoring tool JAR under `tools/` is the deployment artifact produced in Step 7. It is loaded by Foundry's ToolPlugin loader and should not be uploaded as a Fabric catalog item.
@@ -629,11 +638,12 @@ flow-deployment/
   trust-keys/
     studio-public-key.pem
   signed-contract.json
+  signed-compiled-contract.yaml
   runtime-binding.yaml
   substrate-profile.yaml
 ```
 
-`signed-contract.*` and `substrate-profile.yaml` are the aggregate environment handoff artifacts.
+`signed-contract.json` and `substrate-profile.yaml` are the aggregate environment handoff artifacts.
 Flow verifies the aggregate substrate profile hash against the signed contract, then scopes its
 process-level boot compatibility to the local Flow runtime profile. Do not generate an unsigned
 Flow-only contract sidecar to make strict boot pass; the aggregate signed DCP handoff remains the
@@ -652,7 +662,7 @@ The preferred packaging path is `fabric emit` with the runtime handoff inputs:
 
 ```bash
 fabric emit \
-  --contract exports/flowfoundry/signed-contract.yaml \
+  --contract exports/flowfoundry/signed-compiled-contract.yaml \
   --profile exports/flowfoundry/substrate-profile.yaml \
   --runtime-binding exports/flowfoundry/runtime-binding.yaml \
   --dcp-runtime-bundle exports/flowfoundry/dcp-runtime-bundle.zip \
@@ -719,7 +729,7 @@ phase documents the API surface that operators and clients will use after deploy
 
 Inputs:
 
-- `signed-contract.yaml`.
+- `signed-contract.json`.
 - `runtime-binding.yaml`.
 - `substrate-profile.yaml`.
 - Deployment resolution and container manifest artifacts.

@@ -57,6 +57,10 @@ The authoring agent must use Foundry's normal agent/tool constructs:
 - Concrete execution is supplied by a `ToolExecutor` binding. Valid binding types include deployment `pluginJar`
   tools loaded by Foundry and HTTP tools that call Fabric Studio or Fabric-owned execution endpoints.
 - The agent never implements catalog, assembly, export, deployment, Docker, filesystem, or CLI behavior locally.
+- Runbook execution phases must return `kind=execution` only after a declared tool has completed. If the active
+  model provider does not expose native tool/function calls, the model may request tools with the structured
+  `{"toolCalls":[{"id":"...","toolName":"...","arguments":{...}}]}` envelope; Foundry still executes those calls
+  through the governed `ToolRegistry` and passes the real tool result back before the terminal execution JSON.
 
 The deployment authoring agent already names these proposal tools:
 
@@ -116,10 +120,10 @@ it is not the Flowfoundry product deployment path.
 | `fabric.dynamic-dcp-project` | HTTP tool | `GET /studio/tenants/{tenant}/assemblies/{assembly}/dynamic-dcp?sessionId=...` | `step-10-dynamic-dcp.json` |
 | `fabric.deployment-resolve` | HTTP tool | `POST /studio/deployment/resolve` in Studio session mode | `step-11-deployment-resolve-response.json` |
 | `fabric.candidate-compile` | HTTP tool | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/compile` | `step-12-compile-response.json` |
-| `fabric.export-download` | HTTP tool | `GET /studio/tenants/{tenant}/exports/{artifact}/content?sha256=...` | downloaded contract/profile/signed-contract artifacts |
-| `fabric.runtime-binding-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint wraps `fabric runtime-bindings --signed-contract ...` | `step-14-runtime-binding.yaml`, validation report |
-| `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed contract, runtime binding, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
-| `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
+| `fabric.export-download` | HTTP tool | `GET /studio/tenants/{tenant}/exports/{artifact}/content?sha256=...` | downloaded handoff and support artifacts: root contract, profile, signed root contract, signed compiled envelope, runtime bundle |
+| `fabric.runtime-binding-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint wraps `fabric runtime-bindings --signed-contract ...` using the signed compiled support envelope. | `step-14-runtime-binding.yaml`, validation report |
+| `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed root contract, runtime binding, support envelope, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
+| `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from signed root contract, workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
 | `fabric.container-image-build` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint builds Flow and Foundry images from deployment roots. | `step-17-container-image-validation.json` |
 | `fabric.swagger-ui-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint projects OpenAPI from the signed contract, runtime binding, substrate profile, service route descriptors, and Foundry tool schemas, then emits a static Swagger UI bundle. | `step-18-swagger-ui-generation-report.json`, OpenAPI files, Swagger UI directory |
 
@@ -203,9 +207,11 @@ Ask these before compiling and signing:
 |---:|---|---|---|---|
 | 12 | `fabric.candidate-compile` | deployment-resolved session | `step-12-compile-response.json` | Compile fails, signature missing when required, or artifact ids/hashes are absent. |
 | 13 | `fabric.export-download` | compile response artifact URLs | `step-13-download-verification.json` | Any artifact download hash mismatches. |
-| 14 | `fabric.runtime-binding-generate` | signed contract + substrate profile + deployment resolution | `step-14-runtime-binding.yaml` | Inline secret, missing child binding ref, containment cycle, or invalid runtime binding. |
+| 14 | `fabric.runtime-binding-generate` | signed compiled support envelope + substrate profile + deployment resolution | `step-14-runtime-binding.yaml` | Inline secret, missing child binding ref, containment cycle, or invalid runtime binding. |
 
-The Phase 3 exit artifact is a signed contract plus DCP runtime-binding set. Phase 4 must consume those files directly.
+The Phase 3 exit artifact is a signed root DCP contract plus DCP runtime-binding set. The compile response may also carry
+support artifacts such as the signed compiled envelope and `dcp-runtime-bundle.zip`; those are required when a downstream
+tool needs Fabric compiler context or Flow runtime hydration. Diagnostic artifacts are replay/debug files only.
 
 ## Phase 4: Deployment
 
@@ -223,8 +229,8 @@ Ask these before assembling roots and images:
 
 | Step | Tool call | Input artifact | Output artifact | Stop condition |
 |---:|---|---|---|---|
-| 15 | `fabric.foundry-root-assemble` | signed contract + runtime binding + Foundry deployment inputs | `step-15-foundry-deployment-inventory.json` | Missing agent, prompt, tool/provider plugin, registry, or signed contract. |
-| 16 | `fabric.flow-root-assemble` | signed contract + runtime binding + Flow workflow inputs | `step-16-flow-deployment-inventory.json` | Missing workflow, `agent.run` / `tool.call` child DCP contract refs, trust keys, or runtime binding ref. |
+| 15 | `fabric.foundry-root-assemble` | signed root contract + runtime binding + signed compiled support envelope + Foundry deployment inputs | `step-15-foundry-deployment-inventory.json` | Missing agent, prompt, tool/provider plugin, registry, or signed contract. |
+| 16 | `fabric.flow-root-assemble` | signed root contract + runtime binding + Flow workflow inputs | `step-16-flow-deployment-inventory.json` | Missing workflow, `agent.run` / `tool.call` child DCP contract refs, trust keys, or runtime binding ref. |
 | 17 | `fabric.container-image-build` | Flow and Foundry deployment roots | `step-17-container-image-validation.json` | Image build fails or image lacks required deployment-root files. |
 
 The Phase 4 exit artifact is a local container-image validation report. API documentation should continue with Step 18
@@ -302,6 +308,11 @@ The authoring agent should call `/status/tools` during Step 7 and return a `gap`
 tool is absent, bound to the wrong type, or missing the expected tenant scope. A development run may use the sample
 Java plugin JAR for the three proposal tools, but runbook-compliant phase execution still requires every needed tool to
 be represented as a Foundry registry binding.
+
+The deployment `fabric-authoring` agent must route explicit runbook execution requests before proposal generation. For
+Step 2 it uses a route phase to detect catalog admission, then runs an `execute-catalog-admission` phase whose
+`allowedToolRefs` contains `fabric.catalog-admit`. The phase returns `kind=execution` only after Foundry executes the
+tool and the result is available in the phase tool-output map; otherwise it returns `gap`.
 
 Studio-backed phase tools are exposed through Fabric's Foundry-compatible HTTP gateway:
 

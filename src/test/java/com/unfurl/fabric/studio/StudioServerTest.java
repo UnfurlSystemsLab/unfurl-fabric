@@ -381,7 +381,11 @@ class StudioServerTest {
 
             assertThat(artifact.statusCode()).isEqualTo(200);
             assertThat(artifact.headers().firstValue("Content-Type")).contains("application/yaml");
-            assertThat(artifact.body()).contains("validation-service");
+            assertThat(artifact.body())
+                    .contains("providerCapability: assembly.aggregate")
+                    .contains("childContractCount")
+                    .doesNotContain("bindingPlan")
+                    .doesNotContain("selections");
         }
     }
 
@@ -757,6 +761,59 @@ class StudioServerTest {
                     .contains("\"status\":\"PASS\"")
                     .contains("\"contentBase64\"")
                     .contains("\"sha256\":\"" + contractArtifact.get("sha256") + "\"");
+        }
+    }
+
+    /**
+     * Regression test: Flowfoundry Step 2 can hand the authoring agent only the
+     * Step 1 inventory path, and the Studio tool gateway expands that inventory
+     * into canonical catalog admission drafts before writing the run artifact.
+     */
+    @Test
+    void catalogAdmitToolAcceptsArtifactInventoryPath(@TempDir Path dir) throws Exception {
+        Path catalog = dir.resolve("catalog");
+        writeCatalogJar(catalog, "agent.jar", "authoring-agent", "agent.run");
+        Path inventory = dir.resolve("step-01-artifact-inventory.json");
+        Files.writeString(inventory, """
+                {
+                  "artifacts": [
+                    {
+                      "path": %s,
+                      "exists": true,
+                      "sha256": "sha256:test"
+                    }
+                  ]
+                }
+                """.formatted(jsonString(catalog.resolve("agent.jar").toString())), StandardCharsets.UTF_8);
+        Path outputPath = dir.resolve("step-02-catalog-admission-response.json");
+
+        try (StudioServer server = started()) {
+            HttpResponse<String> admitted = post(server, "/studio/tools/fabric.catalog-admit", """
+                    {
+                      "callId": "step-02-catalog-admit",
+                      "arguments": {
+                        "tenantId": "tenant-inventory",
+                        "assemblyId": "assembly-tools",
+                        "artifactInventoryPath": %s,
+                        "outputPath": %s
+                      }
+                    }
+                    """.formatted(jsonString(inventory.toString()), jsonString(outputPath.toString())));
+
+            assertThat(admitted.statusCode()).isEqualTo(200);
+            StudioToolCallResult result = StudioJson.mapper()
+                    .readValue(admitted.body(), StudioToolCallResult.class);
+            assertThat(result.success()).isTrue();
+            assertThat(result.output()).containsEntry("status", "PASS");
+            assertThat(result.output()).containsKey("artifact");
+            assertThat(Files.isRegularFile(outputPath)).isTrue();
+
+            StudioCatalogAdmissionResponse response = StudioJson.mapper()
+                    .readValue(outputPath.toFile(), StudioCatalogAdmissionResponse.class);
+            assertThat(response.status()).isEqualTo("VERIFIED");
+            assertThat(response.catalog().entries())
+                    .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                    .contains("uploaded:agent.jar");
         }
     }
 

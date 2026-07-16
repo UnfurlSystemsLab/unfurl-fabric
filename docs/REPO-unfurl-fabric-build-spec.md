@@ -104,13 +104,16 @@ resolve-deployment
 Typical contract flow outputs:
 
 ```text
-compiled contract YAML
+root DCP contract YAML
 compiled substrate profile YAML
-signed contract YAML
+signed/frozen root DCP handoff
+support artifacts such as signed compiled envelopes and DCP runtime bundles
+diagnostic artifacts such as compiler envelopes and response snapshots
 deployment plan output
 ```
 
-The substrate profile hash is embedded in the compiled contract. Signed contracts cover the resolved binding plan.
+The substrate profile hash is embedded in the compiled support envelope. The default signed handoff covers the root DCP
+contract; Fabric support artifacts carry the resolved binding plan when downstream Fabric tooling needs it.
 The packaged Studio/CLI jar must also include the runtime deploy-emitter provider modules needed by the bundled
 deployment target presets, and the shade step must merge `META-INF/services` entries so `fabric emit` can discover
 `local-compose` and `k8s` backends through the deploy-emitter SPI.
