@@ -1008,27 +1008,9 @@ public final class StudioCatalogService {
                 return StudioAuthoringConverseResponse.gap(sessionId, message, asStringList(output.get("unmet")));
             }
             case "execution" -> {
-                List<Map<String, Object>> toolCalls = asListOfMap(output.get("toolCalls"));
-                List<Map<String, Object>> artifacts = asListOfMap(output.get("artifacts"));
-                Map<String, Object> toolResult = asMap(output.get("toolResult"));
-                String toolStatus = asString(toolResult.get("status"));
-                if ("GAP".equals(toolStatus) || "ERROR".equals(toolStatus)) {
-                    return StudioAuthoringConverseResponse.gap(sessionId,
-                            message.isBlank() ? "The authoring execution tool reported a gap." : message,
-                            asStringList(toolResult.get("diagnostics")));
-                }
-                if (toolCalls.isEmpty()) {
-                    return StudioAuthoringConverseResponse.gap(sessionId,
-                            "The authoring agent reported execution without a recorded tool call.",
-                            List.of("toolCalls"));
-                }
-                return StudioAuthoringConverseResponse.execution(
-                        sessionId,
-                        message,
-                        asString(output.get("phase")),
-                        asInteger(output.get("step")),
-                        toolCalls,
-                        artifacts);
+                return StudioAuthoringConverseResponse.gap(sessionId,
+                        "Authoring agents cannot execute Flowfoundry runbook steps; Flow owns runbook DAG execution.",
+                        List.of("flow-runbook-execution"));
             }
             default -> {
                 List<StudioAuthoringQuestion> questions = new ArrayList<>();
@@ -1072,16 +1054,6 @@ public final class StudioCatalogService {
 
     private static String asString(Object value) {
         return value == null ? null : String.valueOf(value);
-    }
-
-    private static Integer asInteger(Object value) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        if (value == null || String.valueOf(value).isBlank()) {
-            return null;
-        }
-        return Integer.parseInt(String.valueOf(value));
     }
 
     public StudioAssemblyListResponse listAssemblies(String tenantId) {

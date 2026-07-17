@@ -817,6 +817,107 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Regression test: every Studio tool gateway PASS/GAP response can be
+     * hash-pinned to a run artifact so Flow runbook nodes hand state to the
+     * next step through files instead of authoring-agent conversation text.
+     */
+    @Test
+    void studioToolGatewayWritesOutputPathForVerificationTools(@TempDir Path dir) throws Exception {
+        Path outputPath = dir.resolve("step-03-capability-verification.json");
+
+        try (StudioServer server = started()) {
+            HttpResponse<String> verified = post(server, "/studio/tools/fabric.catalog-verify", """
+                    {
+                      "callId": "step-03-catalog-verify",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "requiredCapabilities": ["validate.payment", "missing.capability"],
+                        "outputPath": %s
+                      }
+                    }
+                    """.formatted(jsonString(outputPath.toString())));
+
+            assertThat(verified.statusCode()).isEqualTo(200);
+            StudioToolCallResult result = StudioJson.mapper()
+                    .readValue(verified.body(), StudioToolCallResult.class);
+            assertThat(result.success()).isTrue();
+            assertThat(result.output()).containsEntry("status", "GAP");
+            assertThat(result.output()).containsKey("artifact");
+            assertThat(Files.isRegularFile(outputPath)).isTrue();
+            Map<?, ?> artifact = StudioJson.mapper().readValue(outputPath.toFile(), Map.class);
+            assertThat(artifact.get("status")).isEqualTo("GAP");
+            assertThat(artifact.get("tool")).isEqualTo("fabric.catalog-verify");
+            assertThat(artifact.toString()).contains("missing.capability");
+        }
+    }
+
+    /**
+     * Regression test: Flow can pass the authoring proposal's entire intent list
+     * to Step 9 without list-index expressions; the gateway advances revisions
+     * one intent at a time through normal Studio validation.
+     */
+    @Test
+    void sessionIntentApplyToolAcceptsBulkIntentList(@TempDir Path dir) throws Exception {
+        Path outputPath = dir.resolve("step-09-session-after.json");
+
+        try (StudioServer server = started()) {
+            HttpResponse<String> created = post(server, "/studio/tools/fabric.session-start", """
+                    {
+                      "callId": "session",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-demo",
+                        "request": {
+                          "baseCatalogHash": "sha256:catalog",
+                          "needsId": "needs-flowfoundry",
+                          "collaboratorId": "alice",
+                          "collaboratorName": "Alice"
+                        }
+                      }
+                    }
+                    """);
+            StudioToolCallResult createdResult = StudioJson.mapper()
+                    .readValue(created.body(), StudioToolCallResult.class);
+            String sessionId = sessionId(createdResult);
+
+            HttpResponse<String> applied = post(server, "/studio/tools/fabric.session-intent-apply", """
+                    {
+                      "callId": "step-09-session-intent-apply",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-demo",
+                        "sessionId": "%s",
+                        "baseRevision": 0,
+                        "collaboratorId": "alice",
+                        "outputPath": %s,
+                        "intents": [
+                          {
+                            "type": "ADD_COMPONENT",
+                            "catalogEntryId": "com.unfurl:validation-service:1.1.0"
+                          },
+                          {
+                            "type": "ADD_COMPONENT",
+                            "catalogEntryId": "com.unfurl:storage-s3:1.2.0"
+                          }
+                        ]
+                      }
+                    }
+                    """.formatted(sessionId, jsonString(outputPath.toString())));
+
+            assertThat(applied.statusCode()).isEqualTo(200);
+            StudioToolCallResult result = StudioJson.mapper()
+                    .readValue(applied.body(), StudioToolCallResult.class);
+            assertThat(result.success()).isTrue();
+            assertThat(result.output())
+                    .containsEntry("status", "PASS")
+                    .containsEntry("appliedCount", 2);
+            assertThat(result.output().get("finalSession").toString()).contains("sceneRevision=2");
+            assertThat(Files.isRegularFile(outputPath)).isTrue();
+            assertThat(Files.readString(outputPath)).contains("\"appliedCount\" : 2", "\"status\" : \"PASS\"");
+        }
+    }
+
     private StudioServer started() throws Exception {
         return started(new StudioCatalogService());
     }

@@ -1,0 +1,34 @@
+id: flowfoundry-api-documentation
+version: "1.0.0"
+metadata:
+  name: Flowfoundry API Documentation Phase
+  steps: "18"
+  owner: flow
+nodes:
+  - id: step-18-swagger-ui-generate
+    type: ACTION
+    uses: function.local
+    name: Step 18 Swagger UI Generate
+    config:
+      functionName: fabric.swagger-ui-generate
+    input:
+      downloadManifestPath: $.workflow.input.artifactPaths.step13
+      runtimeBindingPath: $.workflow.input.artifactPaths.step14
+      deploymentResolvePath: $.workflow.input.artifactPaths.step11
+      deploymentImageReportPath: $.workflow.input.artifactPaths.step17
+      swaggerOutputDir: $.workflow.input.swaggerOutputDir
+      serverUrls: $.workflow.input.serverUrls
+      outputPath: $.workflow.input.artifactPaths.step18
+
+  - id: gate-step-18-swagger-ui-generate
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-18-swagger-ui-generate
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-18-swagger-ui-generate.output
+edges:
+  - from: step-18-swagger-ui-generate
+    to: gate-step-18-swagger-ui-generate

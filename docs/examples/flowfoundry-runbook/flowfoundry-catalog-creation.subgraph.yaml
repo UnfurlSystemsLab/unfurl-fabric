@@ -1,0 +1,95 @@
+id: flowfoundry-catalog-creation
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Catalog Creation Phase
+  steps: "1-3"
+  owner: flow
+nodes:
+  - id: step-01-artifact-inventory
+    type: ACTION
+    uses: function.local
+    name: Step 1 Artifact Inventory
+    description: Inventory the configured catalog files and write step-01-artifact-inventory.json.
+    config:
+      functionName: fabric.artifact-inventory
+    input:
+      files: $.workflow.input.catalogFiles
+      outputPath: $.workflow.input.artifactPaths.step01
+
+  - id: step-02-catalog-admit
+    type: ACTION
+    uses: http.request
+    name: Step 2 Catalog Admission
+    description: Admit inventoried catalog files through the Studio tool gateway.
+    dependencies:
+      - step-01-artifact-inventory
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.catalog-admit
+      timeoutMs: 120000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-02-catalog-admit
+        toolName: fabric.catalog-admit
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          artifactInventoryPath: $.workflow.input.artifactPaths.step01
+          outputPath: $.workflow.input.artifactPaths.step02
+
+  - id: gate-step-02-catalog-admit
+    type: ACTION
+    uses: tool.result.gate
+    name: Gate Step 2 Catalog Admission
+    description: Stop the catalog phase if Studio admission reports a GAP or tool error.
+    dependencies:
+      - step-02-catalog-admit
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-02-catalog-admit.output.body
+
+  - id: step-03-catalog-verify
+    type: ACTION
+    uses: http.request
+    name: Step 3 Catalog Verification
+    description: Verify required capabilities are present in the admitted tenant catalog.
+    dependencies:
+      - gate-step-02-catalog-admit
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.catalog-verify
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-03-catalog-verify
+        toolName: fabric.catalog-verify
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          requiredCapabilities: $.workflow.input.requiredCapabilities
+          outputPath: $.workflow.input.artifactPaths.step03
+
+  - id: gate-step-03-catalog-verify
+    type: ACTION
+    uses: tool.result.gate
+    name: Gate Step 3 Catalog Verification
+    description: Stop before Assembly if required Flowfoundry capabilities are missing.
+    dependencies:
+      - step-03-catalog-verify
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-03-catalog-verify.output.body
+edges:
+  - from: step-01-artifact-inventory
+    to: step-02-catalog-admit
+  - from: step-02-catalog-admit
+    to: gate-step-02-catalog-admit
+  - from: gate-step-02-catalog-admit
+    to: step-03-catalog-verify
+  - from: step-03-catalog-verify
+    to: gate-step-03-catalog-verify

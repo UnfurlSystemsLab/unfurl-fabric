@@ -53,7 +53,7 @@ public final class StudioToolGateway {
             return StudioToolCallResult.failure("FABRIC_TOOL_MALFORMED", "toolName is required");
         }
         try {
-            return switch (toolName) {
+            StudioToolCallResult result = switch (toolName) {
                 case "fabric.catalog-admit" -> catalogAdmit(toolName, request.arguments());
                 case "fabric.catalog-verify" -> catalogVerify(toolName, request.arguments());
                 case "fabric.assembly-create" -> assemblyCreate(toolName, request.arguments());
@@ -68,6 +68,7 @@ public final class StudioToolGateway {
                 default -> gap(toolName, "unsupported Fabric Studio tool: " + toolName, Map.of(
                         "supportedTools", supportedTools()));
             };
+            return withOptionalOutputArtifact(result, request.arguments());
         } catch (IllegalArgumentException ex) {
             return gap(toolName, ex.getMessage(), Map.of());
         } catch (RuntimeException ex) {
@@ -223,7 +224,7 @@ public final class StudioToolGateway {
 
     /**
      * Artifact writer: persists a tool response into the local run workspace and
-     * returns hash metadata for the authoring agent's execution response.
+     * returns hash metadata for the Flow runbook execution node.
      */
     private Map<String, Object> writeToolArtifact(String outputPath, Object response) {
         try {
@@ -238,6 +239,24 @@ public final class StudioToolGateway {
         } catch (Exception ex) {
             throw new IllegalArgumentException("unable to write tool artifact: " + outputPath, ex);
         }
+    }
+
+    /**
+     * Artifact decorator: when Flow runbook nodes pass `outputPath`, writes the
+     * canonical tool output as the handoff artifact. Tool handlers that already
+     * wrote a specialized artifact, such as catalog admission, are left intact.
+     */
+    private StudioToolCallResult withOptionalOutputArtifact(StudioToolCallResult result, Map<String, Object> arguments) {
+        if (result == null || !result.success() || result.output().containsKey("artifact")) {
+            return result;
+        }
+        String outputPath = text(arguments, "outputPath", "");
+        if (outputPath.isBlank()) {
+            return result;
+        }
+        Map<String, Object> output = new LinkedHashMap<>(result.output());
+        output.put("artifact", writeToolArtifact(outputPath, result.output()));
+        return StudioToolCallResult.success(output);
     }
 
     /**
@@ -349,8 +368,9 @@ public final class StudioToolGateway {
     }
 
     /**
-     * Intent write adapter: applies one Studio draft intent through the normal
-     * revision and catalog-grounding checks.
+     * Intent write adapter: applies one or more Studio draft intents through the
+     * normal revision and catalog-grounding checks. Batch mode lets Flow pass the
+     * whole authoring proposal intent list without needing list-index references.
      */
     private StudioToolCallResult sessionIntentApply(String toolName, Map<String, Object> arguments) {
         String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
@@ -358,6 +378,10 @@ public final class StudioToolGateway {
         String sessionId = text(arguments, "sessionId", "");
         if (sessionId.isBlank()) {
             throw new IllegalArgumentException("sessionId is required");
+        }
+        Object rawIntents = value(arguments, "intents");
+        if (rawIntents instanceof Collection<?> intents) {
+            return sessionIntentApplyBatch(toolName, arguments, tenantId, assemblyId, sessionId, intents);
         }
         StudioIntentRequest request = typedRequest(arguments, StudioIntentRequest.class);
         StudioIntentResponse response = service.applyIntent(tenantId, assemblyId, sessionId, request);
@@ -367,6 +391,64 @@ public final class StudioToolGateway {
                 "assemblyId", assemblyId,
                 "sessionId", sessionId,
                 "response", response));
+    }
+
+    /**
+     * Batch strategy: overlays tenant/session/revision defaults onto each
+     * proposal intent and stops at the first Studio rejection so Flow receives a
+     * single PASS/GAP artifact for Step 9.
+     */
+    private StudioToolCallResult sessionIntentApplyBatch(
+            String toolName,
+            Map<String, Object> arguments,
+            String tenantId,
+            String assemblyId,
+            String sessionId,
+            Collection<?> intents
+    ) {
+        if (intents.isEmpty()) {
+            return gap(toolName, "intents must contain at least one intent", Map.of(
+                    "tenantId", tenantId,
+                    "assemblyId", assemblyId,
+                    "sessionId", sessionId));
+        }
+        List<StudioIntentResponse> responses = new ArrayList<>();
+        long nextRevision = longValue(value(arguments, "baseRevision"), 0);
+        for (Object rawIntent : intents) {
+            Map<String, Object> intent = new LinkedHashMap<>(asMap(rawIntent));
+            intent.putIfAbsent("tenantId", tenantId);
+            intent.putIfAbsent("assemblyId", assemblyId);
+            intent.putIfAbsent("sessionId", sessionId);
+            intent.putIfAbsent("baseRevision", nextRevision);
+            putIfPresent(intent, "collaboratorId", value(arguments, "collaboratorId"));
+            putIfPresent(intent, "collaboratorName", value(arguments, "collaboratorName"));
+            StudioIntentResponse response = service.applyIntent(
+                    tenantId,
+                    assemblyId,
+                    sessionId,
+                    mapper.convertValue(intent, StudioIntentRequest.class));
+            responses.add(response);
+            if (!"VALID".equals(response.status())) {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("tenantId", tenantId);
+                payload.put("assemblyId", assemblyId);
+                payload.put("sessionId", sessionId);
+                payload.put("appliedCount", responses.size() - 1);
+                payload.put("responses", responses);
+                payload.put("finalSession", response.session());
+                return result("GAP", toolName, payload);
+            }
+            nextRevision = response.newRevision();
+        }
+        StudioIntentResponse last = responses.getLast();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tenantId", tenantId);
+        payload.put("assemblyId", assemblyId);
+        payload.put("sessionId", sessionId);
+        payload.put("appliedCount", responses.size());
+        payload.put("responses", responses);
+        payload.put("finalSession", last.session());
+        return result("PASS", toolName, payload);
     }
 
     /**
@@ -550,6 +632,30 @@ public final class StudioToolGateway {
             return bool;
         }
         return value == null || Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    /**
+     * Numeric argument helper: accepts JSON numeric values or numeric strings
+     * when Flow passes a revision through the runbook artifact graph.
+     */
+    private long longValue(Object value, long defaultValue) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value == null || String.valueOf(value).isBlank()) {
+            return defaultValue;
+        }
+        return Long.parseLong(String.valueOf(value));
+    }
+
+    /**
+     * Map helper: overlays optional top-level defaults onto per-intent payloads
+     * without replacing values supplied by the authoring proposal itself.
+     */
+    private void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null && !String.valueOf(value).isBlank()) {
+            target.putIfAbsent(key, value);
+        }
     }
 
     /**

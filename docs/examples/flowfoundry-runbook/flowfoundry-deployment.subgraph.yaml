@@ -1,0 +1,86 @@
+id: flowfoundry-deployment
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Deployment Phase
+  steps: "15-17"
+  owner: flow
+nodes:
+  - id: step-15-foundry-root-assemble
+    type: ACTION
+    uses: function.local
+    name: Step 15 Foundry Root Assemble
+    config:
+      functionName: fabric.foundry-root-assemble
+    input:
+      downloadManifestPath: $.workflow.input.artifactPaths.step13
+      runtimeBindingPath: $.workflow.input.artifactPaths.step14
+      deploymentRoot: $.workflow.input.deploymentRoot
+      outputPath: $.workflow.input.artifactPaths.step15
+
+  - id: gate-step-15-foundry-root-assemble
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-15-foundry-root-assemble
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-15-foundry-root-assemble.output
+
+  - id: step-16-flow-root-assemble
+    type: ACTION
+    uses: function.local
+    name: Step 16 Flow Root Assemble
+    dependencies:
+      - gate-step-15-foundry-root-assemble
+    config:
+      functionName: fabric.flow-root-assemble
+    input:
+      downloadManifestPath: $.workflow.input.artifactPaths.step13
+      runtimeBindingPath: $.workflow.input.artifactPaths.step14
+      deploymentRoot: $.workflow.input.deploymentRoot
+      outputPath: $.workflow.input.artifactPaths.step16
+
+  - id: gate-step-16-flow-root-assemble
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-16-flow-root-assemble
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-16-flow-root-assemble.output
+
+  - id: step-17-container-image-build
+    type: ACTION
+    uses: function.local
+    name: Step 17 Container Image Build
+    dependencies:
+      - gate-step-16-flow-root-assemble
+    config:
+      functionName: fabric.container-image-build
+    input:
+      deploymentRoot: $.workflow.input.deploymentRoot
+      imageTags: $.workflow.input.imageTags
+      outputPath: $.workflow.input.artifactPaths.step17
+
+  - id: gate-step-17-container-image-build
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-17-container-image-build
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-17-container-image-build.output
+edges:
+  - from: step-15-foundry-root-assemble
+    to: gate-step-15-foundry-root-assemble
+  - from: gate-step-15-foundry-root-assemble
+    to: step-16-flow-root-assemble
+  - from: step-16-flow-root-assemble
+    to: gate-step-16-flow-root-assemble
+  - from: gate-step-16-flow-root-assemble
+    to: step-17-container-image-build
+  - from: step-17-container-image-build
+    to: gate-step-17-container-image-build

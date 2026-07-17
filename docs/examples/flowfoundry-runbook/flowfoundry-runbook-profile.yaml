@@ -1,0 +1,9 @@
+name: flowfoundry-runbook-local
+engine: EMBEDDED
+stateStore: IN_MEMORY
+eventSink: IN_MEMORY
+enabledComponents:
+  - function.local
+  - http.request
+  - subgraph.execute
+  - tool.result.gate

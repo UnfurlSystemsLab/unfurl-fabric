@@ -73,7 +73,7 @@ public final class DcpAuthoringClient implements ContractInvocable {
             HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 return ContractInvocationResult.failure("DCP_TRANSPORT_ERROR",
-                        "Foundry DCP endpoint returned HTTP " + response.statusCode());
+                        transportErrorMessage(response.statusCode(), response.body()));
             }
             return mapper.readValue(response.body(), ContractInvocationResult.class);
         } catch (IOException ex) {
@@ -82,5 +82,52 @@ public final class DcpAuthoringClient implements ContractInvocable {
             Thread.currentThread().interrupt();
             return ContractInvocationResult.failure("DCP_TRANSPORT_INTERRUPTED", ex.getMessage());
         }
+    }
+
+    /**
+     * Diagnostic adapter: includes a sanitized Foundry response body in transport errors so
+     * operators can distinguish provider failures from endpoint availability problems.
+     */
+    private String transportErrorMessage(int statusCode, String body) {
+        String detail = responseErrorDetail(body);
+        String message = "Foundry DCP endpoint returned HTTP " + statusCode;
+        return detail.isBlank() ? message : message + ": " + detail;
+    }
+
+    /**
+     * Response parser: accepts either a JSON error envelope or plain text and bounds/redacts the
+     * diagnostic before it becomes a Studio-visible DCP transport failure.
+     */
+    @SuppressWarnings("unchecked")
+    private String responseErrorDetail(String body) {
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+        try {
+            Map<String, Object> payload = mapper.readValue(body, Map.class);
+            Object error = payload.get("error");
+            if (error == null) {
+                error = payload.get("errorMessage");
+            }
+            if (error != null) {
+                return sanitizeDiagnostic(String.valueOf(error));
+            }
+        } catch (IOException ignored) {
+            // Fall back to sanitized plain text when the endpoint returns a non-JSON body.
+        }
+        return sanitizeDiagnostic(body);
+    }
+
+    /**
+     * Redaction helper: removes common credential shapes from Foundry transport diagnostics.
+     */
+    private String sanitizeDiagnostic(String value) {
+        String redacted = value
+                .replaceAll("AIza[0-9A-Za-z_\\-]{20,}", "<redacted>")
+                .replaceAll("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,;]+", "$1<redacted>")
+                .replaceAll("(?i)(bearer\\s+)[A-Za-z0-9._~+/\\-=]+", "$1<redacted>")
+                .replaceAll("(?i)((api[_-]?key|apikey|token|secret|password)\\s*[:=]\\s*)[^\\s,;]+",
+                        "$1<redacted>");
+        return redacted.length() <= 1000 ? redacted : redacted.substring(0, 1000) + "...";
     }
 }

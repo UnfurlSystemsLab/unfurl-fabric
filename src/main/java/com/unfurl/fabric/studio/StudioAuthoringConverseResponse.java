@@ -7,8 +7,9 @@ import java.util.Map;
 
 /**
  * Data Transfer Object: carries the result of a Studio authoring turn. Foundry-backed
- * turns may return clarification, gaps, catalog-backed proposals, or runbook tool
- * execution metadata; all write behavior remains revalidated by Studio services.
+ * turns may return clarification, gaps, or catalog-backed proposals. Flow-owned
+ * runbook execution uses the Studio tool gateway and Flow workflow artifacts instead
+ * of this authoring response.
  */
 public record StudioAuthoringConverseResponse(
         String kind,
@@ -26,7 +27,7 @@ public record StudioAuthoringConverseResponse(
 ) {
     /**
      * Invariant constructor: freezes collection/map payloads while preserving the
-     * optional execution fields used by Flowfoundry runbook phases.
+     * optional diagnostic fields used by existing response consumers.
      */
     public StudioAuthoringConverseResponse {
         kind = kind == null || kind.isBlank() ? "clarify" : kind;
@@ -107,32 +108,6 @@ public record StudioAuthoringConverseResponse(
                 null,
                 List.of(),
                 List.of(),
-                Map.of());
-    }
-
-    /**
-     * Factory: creates a runbook execution response after Foundry completed a declared tool call.
-     */
-    public static StudioAuthoringConverseResponse execution(
-            String sessionId,
-            String assistantMessage,
-            String phase,
-            Integer step,
-            List<Map<String, Object>> toolCalls,
-            List<Map<String, Object>> artifacts
-    ) {
-        return new StudioAuthoringConverseResponse(
-                "execution",
-                assistantMessage,
-                sessionId,
-                List.of(),
-                null,
-                List.of(),
-                List.of(),
-                phase,
-                step,
-                toolCalls,
-                artifacts,
                 Map.of());
     }
 

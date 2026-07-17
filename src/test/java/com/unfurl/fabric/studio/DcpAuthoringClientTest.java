@@ -46,4 +46,40 @@ class DcpAuthoringClientTest {
             server.stop(0);
         }
     }
+
+    /**
+     * Verifies stale or failing Foundry endpoints still provide actionable sanitized diagnostics.
+     */
+    @Test
+    void includesSanitizedFoundryErrorBodyWhenEndpointReturnsTransportFailure() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try {
+            server.createContext("/dcp/agent.run", exchange -> {
+                byte[] bytes = mapper.writeValueAsBytes(Map.of("error",
+                        "Failed to generate content: models/gemini-3.1-flash-lite missing apiKey=AIzaSyFakeSecretValue1234567890"));
+                exchange.getResponseHeaders().set("content-type", "application/json");
+                exchange.sendResponseHeaders(500, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            server.start();
+
+            DcpAuthoringClient client = new DcpAuthoringClient(URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/dcp/agent.run"));
+            ContractInvocationResult result = client.invoke(new ContractInvocation(
+                    "urn:unfurl:fabric:authoring", "agent.run", "fabric", "foundry",
+                    Map.of("tenantId", "tenant-a"), "corr", Map.of(), null, Map.of()), ExecutionContext.empty());
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.errorCode()).isEqualTo("DCP_TRANSPORT_ERROR");
+            assertThat(result.errorMessage())
+                    .contains("HTTP 500")
+                    .contains("Failed to generate content")
+                    .contains("models/gemini-3.1-flash-lite")
+                    .contains("<redacted>")
+                    .doesNotContain("AIza");
+        } finally {
+            server.stop(0);
+        }
+    }
 }

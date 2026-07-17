@@ -105,82 +105,28 @@ class StudioCatalogServiceAuthoringDcpTest {
     }
 
     /**
-     * Regression test: preserves a Foundry-backed runbook execution response only
-     * when the agent result includes the concrete tool call that produced it.
+     * Regression test: rejects Foundry authoring outputs that try to execute
+     * Flowfoundry runbook steps. Flow owns runbook DAG execution and should call
+     * Studio tools through Flow nodes, not through `/studio/authoring/converse`.
      */
     @Test
-    void routesExecutionThroughInjectedDcpInvocableWhenToolCallIsRecorded() {
+    void rejectsExecutionResponsesFromAuthoringInvocable() {
         StudioCatalogService service = new StudioCatalogService()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "execution",
                         "phase", "catalog-creation",
                         "step", 2,
                         "assistantMessage", "Catalog admission completed.",
-                        "toolResult", Map.of("status", "PASS"),
                         "toolCalls", List.of(Map.of(
                                 "id", "step-02-catalog-admit",
                                 "toolName", "fabric.catalog-admit",
-                                "status", "PASS")),
-                        "artifacts", List.of(Map.of(
-                                "path", "unfurl-fabric/target/flowfoundry-run/step-02-catalog-admission-response.json",
-                                "sha256", "sha256:abc",
-                                "consumedByStep", 3)))));
-
-        StudioAuthoringConverseResponse response = service.converseAuthoring(REQUEST);
-
-        assertThat(response.kind()).isEqualTo("execution");
-        assertThat(response.phase()).isEqualTo("catalog-creation");
-        assertThat(response.step()).isEqualTo(2);
-        assertThat(response.toolCalls()).hasSize(1);
-        assertThat(response.toolCalls().getFirst()).containsEntry("toolName", "fabric.catalog-admit");
-        assertThat(response.artifacts()).hasSize(1);
-    }
-
-    /**
-     * Regression test: blocks prompt-only execution claims so the UI cannot advance
-     * Step 2 without evidence that Foundry actually called the Studio tool.
-     */
-    @Test
-    void rejectsExecutionWithoutRecordedToolCall() {
-        StudioCatalogService service = new StudioCatalogService()
-                .useAuthoringInvocable(invocable(Map.of(
-                        "kind", "execution",
-                        "phase", "catalog-creation",
-                        "step", 2,
-                        "assistantMessage", "Catalog admission completed.",
-                        "toolResult", Map.of("status", "PASS"))));
+                                "status", "PASS")))));
 
         StudioAuthoringConverseResponse response = service.converseAuthoring(REQUEST);
 
         assertThat(response.kind()).isEqualTo("gap");
-        assertThat(response.assistantMessage()).contains("without a recorded tool call");
-        assertThat(response.unmet()).containsExactly("toolCalls");
-    }
-
-    /**
-     * Regression test: converts a tool-level GAP into the same authoring gap shape
-     * used for catalog and composition blockers.
-     */
-    @Test
-    void routesExecutionToolGapThroughGapResponse() {
-        StudioCatalogService service = new StudioCatalogService()
-                .useAuthoringInvocable(invocable(Map.of(
-                        "kind", "execution",
-                        "phase", "catalog-creation",
-                        "step", 2,
-                        "assistantMessage", "Catalog admission did not pass.",
-                        "toolResult", Map.of(
-                                "status", "GAP",
-                                "diagnostics", List.of("catalog artifact is invalid")),
-                        "toolCalls", List.of(Map.of(
-                                "id", "step-02-catalog-admit",
-                                "toolName", "fabric.catalog-admit",
-                                "status", "GAP")))));
-
-        StudioAuthoringConverseResponse response = service.converseAuthoring(REQUEST);
-
-        assertThat(response.kind()).isEqualTo("gap");
-        assertThat(response.unmet()).containsExactly("catalog artifact is invalid");
+        assertThat(response.assistantMessage()).contains("Flow owns runbook DAG execution");
+        assertThat(response.unmet()).containsExactly("flow-runbook-execution");
     }
 
     @Test

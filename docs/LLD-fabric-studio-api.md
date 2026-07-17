@@ -206,11 +206,13 @@ open.
 
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
 Fabric sets `invocation.metadata.executionMode=harness` on Foundry-backed authoring calls so the governed Foundry
-agent harness can call tools until a terminal `clarify`, `gap`, `proposal`, or `execution` response is produced.
-Foundry-backed authoring responses may be `clarify`, `gap`, `proposal`, or `execution`. `execution` responses are used
-only for runbook phases where Foundry has already invoked a declared tool through its `ToolRegistry`; Fabric preserves
-the returned `phase`, `step`, `toolCalls`, and `artifacts` fields so the next runbook step consumes real tool output
-instead of conversation text.
+agent harness can call proposal tools until a terminal `clarify`, `gap`, or `proposal` response is produced.
+Foundry-backed authoring responses that claim `kind=execution` are rejected as gaps because Flow owns Flowfoundry
+runbook DAG execution. Runbook steps call Studio tools through Flow nodes and consume Flow artifact outputs instead of
+conversation text.
+If the Foundry DCP endpoint itself returns a non-2xx response, Fabric reports a `DCP_TRANSPORT_ERROR`
+that includes the sanitized response body when present, so operators see actionable provider/server
+diagnostics instead of only an HTTP status code.
 
 ## Authoring Tool Gateway
 
@@ -218,11 +220,10 @@ instead of conversation text.
 |---|---|---|---|
 | `POST` | `/studio/tools/{toolName}` | `StudioToolCallRequest` | `StudioToolCallResult` |
 
-The tool gateway is the HTTP adapter for Foundry-managed authoring tools. Foundry remains the tool runtime:
-authoring agents invoke logical tools through Foundry's `ToolRegistry`, and HTTP tool bindings call this route only
-when the operation must cross into Fabric Studio state. Fabric does not import Foundry runtime classes here; it mirrors
-the stable tool-call JSON shape (`callId`, `toolName`, `arguments`, `metadata`) and converts tool arguments into the
-existing Studio API records before calling `StudioCatalogService`.
+The tool gateway is the HTTP adapter for governed Studio tools. Flow runbook nodes and Foundry proposal tools may both
+call this route when an operation must cross into Fabric Studio state. Fabric does not import Flow or Foundry runtime
+classes here; it mirrors the stable tool-call JSON shape (`callId`, `toolName`, `arguments`, `metadata`) and converts
+tool arguments into the existing Studio API records before calling `StudioCatalogService`.
 
 The gateway is intentionally limited to Studio-owned state transitions and read models:
 
@@ -239,14 +240,25 @@ The gateway is intentionally limited to Studio-owned state transitions and read 
 - `fabric.export-download`
 
 Filesystem inventory, runtime-binding generation, deployment-root assembly, and image build tools are not implemented
-inside Studio. They must be separate Foundry `pluginJar` or HTTP bindings owned by a deployment runner because those
-tools need filesystem, signing, or Docker authority outside Studio's tenant catalog/session boundary.
+inside Studio. They must be separate Flow nodes, DCP `tool.call` bindings, or deployment-runner HTTP/plugin tools
+because those tools need filesystem, signing, or Docker authority outside Studio's tenant catalog/session boundary.
+Step 13's `fabric.export-download-all` is such a deployment-runner wrapper: it iterates the compile response artifacts
+and calls Studio `fabric.export-download` or the hash-pinned export content route for each artifact.
 
 `fabric.catalog-admit` accepts the normal `StudioCatalogAdmissionRequest` shape. For local Flowfoundry runbook execution
 it may also accept `artifactInventoryPath` or an inline `artifactInventory` object produced by Step 1; the gateway turns
 inventory entries into JAR `artifactBase64` drafts and delegates to the same catalog admission service. This is a local
-tool-runner convenience for already-inventoried files, not a public tenant upload shortcut. When `outputPath` is
-provided, the gateway writes the admission response to that local run artifact path and returns its SHA-256.
+tool-runner convenience for already-inventoried files, not a public tenant upload shortcut.
+
+Every Studio tool gateway call may include `outputPath`. When supplied, the gateway writes the canonical PASS/GAP tool
+output to that local run artifact path and returns SHA-256 metadata. This is the artifact handoff used by Flow runbook
+nodes; the authoring agent may read the artifact metadata but must not become the step executor.
+
+`fabric.session-intent-apply` accepts either one normal Studio intent request or an `intents` array. Batch mode overlays
+the top-level tenant, assembly, session, collaborator, and starting `baseRevision`, applies intents one at a time through
+the same Studio validation path, advances the revision after each valid intent, and stops on the first invalid/stale
+response with `output.status=GAP`. This shape is required because Flow references can pass a whole proposal intent list
+but do not index arrays inside the DAG expression language.
 
 Tool responses always include a structured runbook status in `output.status` when the call itself was understood:
 `PASS` for successful Studio operations and `GAP` for blocking design/input gaps that should stop the runbook. Unexpected

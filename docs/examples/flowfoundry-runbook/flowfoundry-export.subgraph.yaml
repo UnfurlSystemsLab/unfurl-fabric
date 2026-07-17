@@ -1,0 +1,100 @@
+id: flowfoundry-export
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Export Phase
+  steps: "12-14"
+  owner: flow
+nodes:
+  - id: step-12-candidate-compile
+    type: ACTION
+    uses: http.request
+    name: Step 12 Candidate Compile
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.candidate-compile
+      timeoutMs: 60000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-12-candidate-compile
+        toolName: fabric.candidate-compile
+        arguments:
+          outputPath: $.workflow.input.artifactPaths.step12
+          request:
+            tenantId: $.workflow.input.tenantId
+            assemblyId: $.workflow.input.assemblyId
+            sessionId: $.workflow.input.sessionId
+            expectedRevision: $.workflow.input.expectedRevision
+            sign: $.workflow.input.sign
+            deploymentPolicy: $.workflow.input.deploymentPolicy
+
+  - id: gate-step-12-candidate-compile
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-12-candidate-compile
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-12-candidate-compile.output.body
+
+  - id: step-13-export-download
+    type: ACTION
+    uses: function.local
+    name: Step 13 Export Download And Verify
+    dependencies:
+      - gate-step-12-candidate-compile
+    config:
+      functionName: fabric.export-download-all
+    input:
+      tenantId: $.workflow.input.tenantId
+      compileResponsePath: $.workflow.input.artifactPaths.step12
+      downloadDir: $.workflow.input.downloadDir
+      outputPath: $.workflow.input.artifactPaths.step13
+
+  - id: gate-step-13-export-download
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-13-export-download
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-13-export-download.output
+
+  - id: step-14-runtime-binding-generate
+    type: ACTION
+    uses: function.local
+    name: Step 14 Runtime Binding Generate
+    dependencies:
+      - gate-step-13-export-download
+    config:
+      functionName: fabric.runtime-binding-generate
+    input:
+      downloadManifestPath: $.workflow.input.artifactPaths.step13
+      deploymentResolvePath: $.workflow.input.artifactPaths.step11
+      flowBaseUrl: $.workflow.input.flowBaseUrl
+      foundryBaseUrl: $.workflow.input.foundryBaseUrl
+      outputPath: $.workflow.input.artifactPaths.step14
+
+  - id: gate-step-14-runtime-binding-generate
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-14-runtime-binding-generate
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-14-runtime-binding-generate.output
+edges:
+  - from: step-12-candidate-compile
+    to: gate-step-12-candidate-compile
+  - from: gate-step-12-candidate-compile
+    to: step-13-export-download
+  - from: step-13-export-download
+    to: gate-step-13-export-download
+  - from: gate-step-13-export-download
+    to: step-14-runtime-binding-generate
+  - from: step-14-runtime-binding-generate
+    to: gate-step-14-runtime-binding-generate

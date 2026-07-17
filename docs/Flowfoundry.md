@@ -8,7 +8,7 @@ The flow is intentionally DCP-first:
 - DCP owns claim, contract, runtime binding, deterministic broker, and protocol-level port semantics.
 - Foundry owns agent execution, provider/tool registries, concrete model/RAG/vector bindings, cost reporting, and the `agent.run` DCP endpoint.
 - Foundry Substrate owns the stable AI domain and port surfaces: agent runtime, model provider, embedding provider, vector store, RAG retriever, tool executor/registry, provider registry, cost guardrail, permission bridge, and agent event sink.
-- Flow owns durable workflow execution and may invoke Foundry capabilities through DCP contracts or Foundry Substrate node executors.
+- Flow owns durable workflow execution, Flowfoundry runbook subtree execution, and invocation of Foundry capabilities through DCP contracts or Foundry Substrate node executors.
 
 ## Current Assumptions
 
@@ -49,8 +49,12 @@ Prepare these inputs before starting:
 The first 18 steps are grouped into five build phases. Steps 19-21 are post-build runtime execution, verification,
 and promotion gates.
 
-For the phase-gated authoring-agent question and tool execution contract, see
+For the phase-gated Flow workflow and authoring-agent handoff contract, see
 `FlowfoundryAuthoringAgentRunbook.md`.
+
+The runbook workflow should invoke phase subgraphs with Flow `subgraph.execute`, call Studio/deployment tools through
+Flow transport nodes or DCP-hydrated `tool.call`, and gate each tool result with `tool.result.gate` so `GAP` stops the
+phase before later steps consume invalid artifacts.
 
 | Phase | Name | Steps | Exit criteria |
 |---|---|---|---|

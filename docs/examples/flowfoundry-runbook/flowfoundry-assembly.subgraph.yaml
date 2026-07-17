@@ -1,0 +1,303 @@
+id: flowfoundry-assembly
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Assembly Phase
+  steps: "4-11"
+  owner: flow
+nodes:
+  - id: step-04-assembly-create
+    type: ACTION
+    uses: http.request
+    name: Step 4 Assembly Create
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.assembly-create
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-04-assembly-create
+        toolName: fabric.assembly-create
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          outputPath: $.workflow.input.artifactPaths.step04
+          request:
+            assemblyId: $.workflow.input.assemblyId
+            targetApplicationName: $.workflow.input.targetApplicationName
+            defaultDeploymentTarget: $.workflow.input.defaultDeploymentTarget
+
+  - id: gate-step-04-assembly-create
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-04-assembly-create
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-04-assembly-create.output.body
+
+  - id: step-05-needs-extract
+    type: ACTION
+    uses: http.request
+    name: Step 5 Needs Extract
+    dependencies:
+      - gate-step-04-assembly-create
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.needs-extract
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-05-needs-extract
+        toolName: fabric.needs-extract
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          outputPath: $.workflow.input.artifactPaths.step05
+          request:
+            targetApplicationName: $.workflow.input.targetApplicationName
+            fileNames: $.workflow.input.sourceFileNames
+            defaultDeploymentTarget: $.workflow.input.defaultDeploymentTarget
+            files: $.workflow.input.sourceFiles
+
+  - id: gate-step-05-needs-extract
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-05-needs-extract
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-05-needs-extract.output.body
+
+  - id: step-06-session-start
+    type: ACTION
+    uses: http.request
+    name: Step 6 Draft Session Start
+    dependencies:
+      - gate-step-05-needs-extract
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.session-start
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-06-session-start
+        toolName: fabric.session-start
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          outputPath: $.workflow.input.artifactPaths.step06
+          request:
+            tenantId: $.workflow.input.tenantId
+            assemblyId: $.workflow.input.assemblyId
+            baseCatalogHash: $.workflow.input.catalogHash
+            needsId: $.nodes.gate-step-05-needs-extract.output.output.response.needsId
+            collaboratorId: flow-runbook
+            collaboratorName: Flow Runbook
+
+  - id: gate-step-06-session-start
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-06-session-start
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-06-session-start.output.body
+
+  - id: step-07-authoring-tool-registry-verify
+    type: ACTION
+    uses: function.local
+    name: Step 7 Authoring Tool Registry Verify
+    dependencies:
+      - gate-step-06-session-start
+    config:
+      functionName: fabric.authoring-tool-registry-verify
+    input:
+      foundryStatusUrl: $.workflow.input.foundryStatusUrl
+      requiredTools: $.workflow.input.requiredAuthoringTools
+      outputPath: $.workflow.input.artifactPaths.step07
+
+  - id: gate-step-07-authoring-tool-registry-verify
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-07-authoring-tool-registry-verify
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-07-authoring-tool-registry-verify.output
+
+  - id: step-08-authoring-converse
+    type: ACTION
+    uses: http.request
+    name: Step 8 Authoring Converse
+    dependencies:
+      - gate-step-07-authoring-tool-registry-verify
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.authoring-converse
+      timeoutMs: 120000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-08-authoring-converse
+        toolName: fabric.authoring-converse
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          sessionId: $.nodes.gate-step-06-session-start.output.output.response.session.sessionId
+          userMessage: $.workflow.input.userMessage
+          recursiveScope: $.workflow.input.recursiveScope
+          outputPath: $.workflow.input.artifactPaths.step08
+
+  - id: gate-step-08-authoring-converse
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-08-authoring-converse
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-08-authoring-converse.output.body
+
+  - id: step-09-session-intent-apply
+    type: ACTION
+    uses: http.request
+    name: Step 9 Apply Proposed Intents
+    dependencies:
+      - gate-step-08-authoring-converse
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.session-intent-apply
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-09-session-intent-apply
+        toolName: fabric.session-intent-apply
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          sessionId: $.nodes.gate-step-06-session-start.output.output.response.session.sessionId
+          baseRevision: $.nodes.gate-step-06-session-start.output.output.response.session.sceneRevision
+          collaboratorId: flow-runbook
+          outputPath: $.workflow.input.artifactPaths.step09
+          intents: $.nodes.gate-step-08-authoring-converse.output.output.response.proposal.intents
+
+  - id: gate-step-09-session-intent-apply
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-09-session-intent-apply
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-09-session-intent-apply.output.body
+
+  - id: step-10-dynamic-dcp-project
+    type: ACTION
+    uses: http.request
+    name: Step 10 Dynamic DCP Project
+    dependencies:
+      - gate-step-09-session-intent-apply
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.dynamic-dcp-project
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-10-dynamic-dcp-project
+        toolName: fabric.dynamic-dcp-project
+        arguments:
+          tenantId: $.workflow.input.tenantId
+          assemblyId: $.workflow.input.assemblyId
+          sessionId: $.nodes.gate-step-09-session-intent-apply.output.output.finalSession.sessionId
+          outputPath: $.workflow.input.artifactPaths.step10
+
+  - id: gate-step-10-dynamic-dcp-project
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-10-dynamic-dcp-project
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-10-dynamic-dcp-project.output.body
+
+  - id: step-11-deployment-resolve
+    type: ACTION
+    uses: http.request
+    name: Step 11 Deployment Resolve
+    dependencies:
+      - gate-step-10-dynamic-dcp-project
+    config:
+      method: POST
+      url: http://127.0.0.1:7878/studio/tools/fabric.deployment-resolve
+      timeoutMs: 30000
+      headers:
+        Content-Type: application/json
+    input:
+      body:
+        callId: step-11-deployment-resolve
+        toolName: fabric.deployment-resolve
+        arguments:
+          outputPath: $.workflow.input.artifactPaths.step11
+          request:
+            tenantId: $.workflow.input.tenantId
+            assemblyId: $.workflow.input.assemblyId
+            sessionId: $.nodes.gate-step-09-session-intent-apply.output.output.finalSession.sessionId
+            needsId: $.nodes.gate-step-05-needs-extract.output.output.response.needsId
+            autoSelectBest: true
+            deploymentPolicy: $.workflow.input.deploymentPolicy
+
+  - id: gate-step-11-deployment-resolve
+    type: ACTION
+    uses: tool.result.gate
+    dependencies:
+      - step-11-deployment-resolve
+    config:
+      expectedStatus: PASS
+    input:
+      result: $.nodes.step-11-deployment-resolve.output.body
+edges:
+  - from: step-04-assembly-create
+    to: gate-step-04-assembly-create
+  - from: gate-step-04-assembly-create
+    to: step-05-needs-extract
+  - from: step-05-needs-extract
+    to: gate-step-05-needs-extract
+  - from: gate-step-05-needs-extract
+    to: step-06-session-start
+  - from: step-06-session-start
+    to: gate-step-06-session-start
+  - from: gate-step-06-session-start
+    to: step-07-authoring-tool-registry-verify
+  - from: step-07-authoring-tool-registry-verify
+    to: gate-step-07-authoring-tool-registry-verify
+  - from: gate-step-07-authoring-tool-registry-verify
+    to: step-08-authoring-converse
+  - from: step-08-authoring-converse
+    to: gate-step-08-authoring-converse
+  - from: gate-step-08-authoring-converse
+    to: step-09-session-intent-apply
+  - from: step-09-session-intent-apply
+    to: gate-step-09-session-intent-apply
+  - from: gate-step-09-session-intent-apply
+    to: step-10-dynamic-dcp-project
+  - from: step-10-dynamic-dcp-project
+    to: gate-step-10-dynamic-dcp-project
+  - from: gate-step-10-dynamic-dcp-project
+    to: step-11-deployment-resolve
+  - from: step-11-deployment-resolve
+    to: gate-step-11-deployment-resolve

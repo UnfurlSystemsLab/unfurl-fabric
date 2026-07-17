@@ -1,0 +1,29 @@
+id: flowfoundry-catalog-runbook
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Catalog Runbook
+  phase: catalog-creation
+  owner: flow
+inputSchema:
+  type: object
+  required:
+    - tenantId
+    - assemblyId
+    - catalogFiles
+    - artifactPaths
+    - requiredCapabilities
+nodes:
+  - id: catalog-creation
+    type: ACTION
+    uses: subgraph.execute
+    name: Catalog Creation Phase
+    description: Execute Flowfoundry Steps 1-3 through the catalog-creation phase subgraph.
+    config:
+      subgraphRef: flowfoundry-catalog-creation@1.0.0
+    input:
+      tenantId: $.workflow.input.tenantId
+      assemblyId: $.workflow.input.assemblyId
+      catalogFiles: $.workflow.input.catalogFiles
+      artifactPaths: $.workflow.input.artifactPaths
+      requiredCapabilities: $.workflow.input.requiredCapabilities
+edges: []

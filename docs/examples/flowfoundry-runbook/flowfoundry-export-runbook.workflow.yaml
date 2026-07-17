@@ -1,0 +1,121 @@
+id: flowfoundry-export-runbook
+version: "1.0.0"
+metadata:
+  name: Flowfoundry Full Export Runbook
+  owner: flow
+inputSchema:
+  type: object
+  required:
+    - tenantId
+    - assemblyId
+    - targetApplicationName
+    - defaultDeploymentTarget
+    - catalogFiles
+    - sourceFileNames
+    - sourceFiles
+    - artifactPaths
+    - requiredCapabilities
+    - requiredAuthoringTools
+    - foundryStatusUrl
+    - userMessage
+    - recursiveScope
+    - deploymentPolicy
+    - sign
+    - downloadDir
+    - flowBaseUrl
+    - foundryBaseUrl
+    - deploymentRoot
+    - imageTags
+    - swaggerOutputDir
+    - serverUrls
+nodes:
+  - id: catalog-creation
+    type: ACTION
+    uses: subgraph.execute
+    name: Phase 1 Catalog Creation
+    config:
+      subgraphRef: flowfoundry-catalog-creation@1.0.0
+    input:
+      tenantId: $.workflow.input.tenantId
+      assemblyId: $.workflow.input.assemblyId
+      catalogFiles: $.workflow.input.catalogFiles
+      artifactPaths: $.workflow.input.artifactPaths
+      requiredCapabilities: $.workflow.input.requiredCapabilities
+
+  - id: assembly
+    type: ACTION
+    uses: subgraph.execute
+    name: Phase 2 Assembly
+    dependencies:
+      - catalog-creation
+    config:
+      subgraphRef: flowfoundry-assembly@1.0.0
+    input:
+      tenantId: $.workflow.input.tenantId
+      assemblyId: $.workflow.input.assemblyId
+      targetApplicationName: $.workflow.input.targetApplicationName
+      defaultDeploymentTarget: $.workflow.input.defaultDeploymentTarget
+      sourceFileNames: $.workflow.input.sourceFileNames
+      sourceFiles: $.workflow.input.sourceFiles
+      artifactPaths: $.workflow.input.artifactPaths
+      catalogHash: $.nodes.catalog-creation.output.nodes.gate-step-03-catalog-verify.output.output.catalogHash
+      requiredAuthoringTools: $.workflow.input.requiredAuthoringTools
+      foundryStatusUrl: $.workflow.input.foundryStatusUrl
+      userMessage: $.workflow.input.userMessage
+      recursiveScope: $.workflow.input.recursiveScope
+      deploymentPolicy: $.workflow.input.deploymentPolicy
+
+  - id: export
+    type: ACTION
+    uses: subgraph.execute
+    name: Phase 3 Export
+    dependencies:
+      - assembly
+    config:
+      subgraphRef: flowfoundry-export@1.0.0
+    input:
+      tenantId: $.workflow.input.tenantId
+      assemblyId: $.workflow.input.assemblyId
+      sessionId: $.nodes.assembly.output.nodes.gate-step-09-session-intent-apply.output.output.finalSession.sessionId
+      expectedRevision: $.nodes.assembly.output.nodes.gate-step-09-session-intent-apply.output.output.finalSession.sceneRevision
+      sign: $.workflow.input.sign
+      deploymentPolicy: $.workflow.input.deploymentPolicy
+      artifactPaths: $.workflow.input.artifactPaths
+      downloadDir: $.workflow.input.downloadDir
+      flowBaseUrl: $.workflow.input.flowBaseUrl
+      foundryBaseUrl: $.workflow.input.foundryBaseUrl
+
+  - id: deployment
+    type: ACTION
+    uses: subgraph.execute
+    name: Phase 4 Deployment
+    dependencies:
+      - export
+    config:
+      subgraphRef: flowfoundry-deployment@1.0.0
+    input:
+      artifactPaths: $.workflow.input.artifactPaths
+      deploymentRoot: $.workflow.input.deploymentRoot
+      imageTags: $.workflow.input.imageTags
+
+  - id: api-documentation
+    type: ACTION
+    uses: subgraph.execute
+    name: Phase 5 API Documentation
+    dependencies:
+      - deployment
+    config:
+      subgraphRef: flowfoundry-api-documentation@1.0.0
+    input:
+      artifactPaths: $.workflow.input.artifactPaths
+      swaggerOutputDir: $.workflow.input.swaggerOutputDir
+      serverUrls: $.workflow.input.serverUrls
+edges:
+  - from: catalog-creation
+    to: assembly
+  - from: assembly
+    to: export
+  - from: export
+    to: deployment
+  - from: deployment
+    to: api-documentation
