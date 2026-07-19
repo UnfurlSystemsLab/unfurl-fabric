@@ -130,6 +130,7 @@ Tests cover:
 - Substrate profile determinism and secret exclusion.
 - Studio API record round trips and route behavior.
 - Foundry-compatible Studio tool gateway route behavior for HTTP authoring tools.
+- Tenant file registry and session-history behavior, including catalog file version selection and tenant isolation.
 - Dynamic DCP projection, layout, catalog, and session behavior.
 - Deployment policy and shape resolution.
 - Fabric-to-Flow integration scenarios.

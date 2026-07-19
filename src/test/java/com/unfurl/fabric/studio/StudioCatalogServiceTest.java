@@ -42,6 +42,7 @@ import java.util.jar.JarOutputStream;
 import java.util.zip.ZipInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class StudioCatalogServiceTest {
 
@@ -859,6 +860,81 @@ class StudioCatalogServiceTest {
                     assertThat(layout.selectedSurface()).isEqualTo("payment");
                     assertThat(layout.annotations()).contains("inspect payment replacement");
                 });
+    }
+
+    @Test
+    void tracksTenantFileVersionsAndBindsDraftsToSelectedCatalogFile(@TempDir Path dir) {
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService service = new StudioCatalogService(store);
+
+        List<StudioFileRecord> initialCatalogFiles = service.listFiles("tenant-a", "CATALOG", "", "");
+        assertThat(initialCatalogFiles).hasSize(1);
+        StudioFileRecord initialCatalog = initialCatalogFiles.get(0);
+        assertThat(initialCatalog.tenantId()).isEqualTo("tenant-a");
+        assertThat(initialCatalog.logicalFileId()).isEqualTo("tenant-catalog");
+        assertThat(initialCatalog.version()).isEqualTo(1);
+
+        service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
+
+        List<StudioFileRecord> catalogFiles = service.listFiles("tenant-a", "CATALOG", "", "");
+        assertThat(catalogFiles).hasSize(2);
+        StudioFileRecord selectedCatalog = catalogFiles.get(0);
+        assertThat(selectedCatalog.version()).isEqualTo(2);
+        assertThat(selectedCatalog.filePath()).contains("/studio/tenants/tenant-a/files/");
+
+        StudioCatalogVisualsResponse selectedCatalogVisuals =
+                service.listCatalogVisuals("tenant-a", selectedCatalog.fileId());
+        assertThat(selectedCatalogVisuals.catalogHash()).startsWith("sha256:");
+        assertThat(service.fileContent("tenant-a", selectedCatalog.fileId(), selectedCatalog.sha256()))
+                .isPresent()
+                .get()
+                .satisfies(content -> {
+                    assertThat(content.mediaType()).isEqualTo("application/json");
+                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8)).contains("uploaded:payment.yaml");
+                });
+
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-checkout",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-checkout",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "alice",
+                        "Alice",
+                        selectedCatalog.fileId(),
+                        "Checkout Flow Draft"));
+
+        assertThat(created.session().catalogFileId()).isEqualTo(selectedCatalog.fileId());
+        assertThat(created.session().baseCatalogHash()).isEqualTo(selectedCatalogVisuals.catalogHash());
+        assertThat(created.session().displayName()).isEqualTo("Checkout Flow Draft");
+        assertThat(service.listFiles("tenant-a", "", created.session().sessionId(), ""))
+                .extracting(StudioFileRecord::fileId)
+                .contains(selectedCatalog.fileId());
+        assertThat(service.listSessionHistory("tenant-a", "assembly-checkout"))
+                .singleElement()
+                .satisfies(history -> {
+                    assertThat(history.displayName()).isEqualTo("Checkout Flow Draft");
+                    assertThat(history.catalogFileId()).isEqualTo(selectedCatalog.fileId());
+                    assertThat(history.linkedFileCount()).isGreaterThanOrEqualTo(1);
+                });
+        assertThat(service.listFiles("tenant-b", "CATALOG", "", ""))
+                .extracting(StudioFileRecord::fileId)
+                .doesNotContain(selectedCatalog.fileId());
+        assertThatThrownBy(() -> service.listCatalogVisuals("tenant-b", selectedCatalog.fileId()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("tenant");
+
+        StudioCatalogService reloaded = new StudioCatalogService(store);
+        assertThat(reloaded.listSessionHistory("tenant-a", "assembly-checkout"))
+                .singleElement()
+                .extracting(StudioSessionHistoryItem::catalogFileId)
+                .isEqualTo(selectedCatalog.fileId());
     }
 
     @Test

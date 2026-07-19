@@ -70,9 +70,11 @@ public final class StudioToolGateway {
                 case "fabric.artifact-inventory" -> artifactInventoryTool(toolName, request.arguments());
                 case "fabric.catalog-admit" -> catalogAdmit(toolName, request.arguments());
                 case "fabric.catalog-verify" -> catalogVerify(toolName, request.arguments());
+                case "fabric.file-list" -> fileList(toolName, request.arguments());
                 case "fabric.assembly-create" -> assemblyCreate(toolName, request.arguments());
                 case "fabric.needs-extract" -> needsExtract(toolName, request.arguments());
                 case "fabric.session-start" -> sessionStart(toolName, request.arguments());
+                case "fabric.session-history" -> sessionHistory(toolName, request.arguments());
                 case "fabric.authoring-converse" -> authoringConverse(toolName, request.arguments());
                 case "fabric.session-intent-apply" -> sessionIntentApply(toolName, request.arguments());
                 case "fabric.dynamic-dcp-project" -> dynamicDcpProject(toolName, request.arguments());
@@ -1236,6 +1238,31 @@ public final class StudioToolGateway {
     }
 
     /**
+     * File-registry read adapter: lists tenant-isolated file rows for Flow and
+     * Foundry tools so agents can select catalog/export versions without direct
+     * filesystem access.
+     */
+    private StudioToolCallResult fileList(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String fileType = text(arguments, "fileType", "");
+        String sessionId = text(arguments, "sessionId", "");
+        String correlationId = text(arguments, "correlationId", "");
+        List<StudioFileRecord> files = service.listFiles(tenantId, fileType, sessionId, correlationId);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tenantId", tenantId);
+        payload.put("fileType", fileType);
+        payload.put("sessionId", sessionId);
+        payload.put("correlationId", correlationId);
+        payload.put("fileCount", files.size());
+        payload.put("files", files);
+        if (files.isEmpty() && "CATALOG".equalsIgnoreCase(fileType)) {
+            return gap(toolName, "no tenant catalog files are registered", payload,
+                    List.of("Which catalog artifact should be admitted before starting this draft?"));
+        }
+        return pass(toolName, payload);
+    }
+
+    /**
      * Assembly write adapter: creates the Studio assembly that later draft-session
      * tools will use as their tenant-scoped container.
      */
@@ -1269,10 +1296,64 @@ public final class StudioToolGateway {
         String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
         String assemblyId = text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID);
         StudioCreateDraftCompositionRequest request = typedRequest(arguments, StudioCreateDraftCompositionRequest.class);
+        if ((request.catalogFileId() == null || request.catalogFileId().isBlank())
+                && (request.baseCatalogHash() == null || request.baseCatalogHash().isBlank())) {
+            List<StudioFileRecord> catalogFiles = service.listFiles(tenantId, "CATALOG", "", "");
+            if (catalogFiles.isEmpty()) {
+                return gap(toolName, "session-start requires an admitted tenant catalog", Map.of(
+                        "tenantId", tenantId,
+                        "assemblyId", assemblyId),
+                        List.of("Which catalog file should Fabric admit before the draft starts?"));
+            }
+            StudioFileRecord latestCatalog = catalogFiles.getFirst();
+            request = new StudioCreateDraftCompositionRequest(
+                    request.tenantId(),
+                    request.assemblyId(),
+                    request.baseCatalogHash(),
+                    request.needsId(),
+                    request.trustPolicyId(),
+                    request.initialCandidateId(),
+                    request.collaboratorId(),
+                    request.collaboratorName(),
+                    latestCatalog.fileId(),
+                    request.displayName());
+        }
+        StudioCreateDraftCompositionResponse response = service.createDraftSession(tenantId, assemblyId, request);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tenantId", tenantId);
+        payload.put("assemblyId", assemblyId);
+        payload.put("response", response);
+        selectedCatalogFile(tenantId, response.session().catalogFileId())
+                .ifPresent(file -> payload.put("catalogFile", file));
+        return pass(toolName, payload);
+    }
+
+    /**
+     * Session-history read adapter: exposes tenant-scoped draft sessions for
+     * agents that need to continue, fork, or name a new workspace.
+     */
+    private StudioToolCallResult sessionHistory(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String assemblyId = text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID);
+        List<StudioSessionHistoryItem> sessions = service.listSessionHistory(tenantId, assemblyId);
         return pass(toolName, Map.of(
                 "tenantId", tenantId,
                 "assemblyId", assemblyId,
-                "response", service.createDraftSession(tenantId, assemblyId, request)));
+                "sessionCount", sessions.size(),
+                "sessions", sessions));
+    }
+
+    /**
+     * Registry lookup helper: finds a catalog file row by id for enriched tool
+     * output while preserving tenant isolation in the service layer.
+     */
+    private Optional<StudioFileRecord> selectedCatalogFile(String tenantId, String catalogFileId) {
+        if (catalogFileId == null || catalogFileId.isBlank()) {
+            return Optional.empty();
+        }
+        return service.listFiles(tenantId, "CATALOG", "", "").stream()
+                .filter(file -> catalogFileId.equals(file.fileId()))
+                .findFirst();
     }
 
     /**
@@ -1667,9 +1748,11 @@ public final class StudioToolGateway {
                 "fabric.artifact-inventory",
                 "fabric.catalog-admit",
                 "fabric.catalog-verify",
+                "fabric.file-list",
                 "fabric.assembly-create",
                 "fabric.needs-extract",
                 "fabric.session-start",
+                "fabric.session-history",
                 "fabric.authoring-converse",
                 "fabric.session-intent-apply",
                 "fabric.dynamic-dcp-project",

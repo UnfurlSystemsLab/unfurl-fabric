@@ -57,6 +57,15 @@ The Studio API is intentionally lightweight and currently built on `com.sun.net.
 
 Studio state is tenant and assembly scoped. Draft sessions support intent history, collaborator heartbeat, compile, layout persistence, dynamic DCP projection, and server-sent event updates. Event transport can be in-memory, Redis, or Kafka depending on `StudioMicroserviceConfig`.
 
+Studio also owns a tenant-isolated file registry read model for operator-visible inputs and generated artifacts. The
+registry is shaped as two database tables even when the local development server persists it through `StudioStateStore`:
+`studio_files` stores immutable file versions (`file_id`, `tenant_id`, `logical_file_id`, `version`, `file_name`,
+`file_title`, `file_path`, `file_type`, `media_type`, `sha256`, `created_at`) and `studio_session_files` links those
+files to a `session_id` or correlation id for history. Catalogs are first-class file versions, so a new draft can bind
+to a selected tenant catalog file instead of relying on whatever catalog response the browser last cached. Sessions use
+the selected catalog file id and resolved catalog hash as provenance, and historical sessions are shown by tenant with a
+display name derived from the draft/catalog title unless the caller supplies a title.
+
 Dynamic DCP has two read-model modes. Catalog mode is available when no draft session is supplied and is used only for catalog browsing or preview guidance. Draft-session mode is authoritative for Studio composition inspection: it replays the accepted session intent log to derive the same catalog-entry inventory that compile uses, grounds those entries in the tenant catalog, and projects only that draft inventory.
 
 ## Architectural Invariants
@@ -65,6 +74,8 @@ Dynamic DCP has two read-model modes. Catalog mode is available when no draft se
 - Contract validity comes from catalog claims, needs, trust policy, substrate support, and deployment policy.
 - Signed root DCP contracts are the handoff artifact; support and diagnostic artifacts must not change validity.
 - Catalog entries and claims are content pinned.
+- Studio file rows are tenant isolated and immutable by version; session-file links must include the same tenant id as
+  the referenced file.
 - Ambiguous selection requires an explicit operator or CLI choice.
 - Studio endpoints are development-oriented unless surrounded by an authenticated deployment boundary.
 

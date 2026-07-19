@@ -1,5 +1,6 @@
 package com.unfurl.fabric.studio;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -289,6 +290,44 @@ class StudioServerTest {
                     .contains("\"catalogEntryId\":\"uploaded:" + uploadedJarName + "\"")
                     .contains("\"connections\"")
                     .contains("\"replacements\"");
+        }
+    }
+
+    @Test
+    void servesTenantFileRegistryAndSessionHistoryRoutes() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> files = get(server, "/studio/tenants/tenant-a/files?fileType=CATALOG");
+            assertThat(files.statusCode()).isEqualTo(200);
+            List<StudioFileRecord> fileRows = StudioJson.mapper()
+                    .readValue(files.body(), new TypeReference<>() {});
+            assertThat(fileRows).isNotEmpty();
+            StudioFileRecord catalogFile = fileRows.get(0);
+
+            HttpResponse<String> selectedCatalog = get(
+                    server,
+                    "/studio/tenants/tenant-a/catalog?catalogFileId="
+                            + URLEncoder.encode(catalogFile.fileId(), StandardCharsets.UTF_8));
+            assertThat(selectedCatalog.statusCode()).isEqualTo(200);
+            assertThat(selectedCatalog.body()).contains("\"catalogHash\":\"sha256:");
+
+            HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
+                    {
+                      "catalogFileId": "%s",
+                      "displayName": "Tenant Catalog Draft",
+                      "collaboratorId": "alice",
+                      "collaboratorName": "Alice"
+                    }
+                    """.formatted(catalogFile.fileId()));
+            assertThat(created.statusCode()).isEqualTo(200);
+            assertThat(created.body())
+                    .contains("\"catalogFileId\":\"" + catalogFile.fileId() + "\"")
+                    .contains("\"displayName\":\"Tenant Catalog Draft\"");
+
+            HttpResponse<String> history = get(server, "/studio/tenants/tenant-a/sessions?assemblyId=assembly-demo");
+            assertThat(history.statusCode()).isEqualTo(200);
+            assertThat(history.body())
+                    .contains("\"displayName\":\"Tenant Catalog Draft\"")
+                    .contains("\"catalogFileId\":\"" + catalogFile.fileId() + "\"");
         }
     }
 
@@ -653,6 +692,21 @@ class StudioServerTest {
                     .contains("\"status\":\"GAP\"")
                     .contains("missing.capability");
 
+            HttpResponse<String> fileList = post(server, "/studio/tools/fabric.file-list", """
+                    {
+                      "callId": "catalog-files",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "fileType": "CATALOG"
+                      }
+                    }
+                    """);
+            assertThat(fileList.statusCode()).isEqualTo(200);
+            assertThat(fileList.body())
+                    .contains("\"success\":true")
+                    .contains("\"status\":\"PASS\"")
+                    .contains("\"fileType\":\"CATALOG\"");
+
             HttpResponse<String> assembly = post(server, "/studio/tools/fabric.assembly-create", """
                     {
                       "callId": "assembly",
@@ -689,6 +743,22 @@ class StudioServerTest {
                     .readValue(session.body(), StudioToolCallResult.class);
             String sessionId = sessionId(sessionResult);
             assertThat(sessionId).startsWith("studio-session-");
+            assertThat(session.body()).contains("\"catalogFileId\"", "\"catalogFile\"");
+
+            HttpResponse<String> history = post(server, "/studio/tools/fabric.session-history", """
+                    {
+                      "callId": "history",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "assemblyId": "assembly-tools"
+                      }
+                    }
+                    """);
+            assertThat(history.statusCode()).isEqualTo(200);
+            assertThat(history.body())
+                    .contains("\"success\":true")
+                    .contains("\"status\":\"PASS\"")
+                    .contains(sessionId);
 
             HttpResponse<String> intent = post(server, "/studio/tools/fabric.session-intent-apply", """
                     {

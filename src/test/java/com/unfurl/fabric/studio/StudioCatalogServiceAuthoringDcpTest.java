@@ -73,6 +73,68 @@ class StudioCatalogServiceAuthoringDcpTest {
     }
 
     @Test
+    void passesCatalogFilesAndSessionHistoryToFoundryContext() {
+        AtomicReference<ContractInvocation> seen = new AtomicReference<>();
+        StudioCatalogService service = new StudioCatalogService();
+        StudioFileRecord catalogFile = service.listFiles("tenant-local", "CATALOG", "", "").getFirst();
+        service.createDraftSession("tenant-local", "assembly-demo", new StudioCreateDraftCompositionRequest(
+                "tenant-local",
+                "assembly-demo",
+                "",
+                "",
+                "",
+                "",
+                "alice",
+                "Alice",
+                catalogFile.fileId(),
+                "Historical Flowfoundry Draft"));
+        service.useAuthoringInvocable(new ContractInvocable() {
+            @Override
+            public String contractId() {
+                return "urn:unfurl:fabric:authoring";
+            }
+
+            @Override
+            public String contractVersion() {
+                return "1.0.0";
+            }
+
+            @Override
+            public ContractInvocationResult invoke(ContractInvocation invocation, ExecutionContext context) {
+                seen.set(invocation);
+                return new ContractInvocationResult(true, Map.of(
+                        "kind", "gap",
+                        "assistantMessage", "captured",
+                        "unmet", List.of()), null, null, Map.of());
+            }
+        });
+
+        service.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local",
+                "assembly-demo",
+                "",
+                catalogFile.fileId(),
+                "Authoring Flowfoundry Draft",
+                List.of(),
+                "create the Flowfoundry environment"));
+
+        Map<String, Object> input = seen.get().input();
+        assertThat(input).containsKeys("catalogHash", "session", "catalogFile", "catalogFiles", "sessionHistory");
+        assertThat(stringMap(input.get("catalogFile")))
+                .containsEntry("fileId", catalogFile.fileId())
+                .containsEntry("fileType", "CATALOG");
+        assertThat(stringMap(input.get("session")))
+                .containsEntry("catalogFileId", catalogFile.fileId())
+                .containsEntry("displayName", "Authoring Flowfoundry Draft");
+        assertThat((List<?>) input.get("catalogFiles"))
+                .anySatisfy(file -> assertThat(stringMap(file)).containsEntry("fileId", catalogFile.fileId()));
+        assertThat((List<?>) input.get("sessionHistory"))
+                .anySatisfy(session -> assertThat(stringMap(session))
+                        .containsEntry("displayName", "Historical Flowfoundry Draft")
+                        .containsEntry("catalogFileId", catalogFile.fileId()));
+    }
+
+    @Test
     void rejectsProposalWhoseComponentIsNotAdmittedInTheCatalog() {
         // The agent proposes a component the tenant's admitted catalog does not contain.
         StudioCatalogService service = new StudioCatalogService()
@@ -158,5 +220,14 @@ class StudioCatalogServiceAuthoringDcpTest {
                 return new ContractInvocationResult(true, output, null, null, Map.of());
             }
         };
+    }
+
+    /**
+     * Assertion helper: casts JSON-like objects produced by the context projector
+     * into string-keyed maps so AssertJ can verify expected entries.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> stringMap(Object value) {
+        return (Map<String, Object>) value;
     }
 }

@@ -49,6 +49,8 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 | Method | Path | Query | Request | Response |
 |---|---|---|---|---|
 | `GET` | `/studio/tenants/{tenantId}/catalog` | | | `StudioCatalogVisualsResponse` |
+| `GET` | `/studio/tenants/{tenantId}/files` | `fileType`, `sessionId`, `correlationId` optional | | `List<StudioFileRecord>` |
+| `GET` | `/studio/tenants/{tenantId}/files/{fileId}/content` | `sha256` optional | | File content when Studio owns the bytes |
 | `GET` | `/studio/tenants/{tenantId}/catalog/snapshot` | | | `StudioCatalogSnapshot` |
 | `POST` | `/studio/tenants/{tenantId}/catalog/snapshot` | | `StudioCatalogSnapshot` | `StudioCatalogVisualsResponse` |
 | `POST` | `/studio/tenants/{tenantId}/catalog/admissions` | | `StudioCatalogAdmissionRequest` | `StudioCatalogAdmissionResponse` |
@@ -57,6 +59,10 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 | `GET` | `/studio/tenants/{tenantId}/diagnostic-artifacts/{artifactId}/content` | `sha256` required | | Hash-pinned diagnostic artifact |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}` | | | `StudioVisualAsset` |
 | `GET` | `/studio/tenants/{tenantId}/assets/{assetId}/content` | `sha256` optional | | Binary asset content |
+
+`GET /catalog` may receive `catalogFileId` as an optional query parameter. Without it, Studio returns the tenant's active
+catalog. With it, Studio resolves the catalog from the tenant-isolated file registry and returns the immutable catalog
+version associated with that file id. A `catalogFileId` from another tenant is invalid.
 
 Catalog admissions accept uploaded component artifact drafts and update the tenant catalog after DCP claim verification.
 Each draft may carry `claimYaml`, containing either a pure DCP `Claim` YAML document or a catalog manifest with a
@@ -82,6 +88,29 @@ Catalog snapshots are tenant-scoped portable JSON state. Saving a catalog return
 and catalog hash Fabric currently serves to Studio. Loading a catalog replaces only the addressed tenant catalog; the
 route tenant remains the isolation boundary even when the JSON was saved from another tenant. The loaded entries remain
 subject to the same downstream intent validation and catalog-grounding checks as admitted entries.
+
+Catalog admissions, catalog removal, and catalog snapshot loads also create immutable `CATALOG` rows in the tenant file
+registry. The latest row for logical file id `tenant-catalog` is the default catalog version shown by New Draft. Each row
+keeps a display `fileTitle` separate from the physical `fileName` so the UI can show readable catalog/session titles
+without changing stored artifact names or paths.
+
+The file registry uses these read-model records:
+
+```json
+{
+  "fileId": "file-...",
+  "tenantId": "tenant-local",
+  "logicalFileId": "tenant-catalog",
+  "version": 3,
+  "fileName": "catalog-3d7345.json",
+  "fileTitle": "Tenant Catalog v3",
+  "filePath": "/studio/tenants/tenant-local/files/file-.../content",
+  "fileType": "CATALOG",
+  "mediaType": "application/json",
+  "sha256": "sha256:...",
+  "createdAt": "2026-07-19T..."
+}
+```
 
 Studio responses that produce or transform operator-visible state may also include `supportArtifacts` and
 `diagnosticArtifacts`. Support artifacts use the export endpoint and are required companions for later packaging or
@@ -146,6 +175,7 @@ Layout is UI state and must not be used as a contract validity source.
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/intents` | `StudioIntentRequest` | `StudioIntentResponse` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/compile` | `StudioCompileDraftCandidateRequest` | `StudioCompileDraftCandidateResponse` |
 | `GET` | `/studio/tenants/{tenantId}/exports/{artifactId}/content` | `sha256` | `StudioExportArtifact` content |
+| `GET` | `/studio/tenants/{tenantId}/sessions` | `assemblyId` optional | `List<StudioSessionHistoryItem>` |
 
 `StudioIntentRequest` records governed operator edits in the session intent log.
 `ADD_COMPONENT` and `REPLACE_COMPONENT` advance the current candidate pointer to
@@ -180,6 +210,32 @@ Signing requires an operator-configured Studio signing key pair; when signing is
 requested without configured keys, Studio emits unsigned artifacts with an
 explicit warning rather than fabricating a signature.
 
+`StudioCreateDraftCompositionRequest` accepts optional `catalogFileId` and `displayName`. When `catalogFileId` is
+present, Fabric resolves the selected tenant catalog file, sets the draft `baseCatalogHash` from that file's immutable
+snapshot, records the catalog file id on the session, and creates a `studio_session_files` link with role `INPUT`. When
+the request omits a display name, Fabric derives one from the selected catalog title and assembly id. The session response
+contains the provenance fields so historical sessions can be rendered without re-reading the draft diagnostic artifact:
+`catalogFileId`, `displayName`, `sessionType`, `status`, `createdAt`, `updatedAt`, and `lastOpenedAt`.
+
+`GET /sessions` returns tenant-scoped historical sessions sorted by most recently updated/opened first. The response rows
+include session id, assembly id, display name, status/type, selected catalog file id, catalog hash, timestamps, and counts
+for linked files and accepted intents. This route is intentionally tenant-level so Studio can render a ChatGPT-style
+history panel across assemblies while still accepting `assemblyId` as an optional filter.
+
+The session-file link read model uses `tenantId` on both sides of the association:
+
+```json
+{
+  "id": "link-...",
+  "tenantId": "tenant-local",
+  "sessionId": "studio-session-...",
+  "correlationId": "compile-...",
+  "fileId": "file-...",
+  "role": "OUTPUT",
+  "createdAt": "2026-07-19T..."
+}
+```
+
 ## Session Events
 
 | Method | Path | Query | Response |
@@ -207,6 +263,11 @@ open.
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
 Fabric sets `invocation.metadata.executionMode=harness` on Foundry-backed authoring calls so the governed Foundry
 agent harness can call proposal tools until a terminal `clarify`, `gap`, or `proposal` response is produced.
+`StudioAuthoringConverseRequest` may carry `catalogFileId`. Fabric resolves that tenant catalog file before building
+the authoring context. When no session id is supplied, the authoring session is started from the requested catalog file
+or, when absent, from the latest tenant `CATALOG` file version. Foundry receives `catalogFile`, `catalogFiles`,
+`sessionHistory`, and `catalogHash` in the `agent.run` input so it can ask clarification questions using real tenant
+state instead of asking the operator for filesystem paths or raw hashes.
 Foundry-backed authoring responses that claim `kind=execution` are rejected as gaps because Flow owns Flowfoundry
 runbook DAG execution. Runbook steps call Studio tools through Flow nodes and consume Flow artifact outputs instead of
 conversation text.
@@ -236,6 +297,8 @@ runtime authority separation is required.
 - `fabric.artifact-inventory`
 - `fabric.catalog-admit`
 - `fabric.catalog-verify`
+- `fabric.file-list`
+- `fabric.session-history`
 - `fabric.assembly-create`
 - `fabric.needs-extract`
 - `fabric.session-start`
@@ -273,6 +336,16 @@ services where possible:
 it may also accept `artifactInventoryPath` or an inline `artifactInventory` object produced by Step 1; the gateway turns
 inventory entries into JAR `artifactBase64` drafts and delegates to the same catalog admission service. This is a local
 tool-runner convenience for already-inventoried files, not a public tenant upload shortcut.
+
+`fabric.file-list` delegates to the tenant file registry and returns immutable file-version rows with optional
+`fileType`, `sessionId`, and `correlationId` filters. Step 6 should use it to select a `CATALOG` file id before starting
+a draft. `fabric.session-history` delegates to tenant session history so an authoring agent can ask whether to continue
+an existing draft or create a new one without scraping diagnostic artifacts.
+
+`fabric.session-start` accepts the same `catalogFileId` and `displayName` fields as
+`StudioCreateDraftCompositionRequest`. If neither `catalogFileId` nor a nonblank `baseCatalogHash` is supplied, the
+gateway resolves the latest tenant `CATALOG` file and starts the draft from that file id. If no catalog file exists, it
+returns a `GAP` with a question asking which catalog should be admitted or selected.
 
 Every Studio tool gateway call may include `outputPath`. When supplied, the gateway writes the canonical PASS/GAP tool
 output to that local run artifact path and returns SHA-256 metadata. This is the artifact handoff used by Flow runbook

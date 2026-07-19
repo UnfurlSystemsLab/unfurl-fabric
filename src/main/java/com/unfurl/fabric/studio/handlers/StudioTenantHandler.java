@@ -28,6 +28,15 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * HTTP adapter: routes tenant-scoped Fabric Studio requests to
+ * `StudioCatalogService`.
+ *
+ * <p>Pattern: adapter/controller for the lightweight JDK `HttpServer`.
+ * Responsibilities include route parsing, tenant-header authorization, JSON
+ * serialization, and converting recoverable failures into JSON responses rather
+ * than dropped proxy sockets.
+ */
 public final class StudioTenantHandler {
     private final StudioCatalogService service;
     private final ObjectMapper mapper;
@@ -56,7 +65,38 @@ public final class StudioTenantHandler {
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogList()) {
-                write(exchange, 200, service.listCatalogVisuals(route.tenantId()));
+                write(exchange, 200, service.listCatalogVisuals(route.tenantId(), queryParam(exchange, "catalogFileId")));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.files()) {
+                write(exchange, 200, service.listFiles(
+                        route.tenantId(),
+                        queryParam(exchange, "fileType"),
+                        queryParam(exchange, "sessionId"),
+                        queryParam(exchange, "correlationId")));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.fileContent()) {
+                service.fileContent(route.tenantId(), route.fileId(), queryParam(exchange, "sha256"))
+                        .ifPresentOrElse(
+                                content -> {
+                                    try {
+                                        writeBinary(exchange, 200, content.mediaType(), content.bytes());
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                },
+                                () -> {
+                                    try {
+                                        write(exchange, 404, Map.of("error", "file is unavailable or hash verification failed"));
+                                    } catch (IOException ex) {
+                                        throw new IllegalStateException(ex);
+                                    }
+                                });
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.sessionHistory()) {
+                write(exchange, 200, service.listSessionHistory(route.tenantId(), queryParam(exchange, "assemblyId")));
                 return;
             }
             if ("GET".equals(exchange.getRequestMethod()) && route.catalogSnapshot()) {
@@ -365,7 +405,7 @@ public final class StudioTenantHandler {
         return "true".equalsIgnoreCase(value);
     }
 
-    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String exportArtifactId, String sessionId, String catalogEntryId, String tail) {
+    private record Route(String tenantId, String assemblyId, String assetId, String admissionId, String diagnosticArtifactId, String exportArtifactId, String fileId, String sessionId, String catalogEntryId, String tail) {
         static Route parse(String path) {
             String prefix = "/studio/tenants/";
             if (!path.startsWith(prefix)) {
@@ -383,6 +423,7 @@ public final class StudioTenantHandler {
             String admissionId = "";
             String diagnosticArtifactId = "";
             String exportArtifactId = "";
+            String fileId = "";
             String sessionId = "";
             String catalogEntryId = "";
             String admissionPrefix = "catalog/admissions/";
@@ -411,6 +452,15 @@ public final class StudioTenantHandler {
                 tail = exportSlash >= 0
                         ? exportPrefix + "{artifactId}/" + exportRemainder.substring(exportSlash + 1)
                         : exportPrefix + "{artifactId}";
+            }
+            String filePrefix = "files/";
+            if (tail.startsWith(filePrefix)) {
+                String fileRemainder = tail.substring(filePrefix.length());
+                int fileSlash = fileRemainder.indexOf('/');
+                fileId = decode(fileSlash >= 0 ? fileRemainder.substring(0, fileSlash) : fileRemainder);
+                tail = fileSlash >= 0
+                        ? filePrefix + "{fileId}/" + fileRemainder.substring(fileSlash + 1)
+                        : filePrefix + "{fileId}";
             }
             String assemblyPrefix = "assemblies/";
             if (tail.startsWith(assemblyPrefix)) {
@@ -453,7 +503,7 @@ public final class StudioTenantHandler {
                         ? sessionPrefix + "{sessionId}/" + sessionRemainder.substring(sessionSlash + 1)
                         : sessionPrefix + "{sessionId}";
             }
-            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, exportArtifactId, sessionId, catalogEntryId, tail);
+            return new Route(tenant, assembly, assetId, admissionId, diagnosticArtifactId, exportArtifactId, fileId, sessionId, catalogEntryId, tail);
         }
 
         boolean catalogList() {
@@ -462,6 +512,27 @@ public final class StudioTenantHandler {
 
         boolean catalogAdmission() {
             return "catalog/admissions".equals(tail);
+        }
+
+        /**
+         * Route predicate: matches tenant-scoped file registry reads.
+         */
+        boolean files() {
+            return "files".equals(tail);
+        }
+
+        /**
+         * Route predicate: matches tenant-scoped file registry content reads.
+         */
+        boolean fileContent() {
+            return "files/{fileId}/content".equals(tail);
+        }
+
+        /**
+         * Route predicate: matches tenant-level historical draft sessions.
+         */
+        boolean sessionHistory() {
+            return "sessions".equals(tail);
         }
 
         boolean catalogSnapshot() {

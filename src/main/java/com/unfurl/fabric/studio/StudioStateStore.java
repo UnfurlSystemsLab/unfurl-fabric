@@ -9,6 +9,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Repository adapter: persists the lightweight Studio read models used by the
+ * local JDK HTTP server.
+ *
+ * <p>Pattern: persistence adapter. Production deployments can replace this
+ * JSON-backed adapter with a database-backed implementation without changing
+ * the application service records. Invariants: state is normalized on every
+ * read/write, and all tenant-scoped maps remain keyed by tenant id.
+ */
 public final class StudioStateStore {
     private final Path path;
     private final ObjectMapper mapper;
@@ -63,18 +72,31 @@ public final class StudioStateStore {
             Map<String, List<StudioVisualCatalogEntry>> entriesByTenant,
             Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant,
             Map<String, Map<String, StudioLayoutState>> layoutsByTenant,
-            Map<String, Map<String, StudioDraftSession>> sessionsByTenant
+            Map<String, Map<String, StudioDraftSession>> sessionsByTenant,
+            Map<String, Map<String, StudioFileRecord>> filesByTenant,
+            Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant,
+            Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant
     ) {
+        /**
+         * Factory: builds an empty normalized state for first-run Studio stores.
+         */
         public static State empty() {
-            return new State(Map.of(), Map.of(), Map.of(), Map.of());
+            return new State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
         }
 
+        /**
+         * Normalizer: copies nullable persisted maps into immutable, tenant-keyed
+         * structures so service code can safely hydrate concurrent working maps.
+         */
         public State normalized() {
             return new State(
                     entriesByTenant == null ? Map.of() : copyEntries(entriesByTenant),
                     assembliesByTenant == null ? Map.of() : copyAssemblies(assembliesByTenant),
                     layoutsByTenant == null ? Map.of() : copyLayouts(layoutsByTenant),
-                    sessionsByTenant == null ? Map.of() : copySessions(sessionsByTenant));
+                    sessionsByTenant == null ? Map.of() : copySessions(sessionsByTenant),
+                    filesByTenant == null ? Map.of() : copyFiles(filesByTenant),
+                    sessionFileLinksByTenant == null ? Map.of() : copyLinks(sessionFileLinksByTenant),
+                    catalogSnapshotsByTenant == null ? Map.of() : copySnapshots(catalogSnapshotsByTenant));
         }
 
         private static Map<String, List<StudioVisualCatalogEntry>> copyEntries(
@@ -106,6 +128,30 @@ public final class StudioStateStore {
         ) {
             Map<String, Map<String, StudioDraftSession>> copy = new HashMap<>();
             source.forEach((tenant, sessions) -> copy.put(tenant, sessions == null ? Map.of() : Map.copyOf(sessions)));
+            return copy;
+        }
+
+        private static Map<String, Map<String, StudioFileRecord>> copyFiles(
+                Map<String, Map<String, StudioFileRecord>> source
+        ) {
+            Map<String, Map<String, StudioFileRecord>> copy = new HashMap<>();
+            source.forEach((tenant, files) -> copy.put(tenant, files == null ? Map.of() : Map.copyOf(files)));
+            return copy;
+        }
+
+        private static Map<String, List<StudioSessionFileLink>> copyLinks(
+                Map<String, List<StudioSessionFileLink>> source
+        ) {
+            Map<String, List<StudioSessionFileLink>> copy = new HashMap<>();
+            source.forEach((tenant, links) -> copy.put(tenant, links == null ? List.of() : List.copyOf(links)));
+            return copy;
+        }
+
+        private static Map<String, Map<String, StudioCatalogSnapshot>> copySnapshots(
+                Map<String, Map<String, StudioCatalogSnapshot>> source
+        ) {
+            Map<String, Map<String, StudioCatalogSnapshot>> copy = new HashMap<>();
+            source.forEach((tenant, snapshots) -> copy.put(tenant, snapshots == null ? Map.of() : Map.copyOf(snapshots)));
             return copy;
         }
     }

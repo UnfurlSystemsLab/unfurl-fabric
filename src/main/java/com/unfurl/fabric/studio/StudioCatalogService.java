@@ -114,6 +114,9 @@ public final class StudioCatalogService {
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioDraftSession>> sessionsByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioFileRecord>> filesByTenant = new ConcurrentHashMap<>();
+    private final Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssetContent>> claimBundlesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssetContent>> diagnosticArtifactsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssetContent>> exportArtifactsByTenant = new ConcurrentHashMap<>();
@@ -163,17 +166,124 @@ public final class StudioCatalogService {
                     layoutsByTenant.put(tenant, new ConcurrentHashMap<>(layouts)));
             state.sessionsByTenant().forEach((tenant, sessions) ->
                     sessionsByTenant.put(tenant, new ConcurrentHashMap<>(sessions)));
+            state.filesByTenant().forEach((tenant, files) ->
+                    filesByTenant.put(tenant, new ConcurrentHashMap<>(files)));
+            state.sessionFileLinksByTenant().forEach((tenant, links) ->
+                    sessionFileLinksByTenant.put(tenant, List.copyOf(links)));
+            state.catalogSnapshotsByTenant().forEach((tenant, snapshots) ->
+                    catalogSnapshotsByTenant.put(tenant, new ConcurrentHashMap<>(snapshots)));
         }
     }
 
     public StudioCatalogVisualsResponse listCatalogVisuals(String tenantId) {
+        return listCatalogVisuals(tenantId, "");
+    }
+
+    /**
+     * Query handler: returns either the tenant's active catalog or an immutable
+     * catalog version selected from the tenant file registry.
+     *
+     * <p>Pattern: read-model projector. Catalog file ids are resolved inside the
+     * route tenant so a browser cannot bind a draft to another tenant's catalog
+     * by guessing a file id.
+     */
+    public StudioCatalogVisualsResponse listCatalogVisuals(String tenantId, String catalogFileId) {
         String tenant = normalizeTenant(tenantId);
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries;
+        if (catalogFileId != null && !catalogFileId.isBlank()) {
+            entries = catalogSnapshotForFile(tenant, catalogFileId).entries();
+        } else {
+            entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+            ensureCatalogFile(tenant, entries, "");
+        }
         StudioCatalogVisualsResponse snapshot = response(entries);
         return new StudioCatalogVisualsResponse(
                 snapshot.catalogHash(),
                 snapshot.entries(),
                 List.of(diagnosticArtifact(tenant, "catalog-snapshot", "catalog.json", snapshot)));
+    }
+
+    /**
+     * Query handler: returns tenant-isolated file registry rows, optionally
+     * scoped by file type and session/correlation links.
+     *
+     * <p>Pattern: repository read facade. Before listing catalog files, the
+     * active tenant catalog is materialized as a registry version so New Draft
+     * can show a deterministic latest catalog even on a fresh server.
+     */
+    public List<StudioFileRecord> listFiles(
+            String tenantId,
+            String fileType,
+            String sessionId,
+            String correlationId
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries), "");
+        Set<String> scopedFileIds = linkedFileIds(tenant, sessionId, correlationId);
+        String normalizedType = fileType == null ? "" : fileType.trim();
+        return filesByTenant
+                .getOrDefault(tenant, Map.of())
+                .values()
+                .stream()
+                .filter(file -> normalizedType.isBlank() || normalizedType.equalsIgnoreCase(file.fileType()))
+                .filter(file -> scopedFileIds == null || scopedFileIds.contains(file.fileId()))
+                .sorted(Comparator
+                        .comparing(StudioFileRecord::createdAt).reversed()
+                        .thenComparing(Comparator.comparingInt(StudioFileRecord::version).reversed())
+                        .thenComparing(StudioFileRecord::fileName))
+                .toList();
+    }
+
+    /**
+     * Query handler: projects tenant draft sessions into compact historical
+     * sidebar rows sorted by most recent activity.
+     */
+    public List<StudioSessionHistoryItem> listSessionHistory(String tenantId, String assemblyId) {
+        String tenant = normalizeTenant(tenantId);
+        String assemblyFilter = assemblyId == null ? "" : assemblyId.trim();
+        Map<String, Long> linkedCounts = linkedFileCountBySession(tenant);
+        return sessionsByTenant
+                .getOrDefault(tenant, Map.of())
+                .values()
+                .stream()
+                .filter(session -> assemblyFilter.isBlank() || normalizeAssembly(assemblyFilter).equals(session.assemblyId()))
+                .map(session -> new StudioSessionHistoryItem(
+                        session.tenantId(),
+                        session.assemblyId(),
+                        session.sessionId(),
+                        session.displayName(),
+                        session.sessionType(),
+                        session.status(),
+                        session.baseCatalogHash(),
+                        session.catalogFileId(),
+                        session.createdAt(),
+                        session.updatedAt(),
+                        session.lastOpenedAt(),
+                        Math.toIntExact(linkedCounts.getOrDefault(session.sessionId(), 0L)),
+                        session.intentLog().size()))
+                .sorted(Comparator
+                        .comparing(StudioSessionHistoryItem::lastOpenedAt).reversed()
+                        .thenComparing(StudioSessionHistoryItem::updatedAt).reversed()
+                        .thenComparing(StudioSessionHistoryItem::sessionId))
+                .toList();
+    }
+
+    /**
+     * Download accessor: serves tenant-owned file registry content when Studio
+     * owns the bytes and the optional hash pin matches.
+     */
+    public Optional<StudioAssetContent> fileContent(String tenantId, String fileId, String requestedSha256) {
+        String tenant = normalizeTenant(tenantId);
+        StudioFileRecord file = filesByTenant
+                .getOrDefault(tenant, Map.of())
+                .get(fileId == null ? "" : fileId.trim());
+        if (file == null) {
+            return Optional.empty();
+        }
+        Optional<StudioAssetContent> content = contentForFileRecord(tenant, file);
+        return content.filter(asset -> requestedSha256 == null
+                || requestedSha256.isBlank()
+                || asset.sha256().equals(requestedSha256));
     }
 
     /**
@@ -184,6 +294,7 @@ public final class StudioCatalogService {
         String tenant = normalizeTenant(tenantId);
         List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
         StudioCatalogVisualsResponse catalog = response(entries);
+        ensureCatalogFile(tenant, entries, "");
         StudioCatalogSnapshot snapshot = new StudioCatalogSnapshot(
                 tenant,
                 catalog.catalogHash(),
@@ -210,6 +321,7 @@ public final class StudioCatalogService {
                 .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
                 .toList();
         entriesByTenant.put(tenant, List.copyOf(entries));
+        ensureCatalogFile(tenant, entries, "Loaded Catalog");
         persist();
         StudioCatalogVisualsResponse catalog = response(entries);
         return new StudioCatalogVisualsResponse(
@@ -281,6 +393,7 @@ public final class StudioCatalogService {
 
         entries.sort(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId));
         entriesByTenant.put(tenant, List.copyOf(entries));
+        ensureCatalogFile(tenant, entries, "Admitted Catalog");
         persist();
         boolean allVerified = !results.isEmpty()
                 && results.stream().allMatch(result -> "VERIFIED".equals(result.status()));
@@ -322,6 +435,7 @@ public final class StudioCatalogService {
             throw new IllegalArgumentException("catalog entry not found: " + catalogEntryId);
         }
         entriesByTenant.put(tenant, List.copyOf(entries));
+        ensureCatalogFile(tenant, entries, "Curated Catalog");
         persist();
         StudioCatalogVisualsResponse catalog = response(entries);
         StudioCatalogRemovalResponse response = new StudioCatalogRemovalResponse(
@@ -829,7 +943,12 @@ public final class StudioCatalogService {
                 : request;
         String tenant = normalizeTenant(safe.tenantId());
         String assembly = normalizeAssembly(safe.assemblyId());
-        StudioDraftSession session = authoringSession(tenant, assembly, safe.sessionId());
+        StudioDraftSession session = authoringSession(
+                tenant,
+                assembly,
+                safe.sessionId(),
+                safe.catalogFileId(),
+                safe.displayName());
 
         if (authoringInvocable != null) {
             return converseViaDcp(safe, tenant, assembly, session);
@@ -865,7 +984,7 @@ public final class StudioCatalogService {
                     List.of("uncatalogued.capability"));
         }
 
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
         if (entries.isEmpty()) {
             return StudioAuthoringConverseResponse.gap(
                     session.sessionId(),
@@ -932,7 +1051,8 @@ public final class StudioCatalogService {
 
     private StudioAuthoringConverseResponse converseViaDcp(
             StudioAuthoringConverseRequest request, String tenant, String assembly, StudioDraftSession session) {
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
+        StudioCatalogVisualsResponse catalogSnapshot = response(entries);
         List<Map<String, Object>> catalog = new ArrayList<>();
         for (StudioVisualCatalogEntry entry : entries) {
             List<String> capabilities = portsOfKind(entry.visualManifest(), "OFFER").stream()
@@ -955,6 +1075,15 @@ public final class StudioCatalogService {
         input.put("userMessage", request.userMessage());
         input.put("conversation", conversation);
         input.put("catalog", catalog);
+        input.put("catalogHash", catalogSnapshot.catalogHash());
+        input.put("session", authoringSessionMap(session));
+        input.put("catalogFile", authoringCatalogFileMap(tenant, session.catalogFileId()));
+        input.put("catalogFiles", listFiles(tenant, "CATALOG", "", "").stream()
+                .map(this::authoringFileMap)
+                .toList());
+        input.put("sessionHistory", listSessionHistory(tenant, assembly).stream()
+                .map(this::authoringSessionHistoryMap)
+                .toList());
 
         // DCP invocation metadata: request Foundry's governed harness mode so the
         // authoring agent can execute tools in a loop before returning a terminal answer.
@@ -969,6 +1098,101 @@ public final class StudioCatalogService {
                     List.of());
         }
         return mapAuthoringOutput(tenant, session.sessionId(), result.output());
+    }
+
+    /**
+     * Context projector: returns the catalog entries bound to the authoring
+     * session, using the session's immutable catalog file id when present.
+     */
+    private List<StudioVisualCatalogEntry> authoringCatalogEntries(String tenantId, StudioDraftSession session) {
+        String tenant = normalizeTenant(tenantId);
+        if (session != null && session.catalogFileId() != null && !session.catalogFileId().isBlank()) {
+            return catalogSnapshotForFile(tenant, session.catalogFileId()).entries();
+        }
+        return entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+    }
+
+    /**
+     * Context projector: emits the current authoring session as a compact
+     * Foundry input object without exposing mutable service internals.
+     */
+    private Map<String, Object> authoringSessionMap(StudioDraftSession session) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        if (session == null) {
+            return result;
+        }
+        result.put("tenantId", session.tenantId());
+        result.put("assemblyId", session.assemblyId());
+        result.put("sessionId", session.sessionId());
+        result.put("displayName", session.displayName());
+        result.put("baseCatalogHash", session.baseCatalogHash());
+        result.put("catalogFileId", session.catalogFileId());
+        result.put("sessionType", session.sessionType());
+        result.put("status", session.status());
+        result.put("sceneRevision", session.sceneRevision());
+        result.put("intentCount", session.intentLog().size());
+        return result;
+    }
+
+    /**
+     * Context projector: resolves the session-bound catalog file row so Foundry
+     * can distinguish latest-catalog defaults from explicit user choices.
+     */
+    private Map<String, Object> authoringCatalogFileMap(String tenantId, String catalogFileId) {
+        String tenant = normalizeTenant(tenantId);
+        if (catalogFileId == null || catalogFileId.isBlank()) {
+            return Map.of();
+        }
+        return filesByTenant
+                .getOrDefault(tenant, Map.of())
+                .values()
+                .stream()
+                .filter(file -> catalogFileId.equals(file.fileId()))
+                .findFirst()
+                .map(this::authoringFileMap)
+                .orElse(Map.of());
+    }
+
+    /**
+     * Context projector: emits one tenant file registry row for the authoring
+     * agent while preserving version and hash pins for follow-up tools.
+     */
+    private Map<String, Object> authoringFileMap(StudioFileRecord file) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("fileId", file.fileId());
+        result.put("tenantId", file.tenantId());
+        result.put("logicalFileId", file.logicalFileId());
+        result.put("version", file.version());
+        result.put("fileName", file.fileName());
+        result.put("fileTitle", file.fileTitle());
+        result.put("filePath", file.filePath());
+        result.put("fileType", file.fileType());
+        result.put("mediaType", file.mediaType());
+        result.put("sha256", file.sha256());
+        result.put("createdAt", file.createdAt().toString());
+        return result;
+    }
+
+    /**
+     * Context projector: emits one historical authoring/draft session row so
+     * the agent can ask whether to continue, fork, or start fresh.
+     */
+    private Map<String, Object> authoringSessionHistoryMap(StudioSessionHistoryItem item) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("tenantId", item.tenantId());
+        result.put("assemblyId", item.assemblyId());
+        result.put("sessionId", item.sessionId());
+        result.put("displayName", item.displayName());
+        result.put("sessionType", item.sessionType());
+        result.put("status", item.status());
+        result.put("baseCatalogHash", item.baseCatalogHash());
+        result.put("catalogFileId", item.catalogFileId());
+        result.put("createdAt", item.createdAt().toString());
+        result.put("updatedAt", item.updatedAt().toString());
+        result.put("lastOpenedAt", item.lastOpenedAt().toString());
+        result.put("linkedFileCount", item.linkedFileCount());
+        result.put("intentCount", item.intentCount());
+        return result;
     }
 
     private StudioAuthoringConverseResponse mapAuthoringOutput(String tenant, String sessionId, Map<String, Object> output) {
@@ -2146,7 +2370,14 @@ public final class StudioCatalogService {
                         session.sceneRevision(),
                         session.warnings(),
                         session.collaborators(),
-                        session.intentLog()))
+                        session.intentLog(),
+                        session.catalogFileId(),
+                        session.displayName(),
+                        session.sessionType(),
+                        session.status(),
+                        session.createdAt(),
+                        session.updatedAt(),
+                        session.lastOpenedAt()))
                 .sorted(Comparator.comparing(StudioDraftSession::sessionId))
                 .toList();
         normalizedSessions.forEach(session -> tenantSessions.put(sessionKey(assembly, session.sessionId()), session));
@@ -2210,12 +2441,20 @@ public final class StudioCatalogService {
         StudioCreateDraftCompositionRequest safe = request == null
                 ? new StudioCreateDraftCompositionRequest(tenant, assembly, "", "", "", "", "", "")
                 : request;
+        StudioFileRecord selectedCatalog = selectedCatalogFile(tenant, safe.catalogFileId());
+        StudioCatalogSnapshot selectedSnapshot = selectedCatalog == null
+                ? null
+                : catalogSnapshotForFile(tenant, selectedCatalog.fileId());
+        String resolvedCatalogHash = selectedSnapshot == null
+                ? response(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries)).catalogHash()
+                : selectedSnapshot.catalogHash();
+        Instant now = Instant.now();
         String sessionId = "studio-session-" + UUID.randomUUID();
         StudioDraftSession session = new StudioDraftSession(
                 tenant,
                 assembly,
                 sessionId,
-                stringValue(safe.baseCatalogHash(), response(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries)).catalogHash()),
+                resolvedCatalogHash,
                 "DYNAMIC",
                 safe.needsId(),
                 safe.trustPolicyId(),
@@ -2223,14 +2462,27 @@ public final class StudioCatalogService {
                 0,
                 List.of(),
                 List.of(collaborator(safe.collaboratorId(), safe.collaboratorName(), "")),
-                List.of());
+                List.of(),
+                selectedCatalog == null ? "" : selectedCatalog.fileId(),
+                draftDisplayName(safe.displayName(), assembly, selectedCatalog),
+                "DRAFT",
+                "OPEN",
+                now,
+                now,
+                now);
         sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
+        if (selectedCatalog != null) {
+            linkFileToSession(tenant, sessionId, "", selectedCatalog.fileId(), "INPUT");
+        }
         persist();
         publishSessionEvent(session);
         StudioCreateDraftCompositionResponse response = new StudioCreateDraftCompositionResponse(session);
+        StudioExportArtifact diagnostic = diagnosticArtifact(tenant, "draft-session", "draft-session.json", response);
+        registerArtifactFile(session, diagnostic, "DRAFT", "OUTPUT");
+        persist();
         return new StudioCreateDraftCompositionResponse(
                 session,
-                List.of(diagnosticArtifact(tenant, "draft-session", "draft-session.json", response)));
+                List.of(diagnostic));
     }
 
     public synchronized StudioDraftSession draftSession(String tenantId, String assemblyId, String sessionId) {
@@ -2300,6 +2552,7 @@ public final class StudioCatalogService {
                 request.type,
                 payload,
                 Instant.now());
+        Instant now = Instant.now();
         List<StudioIntentRecord> intentLog = new ArrayList<>(current.intentLog());
         intentLog.add(record);
         StudioDraftSession updated = new StudioDraftSession(
@@ -2314,7 +2567,14 @@ public final class StudioCatalogService {
                 revision,
                 current.warnings(),
                 upsertCollaborator(current.collaborators(), request.collaboratorId, request.collaboratorName, stringValue(payload.get("selectedSurface"), "")),
-                intentLog);
+                intentLog,
+                current.catalogFileId(),
+                current.displayName(),
+                current.sessionType(),
+                "OPEN",
+                current.createdAt(),
+                now,
+                now);
         putSession(updated);
         updateAssemblyRevision(updated);
         persist();
@@ -2341,7 +2601,14 @@ public final class StudioCatalogService {
                 current.sceneRevision(),
                 current.warnings(),
                 upsertCollaborator(current.collaborators(), collaborator.collaboratorId(), collaborator.displayName(), collaborator.selectedSurface()),
-                current.intentLog());
+                current.intentLog(),
+                current.catalogFileId(),
+                current.displayName(),
+                current.sessionType(),
+                current.status(),
+                current.createdAt(),
+                current.updatedAt(),
+                Instant.now());
         putSession(updated);
         persist();
         publishSessionEvent(updated);
@@ -2524,6 +2791,9 @@ public final class StudioCatalogService {
                 "compile-response",
                 "compile-response.json",
                 responseSnapshot));
+        registerCompileFiles(session, contract, profile, signed, supportArtifacts, diagnosticArtifacts);
+        markSessionStatus(session, "COMPILED");
+        persist();
         return new StudioCompileDraftCandidateResponse(
                 response.status(),
                 response.candidateId(),
@@ -3247,7 +3517,10 @@ public final class StudioCatalogService {
                 Map.copyOf(entriesByTenant),
                 Map.copyOf(assembliesByTenant),
                 Map.copyOf(layoutsByTenant),
-                Map.copyOf(sessionsByTenant)));
+                Map.copyOf(sessionsByTenant),
+                Map.copyOf(filesByTenant),
+                Map.copyOf(sessionFileLinksByTenant),
+                Map.copyOf(catalogSnapshotsByTenant)));
     }
 
     /**
@@ -3753,7 +4026,13 @@ public final class StudioCatalogService {
         return words.isEmpty() ? "Dynamic Component" : String.join(" ", words);
     }
 
-    private StudioDraftSession authoringSession(String tenantId, String assemblyId, String sessionId) {
+    private StudioDraftSession authoringSession(
+            String tenantId,
+            String assemblyId,
+            String sessionId,
+            String catalogFileId,
+            String displayName
+    ) {
         if (sessionId != null && !sessionId.isBlank()) {
             try {
                 return draftSession(tenantId, assemblyId, sessionId);
@@ -3768,12 +4047,14 @@ public final class StudioCatalogService {
                 new StudioCreateDraftCompositionRequest(
                         tenantId,
                         assemblyId,
-                        response(entriesByTenant.computeIfAbsent(normalizeTenant(tenantId), this::fixtureEntries)).catalogHash(),
+                        "",
                         "",
                         "",
                         "",
                         "authoring-agent",
-                        "Authoring Agent")).session();
+                        "Authoring Agent",
+                        catalogFileId,
+                        displayName)).session();
     }
 
     private boolean promptMentionsEntry(String prompt, StudioVisualCatalogEntry entry) {
@@ -3877,7 +4158,14 @@ public final class StudioCatalogService {
                 session.sceneRevision(),
                 session.warnings(),
                 active,
-                session.intentLog());
+                session.intentLog(),
+                session.catalogFileId(),
+                session.displayName(),
+                session.sessionType(),
+                session.status(),
+                session.createdAt(),
+                session.updatedAt(),
+                session.lastOpenedAt());
         putSession(pruned);
         persist();
         return pruned;
@@ -4008,6 +4296,390 @@ public final class StudioCatalogService {
                 sha,
                 "/studio/tenants/" + tenant + "/exports/" + artifactId
                         + "/content?sha256=" + sha + "&fileName=" + fileName);
+    }
+
+    /**
+     * Registry command: materializes the current tenant catalog as an immutable
+     * `CATALOG` file version and stores the matching snapshot for later draft
+     * binding.
+     *
+     * <p>Pattern: versioned read-model projector. Repeated calls for identical
+     * catalog bytes reuse the existing file row, while changed catalog content
+     * receives the next version for logical file id `tenant-catalog`.
+     */
+    private StudioFileRecord ensureCatalogFile(String tenantId, List<StudioVisualCatalogEntry> entries, String title) {
+        String tenant = normalizeTenant(tenantId);
+        List<StudioVisualCatalogEntry> safeEntries = entries == null ? List.of() : List.copyOf(entries);
+        StudioCatalogVisualsResponse catalog = response(safeEntries);
+        StudioCatalogSnapshot snapshot = new StudioCatalogSnapshot(tenant, catalog.catalogHash(), catalog.entries(), List.of());
+        byte[] bytes = jsonBytes(snapshot);
+        String sha = sha256(bytes);
+        Map<String, StudioFileRecord> tenantFiles =
+                filesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        Optional<StudioFileRecord> existing = tenantFiles.values().stream()
+                .filter(file -> "CATALOG".equalsIgnoreCase(file.fileType()))
+                .filter(file -> sha.equals(file.sha256()))
+                .findFirst();
+        if (existing.isPresent()) {
+            boolean snapshotMissing = !catalogSnapshotsByTenant
+                    .getOrDefault(tenant, Map.of())
+                    .containsKey(existing.get().fileId());
+            catalogSnapshotsByTenant
+                    .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                    .put(existing.get().fileId(), snapshot);
+            if (snapshotMissing) {
+                persist();
+            }
+            return existing.get();
+        }
+
+        int version = nextFileVersion(tenant, "tenant-catalog");
+        String fileId = "file-" + UUID.randomUUID();
+        StudioFileRecord file = new StudioFileRecord(
+                fileId,
+                tenant,
+                "tenant-catalog",
+                version,
+                "catalog-v" + version + "-" + shortHash(sha) + ".json",
+                stringValue(title, "Tenant Catalog v" + version),
+                "/studio/tenants/" + tenant + "/files/" + fileId + "/content?sha256=" + sha,
+                "CATALOG",
+                "application/json",
+                sha,
+                Instant.now());
+        tenantFiles.put(file.fileId(), file);
+        catalogSnapshotsByTenant
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
+                .put(file.fileId(), snapshot);
+        persist();
+        return file;
+    }
+
+    /**
+     * Registry query: resolves the latest catalog file or a caller-selected
+     * catalog file id within the current tenant boundary.
+     */
+    private StudioFileRecord selectedCatalogFile(String tenantId, String requestedCatalogFileId) {
+        String tenant = normalizeTenant(tenantId);
+        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries), "");
+        Map<String, StudioFileRecord> tenantFiles = filesByTenant.getOrDefault(tenant, Map.of());
+        if (requestedCatalogFileId != null && !requestedCatalogFileId.isBlank()) {
+            StudioFileRecord file = tenantFiles.get(requestedCatalogFileId.trim());
+            if (file == null || !"CATALOG".equalsIgnoreCase(file.fileType())) {
+                throw new IllegalArgumentException("catalog file not found for tenant: " + requestedCatalogFileId);
+            }
+            catalogSnapshotForFile(tenant, file.fileId());
+            return file;
+        }
+        return tenantFiles.values().stream()
+                .filter(file -> "CATALOG".equalsIgnoreCase(file.fileType()))
+                .max(Comparator
+                        .comparing(StudioFileRecord::createdAt)
+                        .thenComparingInt(StudioFileRecord::version)
+                        .thenComparing(StudioFileRecord::fileId))
+                .orElse(null);
+    }
+
+    /**
+     * Registry query: loads the immutable catalog snapshot for a tenant-owned
+     * catalog file id.
+     */
+    private StudioCatalogSnapshot catalogSnapshotForFile(String tenantId, String fileId) {
+        String tenant = normalizeTenant(tenantId);
+        StudioCatalogSnapshot snapshot = catalogSnapshotsByTenant
+                .getOrDefault(tenant, Map.of())
+                .get(fileId == null ? "" : fileId.trim());
+        if (snapshot == null) {
+            throw new IllegalArgumentException("catalog snapshot file not found for tenant: " + fileId);
+        }
+        return snapshot;
+    }
+
+    /**
+     * Registry command: stores a generated artifact as a new file version and
+     * links it to the producing session.
+     */
+    private StudioFileRecord registerArtifactFile(
+            StudioDraftSession session,
+            StudioExportArtifact artifact,
+            String fileType,
+            String role
+    ) {
+        if (artifact == null) {
+            return null;
+        }
+        StudioFileRecord file = registerFile(
+                session.tenantId(),
+                session.sessionId() + ":" + artifact.artifactId(),
+                fileNameFromArtifact(artifact),
+                displayTitleFromArtifact(artifact),
+                fileType,
+                artifact.mediaType(),
+                artifact.sha256(),
+                artifact.url());
+        linkFileToSession(session.tenantId(), session.sessionId(), artifact.artifactId(), file.fileId(), role);
+        return file;
+    }
+
+    /**
+     * Registry command: records all successful compile outputs as session-linked
+     * file versions.
+     */
+    private void registerCompileFiles(
+            StudioDraftSession session,
+            StudioExportArtifact contract,
+            StudioExportArtifact profile,
+            StudioExportArtifact signed,
+            List<StudioExportArtifact> supportArtifacts,
+            List<StudioExportArtifact> diagnosticArtifacts
+    ) {
+        registerArtifactFile(session, contract, "EXPORT", "OUTPUT");
+        registerArtifactFile(session, profile, "EXPORT", "OUTPUT");
+        registerArtifactFile(session, signed, "SIGNED_EXPORT", "OUTPUT");
+        for (StudioExportArtifact artifact : supportArtifacts == null ? List.<StudioExportArtifact>of() : supportArtifacts) {
+            registerArtifactFile(session, artifact, "SUPPORT", "OUTPUT");
+        }
+        for (StudioExportArtifact artifact : diagnosticArtifacts == null ? List.<StudioExportArtifact>of() : diagnosticArtifacts) {
+            registerArtifactFile(session, artifact, "DIAGNOSTIC", "DIAGNOSTIC");
+        }
+    }
+
+    /**
+     * Registry command: inserts one immutable file-version row for generated
+     * Studio artifacts.
+     */
+    private StudioFileRecord registerFile(
+            String tenantId,
+            String logicalFileId,
+            String fileName,
+            String fileTitle,
+            String fileType,
+            String mediaType,
+            String sha256,
+            String filePath
+    ) {
+        String tenant = normalizeTenant(tenantId);
+        String logical = stringValue(logicalFileId, "file");
+        int version = nextFileVersion(tenant, logical);
+        StudioFileRecord file = new StudioFileRecord(
+                "file-" + UUID.randomUUID(),
+                tenant,
+                logical,
+                version,
+                fileName,
+                fileTitle,
+                filePath,
+                fileType,
+                mediaType,
+                sha256,
+                Instant.now());
+        filesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(file.fileId(), file);
+        return file;
+    }
+
+    /**
+     * Registry command: creates the tenant-scoped association row between a
+     * session/correlation id and a file id.
+     */
+    private void linkFileToSession(String tenantId, String sessionId, String correlationId, String fileId, String role) {
+        String tenant = normalizeTenant(tenantId);
+        if (!filesByTenant.getOrDefault(tenant, Map.of()).containsKey(fileId)) {
+            throw new IllegalArgumentException("session file link references unknown tenant file: " + fileId);
+        }
+        List<StudioSessionFileLink> existing =
+                sessionFileLinksByTenant.getOrDefault(tenant, List.of());
+        boolean duplicate = existing.stream().anyMatch(link ->
+                link.sessionId().equals(sessionId == null ? "" : sessionId)
+                        && link.correlationId().equals(correlationId == null ? "" : correlationId)
+                        && link.fileId().equals(fileId)
+                        && link.role().equals(role == null ? "" : role));
+        if (duplicate) {
+            return;
+        }
+        List<StudioSessionFileLink> updated = new ArrayList<>(existing);
+        updated.add(new StudioSessionFileLink(
+                "link-" + UUID.randomUUID(),
+                tenant,
+                sessionId,
+                correlationId,
+                fileId,
+                role,
+                Instant.now()));
+        sessionFileLinksByTenant.put(tenant, List.copyOf(updated));
+    }
+
+    /**
+     * Session projector: updates a session's lifecycle status while preserving
+     * intent/collaboration and provenance fields.
+     */
+    private void markSessionStatus(StudioDraftSession session, String status) {
+        Instant now = Instant.now();
+        StudioDraftSession updated = new StudioDraftSession(
+                session.tenantId(),
+                session.assemblyId(),
+                session.sessionId(),
+                session.baseCatalogHash(),
+                session.compositionMode(),
+                session.needsId(),
+                session.trustPolicyId(),
+                session.currentCandidateId(),
+                session.sceneRevision(),
+                session.warnings(),
+                session.collaborators(),
+                session.intentLog(),
+                session.catalogFileId(),
+                session.displayName(),
+                session.sessionType(),
+                stringValue(status, session.status()),
+                session.createdAt(),
+                now,
+                now);
+        putSession(updated);
+        publishSessionEvent(updated);
+    }
+
+    /**
+     * Registry query helper: returns the file ids linked to a session and/or
+     * correlation id, or null when no link filter was requested.
+     */
+    private Set<String> linkedFileIds(String tenantId, String sessionId, String correlationId) {
+        String session = sessionId == null ? "" : sessionId.trim();
+        String correlation = correlationId == null ? "" : correlationId.trim();
+        if (session.isBlank() && correlation.isBlank()) {
+            return null;
+        }
+        return sessionFileLinksByTenant
+                .getOrDefault(normalizeTenant(tenantId), List.of())
+                .stream()
+                .filter(link -> session.isBlank() || session.equals(link.sessionId()))
+                .filter(link -> correlation.isBlank() || correlation.equals(link.correlationId()))
+                .map(StudioSessionFileLink::fileId)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * History projector helper: counts linked files by session id for the
+     * tenant-level history endpoint.
+     */
+    private Map<String, Long> linkedFileCountBySession(String tenantId) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (StudioSessionFileLink link : sessionFileLinksByTenant.getOrDefault(normalizeTenant(tenantId), List.of())) {
+            if (!link.sessionId().isBlank()) {
+                counts.merge(link.sessionId(), 1L, Long::sum);
+            }
+        }
+        return counts;
+    }
+
+    /**
+     * Download projector: resolves stored file rows back to bytes for file types
+     * whose content remains owned by Studio.
+     */
+    private Optional<StudioAssetContent> contentForFileRecord(String tenantId, StudioFileRecord file) {
+        if ("CATALOG".equalsIgnoreCase(file.fileType())) {
+            StudioCatalogSnapshot snapshot = catalogSnapshotsByTenant
+                    .getOrDefault(normalizeTenant(tenantId), Map.of())
+                    .get(file.fileId());
+            if (snapshot == null) {
+                return Optional.empty();
+            }
+            byte[] bytes = jsonBytes(snapshot);
+            return Optional.of(new StudioAssetContent(bytes, "application/json", sha256(bytes)));
+        }
+        String artifactId = artifactIdFromPath(file.filePath(), "/diagnostic-artifacts/");
+        if (!artifactId.isBlank()) {
+            return diagnosticArtifactContent(tenantId, artifactId, file.sha256());
+        }
+        artifactId = artifactIdFromPath(file.filePath(), "/exports/");
+        if (!artifactId.isBlank()) {
+            return exportArtifactContent(tenantId, artifactId, file.sha256());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Version allocator: returns the next immutable version number for a logical
+     * tenant file id.
+     */
+    private int nextFileVersion(String tenantId, String logicalFileId) {
+        String tenant = normalizeTenant(tenantId);
+        String logical = stringValue(logicalFileId, "file");
+        return filesByTenant
+                .getOrDefault(tenant, Map.of())
+                .values()
+                .stream()
+                .filter(file -> logical.equals(file.logicalFileId()))
+                .mapToInt(StudioFileRecord::version)
+                .max()
+                .orElse(0) + 1;
+    }
+
+    /**
+     * JSON codec helper: serializes registry-owned content with the same mapper
+     * used by Studio HTTP responses.
+     */
+    private byte[] jsonBytes(Object value) {
+        try {
+            return jsonMapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(value);
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to serialize Studio file content", ex);
+        }
+    }
+
+    /**
+     * Naming helper: derives a human-readable session title when the caller did
+     * not supply one.
+     */
+    private String draftDisplayName(String requestedDisplayName, String assemblyId, StudioFileRecord catalogFile) {
+        if (requestedDisplayName != null && !requestedDisplayName.isBlank()) {
+            return requestedDisplayName.trim();
+        }
+        String catalogTitle = catalogFile == null ? "Current Catalog" : catalogFile.fileTitle();
+        return normalizeAssembly(assemblyId) + " - " + catalogTitle;
+    }
+
+    /**
+     * URL helper: extracts a stable file name from Studio artifact URLs.
+     */
+    private String fileNameFromArtifact(StudioExportArtifact artifact) {
+        String url = artifact == null ? "" : artifact.url();
+        int marker = url.indexOf("fileName=");
+        if (marker >= 0) {
+            return url.substring(marker + "fileName=".length());
+        }
+        return artifact == null ? "artifact" : artifact.artifactId();
+    }
+
+    /**
+     * Naming helper: converts generated artifact file names into concise display
+     * titles for history and artifact panes.
+     */
+    private String displayTitleFromArtifact(StudioExportArtifact artifact) {
+        String fileName = fileNameFromArtifact(artifact);
+        String withoutExtension = fileName.replaceFirst("\\.[^.]+$", "");
+        return labelFromNodeId("artifact." + withoutExtension.replace('_', '-').replace('.', '-'));
+    }
+
+    /**
+     * URL helper: extracts a tenant artifact id from a Studio file path.
+     */
+    private String artifactIdFromPath(String path, String marker) {
+        String value = path == null ? "" : path;
+        int start = value.indexOf(marker);
+        if (start < 0) {
+            return "";
+        }
+        String remainder = value.substring(start + marker.length());
+        int slash = remainder.indexOf('/');
+        return slash < 0 ? "" : remainder.substring(0, slash);
+    }
+
+    /**
+     * Hash display helper: creates compact but stable catalog file names.
+     */
+    private String shortHash(String sha) {
+        String value = sha == null ? "" : sha.replace("sha256:", "");
+        return value.length() <= 12 ? value : value.substring(0, 12);
     }
 
     private static Path defaultAssetRoot() {

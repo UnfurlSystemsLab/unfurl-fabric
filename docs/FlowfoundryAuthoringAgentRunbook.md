@@ -85,6 +85,8 @@ The deployment authoring agent already names these proposal tools:
 
 | Tool | Current purpose |
 |---|---|
+| `fabric.file-list` | List tenant-scoped file versions, especially latest or selected `CATALOG` rows. |
+| `fabric.session-history` | List historical draft sessions so the operator can continue or fork a prior draft. |
 | `fabric.catalog-query` | Resolve admitted catalog entries by offered capability from invocation catalog payload. |
 | `fabric.needs-emitter` | Emit deterministic needs YAML for selected capabilities. |
 | `fabric.intent-emitter` | Emit Studio `ADD_COMPONENT` intents for selected catalog entry ids. |
@@ -127,6 +129,8 @@ it is not the Flowfoundry product deployment path.
 | `fabric.artifact-inventory` | `function.local`, `connector.request`, or deployment-runner HTTP | Deployment-local inventory tool or Fabric execution endpoint inspects expected files and computes local existence/hash metadata. | `step-01-artifact-inventory.json` |
 | `fabric.catalog-admit` | `http.request` to `/studio/tools/fabric.catalog-admit` | `POST /studio/tenants/{tenant}/catalog/admissions` through the Studio tool gateway | `step-02-catalog-admission-response.json`, claim bundle |
 | `fabric.catalog-verify` | `http.request` to `/studio/tools/fabric.catalog-verify` | `GET /studio/tenants/{tenant}/catalog` and capability scan through the Studio tool gateway | `step-03-capability-verification.json` |
+| `fabric.file-list` | `http.request` to `/studio/tools/fabric.file-list` | `GET /studio/tenants/{tenant}/files?fileType=CATALOG` through the Studio tool gateway | `step-03-catalog-files.json` or Step 6 input |
+| `fabric.session-history` | `http.request` to `/studio/tools/fabric.session-history` | `GET /studio/tenants/{tenant}/sessions` through the Studio tool gateway | optional Step 6 continuation/fork context |
 | `fabric.assembly-create` | `http.request` to `/studio/tools/fabric.assembly-create` | `POST /studio/tenants/{tenant}/assemblies` | `step-04-assembly-response.json` |
 | `fabric.needs-extract` | `http.request` to `/studio/tools/fabric.needs-extract` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/needs/extract` | `step-05-needs-extraction-response.json`, `step-05-needs.yaml` |
 | `fabric.session-start` | `http.request` to `/studio/tools/fabric.session-start` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions` | `step-06-draft-session-response.json` |
@@ -176,6 +180,10 @@ on a model-generated catalog list.
 Ask these before applying intents:
 
 - What assembly name/id should be used?
+- Which tenant catalog file version should the draft use? If unspecified, use the latest tenant `CATALOG` file row from
+  `fabric.file-list`.
+- Should we start a new draft session, continue an existing session from `fabric.session-history`, or fork a previous
+  session with a new display name?
 - Is needs input supplied as a file/source bundle, or should Studio extract needs?
 - Which recursive Flow capabilities are required for this integrated environment?
 - Which recursive Foundry capabilities are required? For the current Flowfoundry run, tools and RAG must be explicit
@@ -192,7 +200,7 @@ Ask these before applying intents:
 |---:|---|---|---|---|
 | 4 | `fabric.assembly-create` | verified catalog snapshot | `step-04-assembly-response.json` | Assembly cannot be created. |
 | 5 | `fabric.needs-extract` or `fabric.needs-emitter` | source bundle or operator answers | `step-05-needs.yaml` | Needs omit `workflow.execute`, `agent.run`, or the `agent.run.requiredOfferDetails.execution_modes: [harness]` constraint for Flowfoundry. |
-| 6 | `fabric.session-start` | assembly response + needs | `step-06-draft-session-response.json` | Session cannot be created. |
+| 6 | `fabric.file-list` then `fabric.session-start` | assembly response + needs + selected/latest catalog file | `step-06-catalog-files.json`, `step-06-draft-session-response.json` | No tenant catalog file exists, selected catalog file is not tenant-owned, or session cannot be created. |
 | 7 | `fabric.authoring-tool-registry-verify` | Foundry deployment root | `step-07-tool-registry-verification.json` | Missing required `pluginJar` or HTTP tool binding for any required authoring tool. |
 | 8 | `fabric.authoring-converse` | catalog snapshot + needs + recursive-scope answers | `step-08-authoring-response.json` | Agent returns `clarify` or `gap`; do not apply intents. |
 | 9 | `fabric.session-intent-apply` | proposal intents | `step-09-session-after.json` | Any intent is rejected or revision is stale. |
@@ -200,7 +208,8 @@ Ask these before applying intents:
 | 11 | `fabric.deployment-resolve` | session + needs + deployment policy | `step-11-deployment-resolve-response.json` | Resolution returns `NO_MATCH` or misses Flow/Foundry runtime components. |
 
 The Phase 2 exit artifact is a deployment-resolved Studio draft session. Step 12 must compile from the session, not from
-the last candidate pointer or model output.
+the last candidate pointer or model output. The draft session must include `catalogFileId`, `baseCatalogHash`, and
+`displayName` so later Flow and Foundry calls can ground proposals in the same immutable catalog version.
 
 Step 9 should pass the whole `proposal.intents` array to `fabric.session-intent-apply`. The Studio tool gateway applies
 the list sequentially, advancing the revision after each valid intent, so the Flow DAG does not need array-index
