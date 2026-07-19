@@ -336,10 +336,20 @@ POST /studio/tools/{toolName}
 ```
 
 This route accepts the canonical tool-call JSON shape and delegates to the existing Studio API/service methods.
-It currently covers the Studio-owned tools for catalog admission/verification, assembly/session creation, needs
-extraction, authoring converse, intent application, Dynamic DCP projection, deployment resolution, candidate compile,
-and export download. Deployment-local tools that need filesystem, runtime-binding, deployment-root, OpenAPI/Swagger UI,
-Docker, or Kubernetes authority remain separate `pluginJar` or HTTP bindings owned by a deployment runner.
+It covers the Studio-owned tools for catalog admission/verification, assembly/session creation, needs extraction,
+authoring converse, intent application, Dynamic DCP projection, deployment resolution, candidate compile, and export
+download. It also exposes local development/CI runbook tools for Step 1 and Steps 13-17:
+`fabric.artifact-inventory`, `fabric.export-download-all`, `fabric.runtime-binding-generate`,
+`fabric.foundry-root-assemble`, `fabric.flow-root-assemble`, and `fabric.container-image-build`.
+
+Those local runner tools still return the same `PASS`, `GAP`, or `ERROR` shape. When a required input is missing they
+must include `questions` so the authoring agent can ask the operator before Flow retries the current step. Production
+deployments may replace the local runner bindings with contract-backed DCP `tool.call`, Foundry `pluginJar`, or
+deployment-runner HTTP tools that provide the same logical tool names and response contract.
+
+`fabric.export-download-all` treats primary handoff and support export artifacts as required. Diagnostic artifacts are
+debug sidecars and are downloaded only when the caller passes `includeDiagnostics: true`; they must not block the
+normal Step 13 handoff.
 
 ## Implementation Notes
 

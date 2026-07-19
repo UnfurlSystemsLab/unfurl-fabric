@@ -10,12 +10,17 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.time.Duration;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.spec.ECGenParameterSpec;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -853,6 +858,132 @@ class StudioServerTest {
     }
 
     /**
+     * Regression test: local runbook tools return GAP plus clarification
+     * questions when Flow cannot safely execute the next phase without operator
+     * input.
+     */
+    @Test
+    void deploymentRunnerToolsReturnClarificationQuestionsForMissingInputs(@TempDir Path dir) throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> inventory = post(server, "/studio/tools/fabric.artifact-inventory",
+                    toolCall("fabric.artifact-inventory", Map.of(
+                            "files", List.of(Map.of(
+                                    "path", dir.resolve("missing-flow.jar").toString(),
+                                    "required", true)))));
+
+            assertThat(inventory.statusCode()).isEqualTo(200);
+            StudioToolCallResult result = StudioJson.mapper()
+                    .readValue(inventory.body(), StudioToolCallResult.class);
+            assertThat(result.success()).isTrue();
+            assertThat(result.output()).containsEntry("status", "GAP");
+            assertThat(result.output().get("questions").toString())
+                    .contains("Provide or correct the local path");
+        }
+    }
+
+    /**
+     * Regression test: Flowfoundry Steps 13-17 can run through the Flow-callable
+     * Studio gateway using real signed Step 12 artifacts, then stop before Docker
+     * unless the operator explicitly selects a build mode.
+     */
+    @Test
+    void deploymentRunnerToolsAssembleFlowfoundryExportArtifacts(@TempDir Path dir) throws Exception {
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+
+            StudioCatalogService service = flowfoundrySessionService(dir);
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+            StudioToolGateway gateway = new StudioToolGateway(service, StudioJson.mapper());
+
+            StudioToolCallResult compileResult = gateway.execute(toolRequest("fabric.candidate-compile", Map.of(
+                    "tenantId", "tenant-a",
+                    "assemblyId", "assembly-flow",
+                    "sessionId", created.session().sessionId(),
+                    "request", Map.of(
+                            "tenantId", "tenant-a",
+                            "assemblyId", "assembly-flow",
+                            "sessionId", created.session().sessionId(),
+                            "expectedRevision", 2,
+                            "sign", true,
+                            "deploymentPolicy", containerPolicy()))));
+            assertThat(compileResult.success()).isTrue();
+            assertThat(compileResult.output()).containsEntry("status", "PASS");
+
+            Path exportDir = dir.resolve("exports");
+            StudioToolCallResult downloadResult = gateway.execute(toolRequest("fabric.export-download-all", Map.of(
+                    "tenantId", "tenant-a",
+                    "compileResponse", compileResult.output(),
+                    "outputDir", exportDir.toString())));
+            assertThat(downloadResult.output()).containsEntry("status", "PASS");
+            Path signedCompiled = exportDir.resolve("signed-compiled-contract.yaml");
+            Path signedContract = exportDir.resolve("signed-contract.yaml");
+            Path runtimeBundle = exportDir.resolve("dcp-runtime-bundle.zip");
+            Path substrateProfile = exportDir.resolve("substrate-profile.yaml");
+            assertThat(signedCompiled).isRegularFile();
+            assertThat(signedContract).isRegularFile();
+            assertThat(runtimeBundle).isRegularFile();
+            assertThat(substrateProfile).isRegularFile();
+
+            Path runtimeBinding = dir.resolve("step-14-runtime-binding.yaml");
+            StudioToolCallResult bindingResult = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", runtimeBinding.toString(),
+                    "flowBaseUrl", "http://flow:8080",
+                    "foundryBaseUrl", "http://foundry:7979")));
+            assertThat(bindingResult.output()).containsEntry("status", "PASS");
+            assertThat(runtimeBinding).isRegularFile();
+            assertThat(Files.readString(runtimeBinding)).contains("runtime_binding_set");
+
+            Path foundrySource = writeFoundryDeploymentSource(dir);
+            Path foundryRoot = dir.resolve("foundry-root");
+            StudioToolCallResult foundryResult = gateway.execute(toolRequest("fabric.foundry-root-assemble", Map.of(
+                    "outputDir", foundryRoot.toString(),
+                    "foundrySourceRoot", foundrySource.toString(),
+                    "signedContractPath", signedContract.toString(),
+                    "runtimeBindingPath", runtimeBinding.toString(),
+                    "signedCompiledContractPath", signedCompiled.toString())));
+            assertThat(foundryResult.output()).containsEntry("status", "PASS");
+            assertThat(foundryRoot.resolve("runtime-binding.yaml")).isRegularFile();
+
+            Path workflows = writeFlowWorkflowSource(dir);
+            Path trustKeys = dir.resolve("trust-keys");
+            Files.createDirectories(trustKeys);
+            Files.copy(publicKey, trustKeys.resolve("studio-public.pem"));
+            Path flowRoot = dir.resolve("flow-root");
+            StudioToolCallResult flowResult = gateway.execute(toolRequest("fabric.flow-root-assemble", Map.of(
+                    "outputDir", flowRoot.toString(),
+                    "signedContractPath", signedContract.toString(),
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", runtimeBinding.toString(),
+                    "substrateProfilePath", substrateProfile.toString(),
+                    "dcpRuntimeBundlePath", runtimeBundle.toString(),
+                    "flowWorkflowsPath", workflows.toString(),
+                    "trustKeysPath", trustKeys.toString())));
+            assertThat(flowResult.output()).containsEntry("status", "PASS");
+            assertThat(flowRoot.resolve("profiles/flow-runtime-profile.yaml")).isRegularFile();
+
+            StudioToolCallResult imageResult = gateway.execute(toolRequest("fabric.container-image-build", Map.of(
+                    "buildMode", "PLAN_ONLY",
+                    "flowRootPath", flowRoot.toString(),
+                    "foundryRootPath", foundryRoot.toString())));
+            assertThat(imageResult.output())
+                    .containsEntry("status", "PASS")
+                    .containsEntry("built", false);
+        } finally {
+            restoreSystemProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreSystemProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+        }
+    }
+
+    /**
      * Regression test: Flow can pass the authoring proposal's entire intent list
      * to Step 9 without list-index expressions; the gateway advances revisions
      * one intent at a time through normal Studio validation.
@@ -918,6 +1049,138 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Fixture service: admits Flow and Foundry catalog artifacts, then extracts
+     * baseline Flowfoundry needs for the assembly used by runbook tool tests.
+     */
+    private static StudioCatalogService flowfoundrySessionService(Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogAdmissionResponse admission = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-flow",
+                List.of(
+                        new StudioComponentArtifactDraft(
+                                "flow.jar",
+                                "",
+                                "",
+                                jarBase64(manifest("flow", "workflow.execute"))),
+                        new StudioComponentArtifactDraft(
+                                "foundry.jar",
+                                "",
+                                "",
+                                jarBase64(foundryManifest("foundry", "agent.run"))))));
+        assertThat(admission.status()).as("fixture admission results: %s", admission.results())
+                .isEqualTo("VERIFIED");
+        service.extractNeeds(
+                "tenant-a",
+                "assembly-flow",
+                new StudioNeedsExtractionRequest(
+                        "Flowfoundry Export",
+                        List.of("workflow.yaml", "workload.agent.yaml"),
+                        "containerized-local"));
+        return service;
+    }
+
+    /**
+     * Fixture builder: creates the draft session that later compile/export tool
+     * calls use to produce real signed Flowfoundry artifacts.
+     */
+    private static StudioCreateDraftCompositionResponse flowfoundryDraftSession(StudioCatalogService service) {
+        return service.createDraftSession(
+                "tenant-a",
+                "assembly-flow",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-flow",
+                        "sha256:catalog",
+                        "assembly-flow-extracted-needs",
+                        "trust-prod",
+                        "",
+                        "alice",
+                        "Alice"));
+    }
+
+    /**
+     * Fixture command: applies a single ADD_COMPONENT intent to the draft session
+     * at the given expected revision.
+     */
+    private static void addComponent(
+            StudioCatalogService service,
+            StudioDraftSession session,
+            String catalogEntryId,
+            long revision
+    ) {
+        StudioIntentRequest intent = new StudioIntentRequest();
+        intent.tenantId = session.tenantId();
+        intent.assemblyId = session.assemblyId();
+        intent.sessionId = session.sessionId();
+        intent.baseRevision = revision;
+        intent.type = "ADD_COMPONENT";
+        intent.collaboratorId = "alice";
+        intent.put("catalogEntryId", catalogEntryId);
+        StudioIntentResponse response = service.applyIntent(
+                session.tenantId(),
+                session.assemblyId(),
+                session.sessionId(),
+                intent);
+        assertThat(response.status()).isEqualTo("VALID");
+    }
+
+    /**
+     * Fixture policy: asks Studio's deployment resolver to choose containerized
+     * product shapes for Flow and Foundry while allowing in-process support jars.
+     */
+    private static StudioDeploymentPolicyDraft containerPolicy() {
+        return new StudioDeploymentPolicyDraft(
+                List.of("CONTAINERIZED_SERVICE"),
+                List.of(),
+                List.of(),
+                new StudioDeploymentRuntimeDraft("21", true, true, true, null));
+    }
+
+    /**
+     * Fixture source writer: creates the Foundry deployment inputs required by
+     * the root-assembly tool validator.
+     */
+    private static Path writeFoundryDeploymentSource(Path dir) throws IOException {
+        Path root = dir.resolve("foundry-source");
+        Files.createDirectories(root.resolve("agents"));
+        Files.createDirectories(root.resolve("prompts"));
+        Files.createDirectories(root.resolve("registries"));
+        Files.writeString(root.resolve("agents/fabric-authoring.agent.yaml"), """
+                id: fabric-authoring
+                promptRef: prompts/fabric-authoring.md
+                toolRefs:
+                  - fabric.catalog-query
+                """, StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("prompts/fabric-authoring.md"),
+                "Use admitted DCP catalog entries and ask for clarification on gaps.\n",
+                StandardCharsets.UTF_8);
+        Files.writeString(root.resolve("registries/tools.yaml"), """
+                tools:
+                  - name: fabric.catalog-query
+                    binding:
+                      type: http
+                      endpoint: http://fabric:7878/studio/tools/fabric.catalog-verify
+                """, StandardCharsets.UTF_8);
+        return root;
+    }
+
+    /**
+     * Fixture source writer: creates a minimal Flow workflow file for deployment
+     * root assembly without requiring a running Flow engine.
+     */
+    private static Path writeFlowWorkflowSource(Path dir) throws IOException {
+        Path workflows = dir.resolve("flow-workflows");
+        Files.createDirectories(workflows);
+        Files.writeString(workflows.resolve("flowfoundry-runbook.yaml"), """
+                id: flowfoundry-runbook
+                nodes:
+                  - id: run-foundry
+                    uses: agent.run
+                """, StandardCharsets.UTF_8);
+        return workflows;
+    }
+
     private StudioServer started() throws Exception {
         return started(new StudioCatalogService());
     }
@@ -930,13 +1193,17 @@ class StudioServerTest {
 
     private HttpResponse<String> get(StudioServer server, String path) throws Exception {
         return HttpClient.newHttpClient().send(
-                HttpRequest.newBuilder(uri(server, path)).GET().build(),
+                HttpRequest.newBuilder(uri(server, path))
+                        .timeout(Duration.ofSeconds(20))
+                        .GET()
+                        .build(),
                 HttpResponse.BodyHandlers.ofString());
     }
 
     private HttpResponse<String> post(StudioServer server, String path, String body) throws Exception {
         return HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(uri(server, path))
+                        .timeout(Duration.ofSeconds(20))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(body))
                         .build(),
@@ -950,6 +1217,7 @@ class StudioServerTest {
     private HttpResponse<String> delete(StudioServer server, String path) throws Exception {
         return HttpClient.newHttpClient().send(
                 HttpRequest.newBuilder(uri(server, path))
+                        .timeout(Duration.ofSeconds(20))
                         .DELETE()
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
@@ -1071,6 +1339,68 @@ class StudioServerTest {
                 """.formatted(artifact, artifact, artifact, capability, capability, capability, capability, artifact);
     }
 
+    /**
+     * Fixture manifest: creates a Foundry product claim whose `agent.run` offer
+     * explicitly advertises the harness execution mode required by Flowfoundry.
+     */
+    private static String foundryManifest(String artifact, String capability) {
+        return """
+                claim:
+                  identity:
+                    uri: urn:unfurl:test:%s
+                    name: %s
+                    kind: COMPONENT
+                    version: 1.0.0
+                    publisher: Unfurl
+                  domain:
+                    summary: %s
+                    concerns:
+                      - concern: %s
+                        description: %s
+                    boundary_principles:
+                      - test boundary
+                  refusals:
+                    - concern: unrelated.concern
+                      rationale: This component deliberately owns only its declared capability.
+                      owned_by: host
+                  dependencies:
+                    needs: []
+                  offers:
+                    - capability: %s
+                      description: %s
+                      consumer_access: ANY
+                      offer_interface:
+                        interface_kind: HTTP_API
+                        details:
+                          execution_modes: [simple, harness]
+                      stability: STABLE
+                      version: 1.0.0
+                      metered: false
+                  integration_ports:
+                    ports: {}
+                  faults:
+                    emitted: []
+                  metadata:
+                    dcp_version: 0.2.0
+                    claim_version: 1.0.0
+                    created_at: 1970-01-01T00:00:00Z
+                catalog:
+                  lifecycle:
+                    status: ACTIVE
+                  artifact:
+                    coordinates: com.unfurl:%s:1.0.0
+                    packaging: jar
+                    source: catalog
+                  binding:
+                    default_mode: REMOTE_HTTP
+                    supported_modes: [REMOTE_HTTP]
+                  component_shape_profile:
+                    default_shape: CONTAINERIZED_SERVICE
+                    supported_shapes: [CONTAINERIZED_SERVICE]
+                    shape_runtime: {}
+                """.formatted(artifact, artifact, artifact, capability, capability, capability, capability, artifact);
+    }
+
     private static String validClaimYaml(String name, String capability) {
         return """
                 identity:
@@ -1115,6 +1445,77 @@ class StudioServerTest {
 
     private static String jsonString(String value) throws Exception {
         return StudioJson.mapper().writeValueAsString(value);
+    }
+
+    /**
+     * JSON fixture helper: serializes the canonical Foundry/Fabric tool call
+     * request body used by the `/studio/tools/{toolName}` route.
+     */
+    private static String toolCall(String toolName, Map<String, Object> arguments) throws Exception {
+        return StudioJson.mapper().writeValueAsString(Map.of(
+                "callId", toolName + "-test",
+                "toolName", toolName,
+                "arguments", arguments));
+    }
+
+    /**
+     * Tool fixture helper: creates the in-process request shape used when tests
+     * exercise the same gateway facade without the lightweight HTTP transport.
+     */
+    private static StudioToolCallRequest toolRequest(String toolName, Map<String, Object> arguments) {
+        return new StudioToolCallRequest(toolName + "-test", toolName, arguments, Map.of());
+    }
+
+    /**
+     * Test Fixture Factory: creates a P-256 signing key pair that matches the
+     * Studio signing configuration contract.
+     */
+    private static KeyPair generateStudioSigningKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp256r1"));
+        return generator.generateKeyPair();
+    }
+
+    /**
+     * Test Fixture Writer: writes the private signing key in PKCS#8 PEM form so
+     * Studio can load it through the runtime signing configuration path.
+     */
+    private static Path writePrivateKeyPem(Path dir, String fileName, KeyPair keys) throws IOException {
+        return writePem(dir, fileName, "PRIVATE KEY", keys.getPrivate().getEncoded());
+    }
+
+    /**
+     * Test Fixture Writer: writes the public signing key in X.509 PEM form so
+     * deployment roots can carry the trust key used by the signed export.
+     */
+    private static Path writePublicKeyPem(Path dir, String fileName, KeyPair keys) throws IOException {
+        return writePem(dir, fileName, "PUBLIC KEY", keys.getPublic().getEncoded());
+    }
+
+    /**
+     * Test Fixture Encoder: writes a PEM block with conventional line wrapping
+     * accepted by Studio signing and deployment trust-key loaders.
+     */
+    private static Path writePem(Path dir, String fileName, String type, byte[] der) throws IOException {
+        Path path = dir.resolve(fileName);
+        String encoded = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(der);
+        String pem = "-----BEGIN " + type + "-----\n"
+                + encoded
+                + "\n-----END " + type + "-----\n";
+        Files.writeString(path, pem, StandardCharsets.US_ASCII);
+        return path;
+    }
+
+    /**
+     * System property helper: restores signing configuration after tests mutate
+     * the process-level Studio signing settings.
+     */
+    private static void restoreSystemProperty(String key, String previousValue) {
+        if (previousValue == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, previousValue);
+        }
     }
 
     /**

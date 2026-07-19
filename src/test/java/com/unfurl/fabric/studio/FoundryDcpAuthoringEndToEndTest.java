@@ -5,7 +5,9 @@ import com.unfurl.foundry.registries.InMemoryToolRegistry;
 import com.unfurl.foundry.runtime.AgentRunInvocable;
 import com.unfurl.foundry.server.FoundryDcpServer;
 import com.unfurl.foundry.substrate.agent.AgentDefinition;
+import com.unfurl.foundry.substrate.agent.AgentHarnessDefinition;
 import com.unfurl.foundry.substrate.agent.AgentPhase;
+import com.unfurl.foundry.substrate.engine.EmbeddedAgentHarnessRuntime;
 import com.unfurl.foundry.substrate.engine.EmbeddedAgentRuntime;
 import com.unfurl.foundry.substrate.model.Message;
 import com.unfurl.foundry.substrate.model.ModelResponse;
@@ -20,6 +22,11 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class FoundryDcpAuthoringEndToEndTest {
+    /**
+     * End-to-end regression: verifies Fabric invokes Foundry through DCP
+     * harness mode and maps a terminal catalog-grounded proposal back into the
+     * Studio authoring response contract.
+     */
     @Test
     void fabricDcpClientDrivesFoundryAgentRunWithScriptedModel() throws Exception {
         InMemoryProviderRegistry providers = new InMemoryProviderRegistry()
@@ -38,7 +45,10 @@ class FoundryDcpAuthoringEndToEndTest {
         AgentDefinition agent = new AgentDefinition(
                 "fabric-authoring",
                 "1.0.0",
-                Map.of(),
+                Map.of(
+                        "execution_modes", List.of("simple", "harness"),
+                        "default_execution_mode", "harness",
+                        "terminalKinds", List.of("clarify", "gap", "proposal")),
                 List.of(new AgentPhase(
                         "terminal",
                         null,
@@ -54,10 +64,22 @@ class FoundryDcpAuthoringEndToEndTest {
                 "customer-configured",
                 List.of());
 
+        AgentHarnessDefinition harness = new AgentHarnessDefinition(
+                "fabric-authoring-harness",
+                "1.0.0",
+                Map.of(),
+                agent,
+                null);
         FoundryDcpServer server = new FoundryDcpServer(
                 "127.0.0.1",
                 0,
-                new AgentRunInvocable("urn:unfurl:fabric:authoring", "1.0.0", agent, runtime));
+                new AgentRunInvocable(
+                        "urn:unfurl:fabric:authoring",
+                        "1.0.0",
+                        agent,
+                        runtime,
+                        new EmbeddedAgentHarnessRuntime(runtime),
+                        harness));
         try {
             server.start();
             DcpAuthoringClient client = new DcpAuthoringClient(

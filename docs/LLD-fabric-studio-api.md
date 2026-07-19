@@ -225,8 +225,15 @@ call this route when an operation must cross into Fabric Studio state. Fabric do
 classes here; it mirrors the stable tool-call JSON shape (`callId`, `toolName`, `arguments`, `metadata`) and converts
 tool arguments into the existing Studio API records before calling `StudioCatalogService`.
 
-The gateway is intentionally limited to Studio-owned state transitions and read models:
+The gateway covers Studio-owned state transitions/read models plus local
+Flowfoundry runbook execution tools used in development and CI. The local
+execution tools do not make the authoring agent a filesystem, signing, or Docker
+executor; they expose explicit tool calls that Flow can gate with PASS/GAP
+artifacts. Production deployments may bind the same logical tools through DCP
+`tool.call`, Foundry `pluginJar`, or deployment-runner HTTP tools when stronger
+runtime authority separation is required.
 
+- `fabric.artifact-inventory`
 - `fabric.catalog-admit`
 - `fabric.catalog-verify`
 - `fabric.assembly-create`
@@ -238,12 +245,29 @@ The gateway is intentionally limited to Studio-owned state transitions and read 
 - `fabric.deployment-resolve`
 - `fabric.candidate-compile`
 - `fabric.export-download`
+- `fabric.export-download-all`
+- `fabric.runtime-binding-generate`
+- `fabric.foundry-root-assemble`
+- `fabric.flow-root-assemble`
+- `fabric.container-image-build`
 
-Filesystem inventory, runtime-binding generation, deployment-root assembly, and image build tools are not implemented
-inside Studio. They must be separate Flow nodes, DCP `tool.call` bindings, or deployment-runner HTTP/plugin tools
-because those tools need filesystem, signing, or Docker authority outside Studio's tenant catalog/session boundary.
-Step 13's `fabric.export-download-all` is such a deployment-runner wrapper: it iterates the compile response artifacts
-and calls Studio `fabric.export-download` or the hash-pinned export content route for each artifact.
+The local deployment-runner tools use Studio's existing validation and artifact
+services where possible:
+
+- `fabric.artifact-inventory` hashes configured local files and returns `GAP`
+  with `questions` for missing required artifacts.
+- `fabric.export-download-all` downloads primary handoff/support export
+  artifacts by artifact id and SHA-256. Diagnostic sidecars are excluded by
+  default because they are debug-symbol style artifacts; callers may opt in with
+  `includeDiagnostics`.
+- `fabric.runtime-binding-generate` wraps the DCP runtime-binding generator over
+  the signed compiled support envelope.
+- `fabric.foundry-root-assemble` and `fabric.flow-root-assemble` copy only
+  explicit deployment-root inputs and validate required files before returning
+  PASS.
+- `fabric.container-image-build` defaults to explicit `PLAN_ONLY` or
+  `DOCKER_BUILD`; missing mode or image context returns `GAP` questions instead
+  of guessing.
 
 `fabric.catalog-admit` accepts the normal `StudioCatalogAdmissionRequest` shape. For local Flowfoundry runbook execution
 it may also accept `artifactInventoryPath` or an inline `artifactInventory` object produced by Step 1; the gateway turns

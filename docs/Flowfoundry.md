@@ -22,10 +22,16 @@ Implemented today:
 - Fabric Studio deployment resolution can resolve container-friendly deployment selections.
 - Fabric can delegate authoring to Foundry over DCP `agent.run` with `UNFURL_FOUNDRY_DCP_ENDPOINT`.
 - Foundry can run an `agent.run` DCP server from a deployment root containing agents, prompts, tool plugins, and provider configuration.
+- Fabric Studio exposes Flow-callable local/dev runbook tools through Step 17: artifact inventory, catalog
+  admission/verification, assembly/session work, authoring converse, intent application, Dynamic DCP projection,
+  deployment resolution, candidate compile, export download-all, runtime-binding generation, Foundry/Flow
+  deployment-root assembly, and explicit plan-only or Docker image build.
 
 Assumed for the complete export:
 
-- Studio exposes downloadable artifact content for the `StudioExportArtifact.url` returned by compile.
+- Studio exposes downloadable handoff/support artifact content for the `StudioExportArtifact.url` returned by compile.
+  Diagnostic sidecars remain optional debug artifacts and must not block the normal export handoff unless a caller
+  explicitly requests diagnostic download.
 - The exported deployment is containerized.
 - Runtime authentication, authorization, audit, telemetry, and secrets are expressed through DCP runtime bindings or ports, not hardcoded headers, vendors, or inline secrets.
 - Foundry provider, embedding, vector, RAG, tool, permission, cost, and event bindings are supplied by deployment profiles or runtime bindings.
