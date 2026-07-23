@@ -263,11 +263,23 @@ open.
 Authoring delegates to Foundry through DCP `agent.run` when configured. When no Foundry endpoint is configured, Fabric returns deterministic fallback behavior for local development and tests.
 Fabric sets `invocation.metadata.executionMode=harness` on Foundry-backed authoring calls so the governed Foundry
 agent harness can call proposal tools until a terminal `clarify`, `gap`, or `proposal` response is produced.
+Clarification questions are typed API objects. Select-style questions expose options as `{ "label": "...", "value": "..." }`
+objects so Studio can render friendly text while sending stable catalog file ids, catalog entry ids, or enum values back
+to Fabric/Foundry. Follow-up turns carry those choices in `StudioAuthoringConverseRequest.questionAnswers`, a structured
+map keyed by question id, instead of forcing the agent to parse answer bullets from `userMessage`.
 `StudioAuthoringConverseRequest` may carry `catalogFileId`. Fabric resolves that tenant catalog file before building
 the authoring context. When no session id is supplied, the authoring session is started from the requested catalog file
 or, when absent, from the latest tenant `CATALOG` file version. Foundry receives `catalogFile`, `catalogFiles`,
-`sessionHistory`, and `catalogHash` in the `agent.run` input so it can ask clarification questions using real tenant
-state instead of asking the operator for filesystem paths or raw hashes.
+`sessionHistory`, `catalogHash`, and `questionAnswers` in the `agent.run` input so it can ask clarification questions
+using real tenant state instead of asking the operator for filesystem paths or raw hashes.
+The request may also carry an `actionContext` map for UI-originated edit assist.
+Valid action contexts include `ADD_COMPONENT`, `REMOVE_COMPONENT`,
+`REPLACE_COMPONENT`, `CONNECT`, `DISCONNECT`, and `CONFIGURE_SUBSTRATE`, plus
+the selected catalog entry/component id, visible ports, substrate requirements,
+and draft session id when available. Fabric passes this context through to
+Foundry and the deterministic fallback uses it to ask configuration or removal
+impact questions. The action context is advisory only; draft mutation still
+requires accepted Studio intents through `/sessions/{sessionId}/intents`.
 Foundry-backed authoring responses that claim `kind=execution` are rejected as gaps because Flow owns Flowfoundry
 runbook DAG execution. Runbook steps call Studio tools through Flow nodes and consume Flow artifact outputs instead of
 conversation text.

@@ -937,6 +937,11 @@ public final class StudioCatalogService {
     ) {
     }
 
+    /**
+     * Adapter: handles one Studio authoring turn by resolving the tenant/session
+     * context, delegating to Foundry when configured, or using the deterministic
+     * local bridge to ask grounded catalog questions and emit guarded proposals.
+     */
     public synchronized StudioAuthoringConverseResponse converseAuthoring(StudioAuthoringConverseRequest request) {
         StudioAuthoringConverseRequest safe = request == null
                 ? new StudioAuthoringConverseRequest("tenant-local", "assembly-demo", "", List.of(), "")
@@ -956,22 +961,24 @@ public final class StudioCatalogService {
 
         String prompt = safe.userMessage().trim();
         String lowered = prompt.toLowerCase();
+        List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
+        Map<String, Object> questionAnswers = safe.questionAnswers();
 
-        if (prompt.length() < 12 || lowered.matches("^(build|make|create|app|service|contract)\\s*$")) {
+        if (entries.isEmpty()) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "This tenant does not have admitted catalog components to compose from.",
+                    List.of("catalog.empty"));
+        }
+
+        if (!safe.actionContext().isEmpty() && questionAnswers.isEmpty()) {
             return StudioAuthoringConverseResponse.clarify(
                     session.sessionId(),
-                    "I need a little more detail before I can propose a Fabric contract.",
-                    List.of(
-                            new StudioAuthoringQuestion(
-                                    "capability",
-                                    "What capability should the application provide?",
-                                    "TEXT",
-                                    List.of()),
-                            new StudioAuthoringQuestion(
-                                    "deploymentTarget",
-                                    "Where should this run?",
-                                    "SINGLE_SELECT",
-                                    List.of("Customer Runtime Substrate", "Kubernetes production", "Local development"))));
+                    "I can help with this draft edit, but I need the configuration and impact choices first.",
+                    authoringActionQuestions(safe.actionContext(), entries));
+        }
+        if (!safe.actionContext().isEmpty()) {
+            return deterministicActionProposal(session, tenant, safe.actionContext(), questionAnswers, entries);
         }
 
         if (lowered.contains("uncatalogued")
@@ -984,18 +991,18 @@ public final class StudioCatalogService {
                     List.of("uncatalogued.capability"));
         }
 
-        List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
-        if (entries.isEmpty()) {
-            return StudioAuthoringConverseResponse.gap(
+        Optional<StudioVisualCatalogEntry> answeredComponent = selectedEntryFromAnswers(questionAnswers, entries);
+        if (answeredComponent.isEmpty() && shouldAskAuthoringDiscovery(prompt, lowered, entries)) {
+            return StudioAuthoringConverseResponse.clarify(
                     session.sessionId(),
-                    "This tenant does not have admitted catalog components to compose from.",
-                    List.of("catalog.empty"));
+                    "Let's ground this draft in the tenant catalog before I propose a Fabric contract.",
+                    authoringDiscoveryQuestions(tenant, session, entries));
         }
 
-        StudioVisualCatalogEntry selected = entries.stream()
+        StudioVisualCatalogEntry selected = answeredComponent.orElseGet(() -> entries.stream()
                 .filter(entry -> promptMentionsEntry(prompt, entry))
                 .findFirst()
-                .orElse(entries.get(0));
+                .orElse(entries.get(0)));
         String capability = firstOfferedCapability(selected).orElse(slug(selected.catalogEntryId()).replace('-', '.'));
         String targetName = authoringTargetName(prompt);
         String needsYaml = """
@@ -1049,6 +1056,10 @@ public final class StudioCatalogService {
         return this;
     }
 
+    /**
+     * Adapter: projects Fabric's tenant-scoped catalog/session read models into
+     * the neutral DCP `agent.run` invocation consumed by the Foundry host.
+     */
     private StudioAuthoringConverseResponse converseViaDcp(
             StudioAuthoringConverseRequest request, String tenant, String assembly, StudioDraftSession session) {
         List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
@@ -1060,7 +1071,7 @@ public final class StudioCatalogService {
                     .toList();
             Map<String, Object> entryMap = new LinkedHashMap<>();
             entryMap.put("catalogEntryId", entry.catalogEntryId());
-            entryMap.put("displayName", entry.catalogEntryId());
+            entryMap.put("displayName", labelForCatalogEntry(entry.catalogEntryId()));
             entryMap.put("offeredCapabilities", capabilities);
             catalog.add(entryMap);
         }
@@ -1073,6 +1084,7 @@ public final class StudioCatalogService {
         input.put("assemblyId", assembly);
         input.put("sessionId", session.sessionId());
         input.put("userMessage", request.userMessage());
+        input.put("questionAnswers", request.questionAnswers());
         input.put("conversation", conversation);
         input.put("catalog", catalog);
         input.put("catalogHash", catalogSnapshot.catalogHash());
@@ -1084,6 +1096,7 @@ public final class StudioCatalogService {
         input.put("sessionHistory", listSessionHistory(tenant, assembly).stream()
                 .map(this::authoringSessionHistoryMap)
                 .toList());
+        input.put("actionContext", request.actionContext());
 
         // DCP invocation metadata: request Foundry's governed harness mode so the
         // authoring agent can execute tools in a loop before returning a terminal answer.
@@ -1098,6 +1111,333 @@ public final class StudioCatalogService {
                     List.of());
         }
         return mapAuthoringOutput(tenant, session.sessionId(), result.output());
+    }
+
+    /**
+     * Strategy: decides whether deterministic fallback must ask grounded
+     * discovery questions before it can safely produce catalog-backed intents.
+     */
+    private boolean shouldAskAuthoringDiscovery(
+            String prompt,
+            String lowered,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        if (prompt.length() < 12 || lowered.matches("^(build|make|create|author|compose|app|service|contract)\\s*$")) {
+            return true;
+        }
+        if (entries.size() > 1
+                && (lowered.contains("assembly") || lowered.contains("catalog") || lowered.contains("draft"))
+                && entries.stream().noneMatch(entry -> promptMentionsEntry(prompt, entry))) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Projector: builds typed clarification questions from tenant-owned catalog
+     * file rows and admitted catalog entries, preserving exact ids in options so
+     * a follow-up answer can be replayed through the normal authoring endpoint.
+     */
+    private List<StudioAuthoringQuestion> authoringDiscoveryQuestions(
+            String tenant,
+            StudioDraftSession session,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        List<StudioAuthoringQuestion> questions = new ArrayList<>();
+        List<StudioFileRecord> catalogFiles = listFiles(tenant, "CATALOG", "", "");
+        if (catalogFiles.size() > 1 && (session.catalogFileId() == null || session.catalogFileId().isBlank())) {
+            questions.add(new StudioAuthoringQuestion(
+                    "catalogFileId",
+                    "Which tenant catalog version should I use?",
+                    "SINGLE_SELECT",
+                    catalogFiles.stream().map(this::authoringCatalogFileOption).toList()));
+        }
+        if (entries.size() > 1) {
+            questions.add(new StudioAuthoringQuestion(
+                    "startingComponent",
+                    "Which admitted component should be the starting component for this assembly?",
+                    "SINGLE_SELECT",
+                    entries.stream()
+                            .limit(12)
+                            .map(this::authoringComponentOption)
+                            .toList()));
+        }
+        questions.add(new StudioAuthoringQuestion(
+                "assemblyGoal",
+                "What should this assembly do once the starting component is selected?",
+                "TEXT",
+                List.of()));
+        return questions;
+    }
+
+    /**
+     * Strategy: resolves structured clarification answers into an admitted
+     * catalog entry without asking the model to parse display text.
+     */
+    private Optional<StudioVisualCatalogEntry> selectedEntryFromAnswers(
+            Map<String, Object> answers,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        String answered = firstNonBlank(
+                answerAsString(answers.get("startingComponent")),
+                answerAsString(answers.get("rootComponent")),
+                answerAsString(answers.get("catalogEntryId")));
+        if (answered.isBlank()) {
+            return Optional.empty();
+        }
+        return entries.stream()
+                .filter(entry -> answered.equals(entry.catalogEntryId())
+                        || answered.contains(entry.catalogEntryId())
+                        || labelForCatalogEntry(entry.catalogEntryId()).equalsIgnoreCase(answered))
+                .findFirst();
+    }
+
+    /**
+     * Deterministic fallback strategy: turns an answered visual edit assist
+     * request into a catalog-guarded proposal for the supported local ADD case.
+     * Foundry remains the normal path for richer configuration reasoning.
+     */
+    private StudioAuthoringConverseResponse deterministicActionProposal(
+            StudioDraftSession session,
+            String tenant,
+            Map<String, Object> actionContext,
+            Map<String, Object> questionAnswers,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        String operation = String.valueOf(actionContext.getOrDefault("operation", "CONFIGURE")).toUpperCase(Locale.ROOT);
+        if (!"ADD_COMPONENT".equals(operation)) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "The deterministic authoring bridge can only propose answered ADD_COMPONENT actions.",
+                    List.of(operation));
+        }
+        String catalogEntryId = firstNonBlank(
+                answerAsString(questionAnswers.get("catalogEntryId")),
+                asString(actionContext.get("catalogEntryId")));
+        Optional<StudioVisualCatalogEntry> selected = entries.stream()
+                .filter(entry -> entry.catalogEntryId().equals(catalogEntryId))
+                .findFirst();
+        if (selected.isEmpty()) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "The selected component is not currently admitted for this tenant.",
+                    List.of(catalogEntryId.isBlank() ? "catalogEntryId" : catalogEntryId));
+        }
+        Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
+                tenant,
+                "ADD_COMPONENT",
+                Map.of("catalogEntryId", selected.get().catalogEntryId()));
+        if (rejection.isPresent()) {
+            return StudioAuthoringConverseResponse.gap(
+                    session.sessionId(),
+                    "The selected component is not currently admitted for this tenant.",
+                    List.of(selected.get().catalogEntryId()));
+        }
+        String capability = firstOfferedCapability(selected.get()).orElse(slug(selected.get().catalogEntryId()).replace('-', '.'));
+        Map<String, Object> addIntent = new LinkedHashMap<>();
+        addIntent.put("type", "ADD_COMPONENT");
+        addIntent.put("catalogEntryId", selected.get().catalogEntryId());
+        StudioAuthoringProposal proposal = new StudioAuthoringProposal(
+                """
+                requiredCapabilities:
+                  - capability: %s
+                    capabilityVersion: ^1
+                """.formatted(capability),
+                List.of(addIntent),
+                new StudioDeploymentPolicyDraft(
+                        List.of("CONTAINERIZED_SERVICE"),
+                        List.of(),
+                        List.of(),
+                        new StudioDeploymentRuntimeDraft(null, null, true, null, null)),
+                List.of("proposal generated from structured action answers; review before accepting"));
+        return StudioAuthoringConverseResponse.proposal(
+                session.sessionId(),
+                "I prepared a governed add-component proposal from the structured answers.",
+                proposal);
+    }
+
+    /**
+     * Projector: turns UI-originated visual edit context into targeted
+     * clarification questions. This keeps add/remove/replace/substrate assist
+     * inside the authoring-agent contract while leaving mutation to Studio
+     * intents after the operator accepts a proposal.
+     */
+    private List<StudioAuthoringQuestion> authoringActionQuestions(
+            Map<String, Object> actionContext,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        String operation = String.valueOf(actionContext.getOrDefault("operation", "CONFIGURE")).toUpperCase(Locale.ROOT);
+        String catalogEntryId = asString(actionContext.get("catalogEntryId"));
+        String label = firstNonBlank(
+                asString(actionContext.get("componentLabel")),
+                asString(actionContext.get("selectedComponentLabel")),
+                catalogEntryId == null || catalogEntryId.isBlank() ? "" : labelForCatalogEntry(catalogEntryId),
+                "the selected item");
+        List<String> dependencyPorts = actionStringList(actionContext.get("dependencyPorts"));
+        List<String> substratePorts = actionStringList(actionContext.get("substratePorts"));
+        if (dependencyPorts.isEmpty() && catalogEntryId != null && !catalogEntryId.isBlank()) {
+            dependencyPorts = entries.stream()
+                    .filter(entry -> catalogEntryId.equals(entry.catalogEntryId()))
+                    .findFirst()
+                    .map(entry -> portsOfKind(entry.visualManifest(), "DEPENDENCY").stream()
+                            .map(PortDescriptor::capability)
+                            .toList())
+                    .orElse(List.of());
+        }
+        List<StudioAuthoringQuestion> questions = new ArrayList<>();
+        switch (operation) {
+            case "ADD_COMPONENT" -> {
+                questions.add(new StudioAuthoringQuestion(
+                        "configurationMode",
+                        "How should " + label + " be configured before adding it?",
+                        "SINGLE_SELECT",
+                        options("Use catalog defaults", "Bind required ports now", "Add now and configure later")));
+                if (!dependencyPorts.isEmpty() || !substratePorts.isEmpty()) {
+                    questions.add(new StudioAuthoringQuestion(
+                            "bindingReferences",
+                            "Which provider, secret, or config references should satisfy "
+                                    + joinedPortSummary(dependencyPorts, substratePorts) + "?",
+                            "TEXT",
+                            List.of()));
+                }
+                questions.add(new StudioAuthoringQuestion(
+                        "externalConnections",
+                        "Does this component need external endpoints, credentials, queues, stores, or model providers?",
+                        "TEXT",
+                        List.of()));
+            }
+            case "REMOVE_COMPONENT" -> {
+                questions.add(new StudioAuthoringQuestion(
+                        "removalImpact",
+                        "What should happen to dependencies, connections, and substrate bindings owned by " + label + "?",
+                        "SINGLE_SELECT",
+                        options("Remove component and dependent connections", "Replace before removing", "Cancel removal")));
+                questions.add(new StudioAuthoringQuestion(
+                        "stateCleanup",
+                        "Any state, data, secret, or external connection cleanup that must be preserved or handed off?",
+                        "TEXT",
+                        List.of()));
+            }
+            case "REPLACE_COMPONENT" -> {
+                questions.add(new StudioAuthoringQuestion(
+                        "replacementScope",
+                        "How should Fabric handle bindings while replacing " + label + "?",
+                        "SINGLE_SELECT",
+                        options("Preserve compatible bindings", "Reconfigure all bindings", "Review alternatives first")));
+                questions.add(new StudioAuthoringQuestion(
+                        "replacementConfiguration",
+                        "What configuration or external connection changes should the replacement use?",
+                        "TEXT",
+                        List.of()));
+            }
+            case "CONNECT", "DISCONNECT" -> {
+                questions.add(new StudioAuthoringQuestion(
+                        "connectionMode",
+                        "How should this connection change be validated?",
+                        "SINGLE_SELECT",
+                        options("Use selected ports", "Ask for compatible ports", "Configure external endpoint")));
+                questions.add(new StudioAuthoringQuestion(
+                        "connectionConfiguration",
+                        "Provide any endpoint, credential reference, protocol, or policy details for this connection.",
+                        "TEXT",
+                        List.of()));
+            }
+            default -> {
+                questions.add(new StudioAuthoringQuestion(
+                        "runtimeTarget",
+                        "Which substrate/runtime target should host or satisfy this configuration?",
+                        "TEXT",
+                        List.of()));
+                questions.add(new StudioAuthoringQuestion(
+                        "secretAndConfigRefs",
+                        "Which secret, config, telemetry, audit, or provider references should be bound?",
+                        "TEXT",
+                        List.of()));
+            }
+        }
+        questions.add(new StudioAuthoringQuestion(
+                "applyPreference",
+                "After these answers, should the agent propose Studio intents or only explain the configuration impact?",
+                "SINGLE_SELECT",
+                options("Propose governed Studio intents", "Explain impact only")));
+        return questions;
+    }
+
+    /**
+     * Answer parser: normalizes one structured clarification answer into the
+     * stable value string used by catalog/file lookup helpers.
+     */
+    private static String answerAsString(Object answer) {
+        if (answer instanceof List<?> list) {
+            return list.isEmpty() ? "" : asString(list.getFirst());
+        }
+        return asString(answer) == null ? "" : asString(answer);
+    }
+
+    /**
+     * Option factory: creates simple label=value authoring options for enum-like
+     * choices where the operator-facing copy is already the stable value.
+     */
+    private static List<StudioAuthoringQuestionOption> options(String... values) {
+        List<StudioAuthoringQuestionOption> result = new ArrayList<>();
+        if (values != null) {
+            for (String value : values) {
+                result.add(StudioAuthoringQuestionOption.of(value));
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * Formatting helper: selects the first nonblank label candidate for
+     * action-scoped clarification copy without exposing nullable map fields.
+     */
+    private static String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Formatting helper: renders dependency and substrate port names in one
+     * operator-facing phrase for configuration questions.
+     */
+    private static String joinedPortSummary(List<String> dependencyPorts, List<String> substratePorts) {
+        List<String> ports = new ArrayList<>();
+        ports.addAll(dependencyPorts);
+        ports.addAll(substratePorts);
+        return ports.isEmpty() ? "the required ports" : String.join(", ", ports);
+    }
+
+    /**
+     * JSON adapter: normalizes optional action-context lists into strings while
+     * dropping blank values that would produce noisy clarification questions.
+     */
+    private static List<String> actionStringList(Object value) {
+        return asStringList(value).stream()
+                .filter(item -> item != null && !item.isBlank())
+                .toList();
+    }
+
+    /**
+     * Formatter: renders a catalog file option with the readable title first
+     * and the immutable file id/hash retained for exact follow-up selection.
+     */
+    private StudioAuthoringQuestionOption authoringCatalogFileOption(StudioFileRecord file) {
+        return new StudioAuthoringQuestionOption(
+                "%s (v%s, %s)".formatted(file.fileTitle(), file.version(), file.sha256()),
+                file.fileId());
+    }
+
+    /**
+     * Formatter: renders a component option with a human-readable label while
+     * keeping the exact catalogEntryId visible for governed intent creation.
+     */
+    private StudioAuthoringQuestionOption authoringComponentOption(StudioVisualCatalogEntry entry) {
+        return new StudioAuthoringQuestionOption(labelForCatalogEntry(entry.catalogEntryId()), entry.catalogEntryId());
     }
 
     /**
@@ -1243,11 +1583,42 @@ public final class StudioCatalogService {
                             asString(q.get("id")),
                             asString(q.get("prompt")),
                             q.get("kind") == null ? "TEXT" : String.valueOf(q.get("kind")),
-                            asStringList(q.get("options"))));
+                            authoringQuestionOptions(q.get("options"))));
                 }
                 return StudioAuthoringConverseResponse.clarify(sessionId, message, questions);
             }
         }
+    }
+
+    /**
+     * JSON adapter: accepts both the current label/value option object shape and
+     * older string-only model/tool outputs without leaking Java map formatting to
+     * the Studio UI.
+     */
+    private static List<StudioAuthoringQuestionOption> authoringQuestionOptions(Object value) {
+        List<StudioAuthoringQuestionOption> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Map<?, ?> map) {
+                    String label = firstNonBlank(
+                            asString(map.get("label")),
+                            asString(map.get("name")),
+                            asString(map.get("text")),
+                            asString(map.get("prompt")),
+                            asString(map.get("value")));
+                    String optionValue = firstNonBlank(
+                            asString(map.get("value")),
+                            asString(map.get("id")),
+                            asString(map.get("catalogEntryId")),
+                            asString(map.get("fileId")),
+                            label);
+                    result.add(new StudioAuthoringQuestionOption(label, optionValue));
+                } else {
+                    result.add(StudioAuthoringQuestionOption.of(asString(item)));
+                }
+            }
+        }
+        return List.copyOf(result);
     }
 
     @SuppressWarnings("unchecked")

@@ -49,6 +49,16 @@ come from tool outputs.
 
 Runbook `execution` artifacts are produced by Flow nodes, not by `/studio/authoring/converse`.
 
+The generic Fabric authoring agent starts with tenant-scoped assembly discovery, not with
+Flowfoundry-specific assumptions. Its first duty is to inspect `catalogFiles`, `catalogFile`,
+`sessionHistory`, and the admitted `catalog` payload and ask the smallest grounded clarification
+questions needed to begin a draft. In particular, when the user has not named a starting component,
+the agent should list readable catalog file titles and viable starting/root components from the
+selected catalog and ask the operator to choose. Flowfoundry remains a concrete workflow/template
+that Flow can execute later; the Fabric authoring agent should mention Flowfoundry only when the
+user explicitly asks for that product environment or the selected template/runbook context is passed
+in.
+
 ## Flow Runbook Workflow Construct
 
 The first 18 steps should be represented as a Flow workflow with phase subgraphs:
@@ -182,13 +192,15 @@ Ask these before applying intents:
 - What assembly name/id should be used?
 - Which tenant catalog file version should the draft use? If unspecified, use the latest tenant `CATALOG` file row from
   `fabric.file-list`.
+- Which admitted catalog component should be the starting/root component for this assembly? Show the operator
+  readable component labels and their exact `catalogEntryId` values from the selected catalog.
 - Should we start a new draft session, continue an existing session from `fabric.session-history`, or fork a previous
   session with a new display name?
 - Is needs input supplied as a file/source bundle, or should Studio extract needs?
-- Which recursive Flow capabilities are required for this integrated environment?
-- Which recursive Foundry capabilities are required? For the current Flowfoundry run, tools and RAG must be explicit
-  when needed.
-- Which model provider, embedding provider, vector store, tool bundles, and runtime profile should be used?
+- Which capabilities must the assembly include? For a Flow + Foundry environment, recursive Flow/Foundry scope is a
+  follow-up question after the operator selects that environment or starting component.
+- Which model provider, embedding provider, vector store, tool bundles, and runtime profile should be used when those
+  capabilities are part of the selected assembly scope?
 - Do any Flow workflow nodes call tools directly with `uses: tool.call`, and if so which provider claim should satisfy
   the `tool.call` child DCP contract?
 - Are cross-cutting claims optional for this development run or required for production readiness?

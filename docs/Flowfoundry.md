@@ -392,6 +392,10 @@ curl -sS -X POST "http://127.0.0.1:7878/studio/authoring/converse" \
 
 Treat every authoring response as advisory. Apply only catalog-backed intents and run them back through validation and compilation.
 
+The generic Fabric authoring agent should first ground the draft in the selected tenant catalog file,
+historical session choice, and starting component. The Flowfoundry-specific clarification below applies
+after the operator has selected the Flow + Foundry environment or the Flowfoundry runbook/template.
+
 For Flowfoundry, a top-level authoring proposal is not complete merely because it found providers for
 `workflow.execute` and `agent.run`. If the request does not state the recursive Flow and Foundry
 capability scope, the authoring response should be `kind=clarify` and ask which recursive
