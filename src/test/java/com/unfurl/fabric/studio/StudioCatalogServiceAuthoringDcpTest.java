@@ -77,6 +77,19 @@ class StudioCatalogServiceAuthoringDcpTest {
         AtomicReference<ContractInvocation> seen = new AtomicReference<>();
         StudioCatalogService service = new StudioCatalogService();
         StudioFileRecord catalogFile = service.listFiles("tenant-local", "CATALOG", "", "").getFirst();
+        for (int index = 0; index < 10; index++) {
+            service.createDraftSession("tenant-local", "assembly-demo", new StudioCreateDraftCompositionRequest(
+                    "tenant-local",
+                    "assembly-demo",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "alice",
+                    "Alice",
+                    catalogFile.fileId(),
+                    "Older Flowfoundry Draft " + index));
+        }
         service.createDraftSession("tenant-local", "assembly-demo", new StudioCreateDraftCompositionRequest(
                 "tenant-local",
                 "assembly-demo",
@@ -119,7 +132,17 @@ class StudioCatalogServiceAuthoringDcpTest {
                 "create the Flowfoundry environment"));
 
         Map<String, Object> input = seen.get().input();
-        assertThat(input).containsKeys("catalogHash", "session", "catalogFile", "catalogFiles", "sessionHistory");
+        assertThat(input).containsKeys(
+                "catalogHash",
+                "session",
+                "catalogFile",
+                "catalogFiles",
+                "sessionHistory",
+                "catalogSummary",
+                "catalogPreview",
+                "contextLimits",
+                "toolHydration");
+        assertThat(input).doesNotContainKey("catalog");
         assertThat(stringMap(input.get("catalogFile")))
                 .containsEntry("fileId", catalogFile.fileId())
                 .containsEntry("fileType", "CATALOG");
@@ -127,17 +150,36 @@ class StudioCatalogServiceAuthoringDcpTest {
                 .containsEntry("catalogFileId", catalogFile.fileId())
                 .containsEntry("displayName", "Authoring Flowfoundry Draft");
         assertThat((List<?>) input.get("catalogFiles"))
-                .anySatisfy(file -> assertThat(stringMap(file)).containsEntry("fileId", catalogFile.fileId()));
+                .hasSizeLessThanOrEqualTo(8)
+                .anySatisfy(file -> {
+                    Map<String, Object> row = stringMap(file);
+                    assertThat(row).containsEntry("fileId", catalogFile.fileId());
+                    assertThat(row).doesNotContainKeys("filePath", "sha256");
+                });
         assertThat((List<?>) input.get("sessionHistory"))
+                .hasSize(8)
                 .anySatisfy(session -> assertThat(stringMap(session))
                         .containsEntry("displayName", "Historical Flowfoundry Draft")
                         .containsEntry("catalogFileId", catalogFile.fileId()));
-        assertThat((List<?>) input.get("catalog"))
+        assertThat(stringMap(input.get("contextLimits")))
+                .containsEntry("sessionHistoryLimit", 8)
+                .containsEntry("catalogPreviewLimit", 20)
+                .containsEntry("catalogFilesLimit", 8)
+                .containsEntry("conversationLimit", 8);
+        assertThat((Integer) stringMap(input.get("contextLimits")).get("sessionHistoryOmitted"))
+                .isGreaterThan(0);
+        assertThat(stringMap(input.get("catalogSummary")))
+                .containsEntry("catalogFileId", catalogFile.fileId())
+                .containsEntry("previewLimit", 20);
+        assertThat(stringMap(input.get("toolHydration")))
+                .containsEntry("catalogQueryTool", "fabric.catalog-query");
+        assertThat((List<?>) input.get("catalogPreview"))
                 .anySatisfy(entry -> {
                     Map<String, Object> catalogEntry = stringMap(entry);
                     assertThat(catalogEntry.get("displayName"))
-                            .as("authoring context should expose readable component labels")
+                            .as("compact preview should expose readable component labels")
                             .isNotEqualTo(catalogEntry.get("catalogEntryId"));
+                    assertThat(catalogEntry).doesNotContainKey("visualManifest");
                 });
     }
 
@@ -220,14 +262,37 @@ class StudioCatalogServiceAuthoringDcpTest {
                 List.of(),
                 "Here are my structured answers.",
                 Map.of(
-                        "startingComponent", "uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar",
-                        "recursiveCapabilities", List.of("tools", "rag")),
+                        "starting_component", "uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar",
+                        "recursive_capabilities", List.of("tools", "rag")),
                 Map.of()));
 
         assertThat(stringMap(seen.get().input().get("questionAnswers")))
+                .containsEntry("starting_component", "uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar")
                 .containsEntry("startingComponent", "uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar");
         assertThat(asStringList(stringMap(seen.get().input().get("questionAnswers")).get("recursiveCapabilities")))
                 .containsExactly("tools", "rag");
+    }
+
+    @Test
+    void deterministicFallbackAcceptsSnakeCaseStartingComponentAnswer() {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioAuthoringConverseResponse response = service.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local",
+                "assembly-demo",
+                "",
+                "",
+                "",
+                List.of(),
+                "Here are my structured answers.",
+                Map.of("starting_component", "com.unfurl:validation-service:1.1.0"),
+                Map.of()));
+
+        assertThat(response.kind()).isEqualTo("proposal");
+        assertThat(response.proposal().intents())
+                .singleElement()
+                .satisfies(intent -> assertThat(intent)
+                        .containsEntry("catalogEntryId", "com.unfurl:validation-service:1.1.0"));
     }
 
     @Test

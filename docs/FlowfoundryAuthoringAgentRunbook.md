@@ -51,13 +51,16 @@ Runbook `execution` artifacts are produced by Flow nodes, not by `/studio/author
 
 The generic Fabric authoring agent starts with tenant-scoped assembly discovery, not with
 Flowfoundry-specific assumptions. Its first duty is to inspect `catalogFiles`, `catalogFile`,
-`sessionHistory`, and the admitted `catalog` payload and ask the smallest grounded clarification
-questions needed to begin a draft. In particular, when the user has not named a starting component,
-the agent should list readable catalog file titles and viable starting/root components from the
-selected catalog and ask the operator to choose. Flowfoundry remains a concrete workflow/template
-that Flow can execute later; the Fabric authoring agent should mention Flowfoundry only when the
-user explicitly asks for that product environment or the selected template/runbook context is passed
-in.
+`sessionHistory`, `catalogSummary`, `catalogPreview`, `contextLimits`, and `toolHydration`, then ask the smallest
+grounded clarification questions needed to begin a draft. These prompt fields are previews, not complete tenant state:
+`catalogFiles`, `sessionHistory`, and conversation turns are bounded and `contextLimits` reports omitted counts. It
+must not require Fabric to embed the full admitted catalog, all historical sessions, file paths, hashes, or a full chat
+replay in the prompt; when it needs more rows, provider matches, port details, older file versions, or older sessions it
+must call `fabric.catalog-query`, `fabric.file-list`, `fabric.session-history`, or the relevant Fabric/Flow tool. In
+particular, when the user has not named a starting component, the agent should list readable catalog file titles and
+viable starting/root components from the selected catalog and ask the operator to choose. Flowfoundry remains a concrete
+workflow/template that Flow can execute later; the Fabric authoring agent should mention Flowfoundry only when the user
+explicitly asks for that product environment or the selected template/runbook context is passed in.
 
 ## Flow Runbook Workflow Construct
 

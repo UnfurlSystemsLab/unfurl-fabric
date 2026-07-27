@@ -94,6 +94,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
@@ -110,6 +111,11 @@ import java.util.zip.ZipOutputStream;
  * and UI layout state never becomes contract validity.
  */
 public final class StudioCatalogService {
+    private static final int AUTHORING_CONTEXT_CONVERSATION_LIMIT = 8;
+    private static final int AUTHORING_CONTEXT_CATALOG_FILE_LIMIT = 8;
+    private static final int AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT = 8;
+    private static final int AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT = 20;
+
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioLayoutState>> layoutsByTenant = new ConcurrentHashMap<>();
@@ -262,8 +268,8 @@ public final class StudioCatalogService {
                         Math.toIntExact(linkedCounts.getOrDefault(session.sessionId(), 0L)),
                         session.intentLog().size()))
                 .sorted(Comparator
-                        .comparing(StudioSessionHistoryItem::lastOpenedAt).reversed()
-                        .thenComparing(StudioSessionHistoryItem::updatedAt).reversed()
+                        .comparing(StudioSessionHistoryItem::lastOpenedAt, Comparator.reverseOrder())
+                        .thenComparing(StudioSessionHistoryItem::updatedAt, Comparator.reverseOrder())
                         .thenComparing(StudioSessionHistoryItem::sessionId))
                 .toList();
     }
@@ -962,7 +968,7 @@ public final class StudioCatalogService {
         String prompt = safe.userMessage().trim();
         String lowered = prompt.toLowerCase();
         List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
-        Map<String, Object> questionAnswers = safe.questionAnswers();
+        Map<String, Object> questionAnswers = canonicalAuthoringQuestionAnswers(safe.questionAnswers());
 
         if (entries.isEmpty()) {
             return StudioAuthoringConverseResponse.gap(
@@ -1064,38 +1070,31 @@ public final class StudioCatalogService {
             StudioAuthoringConverseRequest request, String tenant, String assembly, StudioDraftSession session) {
         List<StudioVisualCatalogEntry> entries = authoringCatalogEntries(tenant, session);
         StudioCatalogVisualsResponse catalogSnapshot = response(entries);
-        List<Map<String, Object>> catalog = new ArrayList<>();
-        for (StudioVisualCatalogEntry entry : entries) {
-            List<String> capabilities = portsOfKind(entry.visualManifest(), "OFFER").stream()
-                    .map(PortDescriptor::capability)
-                    .toList();
-            Map<String, Object> entryMap = new LinkedHashMap<>();
-            entryMap.put("catalogEntryId", entry.catalogEntryId());
-            entryMap.put("displayName", labelForCatalogEntry(entry.catalogEntryId()));
-            entryMap.put("offeredCapabilities", capabilities);
-            catalog.add(entryMap);
-        }
-        List<Map<String, Object>> conversation = new ArrayList<>();
-        for (StudioAuthoringConversationMessage message : request.conversation()) {
-            conversation.add(Map.of("role", message.role(), "content", message.content()));
-        }
+        List<StudioAuthoringConversationMessage> requestConversation =
+                request.conversation() == null ? List.of() : request.conversation();
+        List<Map<String, Object>> conversation = boundedAuthoringConversation(requestConversation);
+        List<StudioFileRecord> catalogFiles = listFiles(tenant, "CATALOG", "", "");
+        List<StudioSessionHistoryItem> sessionHistory = listSessionHistory(tenant, assembly);
         Map<String, Object> input = new LinkedHashMap<>();
         input.put("tenantId", tenant);
         input.put("assemblyId", assembly);
         input.put("sessionId", session.sessionId());
         input.put("userMessage", request.userMessage());
-        input.put("questionAnswers", request.questionAnswers());
+        input.put("questionAnswers", canonicalAuthoringQuestionAnswers(request.questionAnswers()));
         input.put("conversation", conversation);
-        input.put("catalog", catalog);
         input.put("catalogHash", catalogSnapshot.catalogHash());
         input.put("session", authoringSessionMap(session));
         input.put("catalogFile", authoringCatalogFileMap(tenant, session.catalogFileId()));
-        input.put("catalogFiles", listFiles(tenant, "CATALOG", "", "").stream()
-                .map(this::authoringFileMap)
-                .toList());
-        input.put("sessionHistory", listSessionHistory(tenant, assembly).stream()
-                .map(this::authoringSessionHistoryMap)
-                .toList());
+        input.put("catalogFiles", boundedAuthoringCatalogFiles(catalogFiles));
+        input.put("sessionHistory", boundedAuthoringSessionHistory(sessionHistory));
+        input.put("catalogSummary", authoringCatalogSummary(catalogSnapshot, session, entries));
+        input.put("catalogPreview", authoringCatalogPreview(entries, AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        input.put("contextLimits", authoringContextLimits(
+                requestConversation,
+                catalogFiles,
+                sessionHistory,
+                entries));
+        input.put("toolHydration", authoringToolHydration(tenant, assembly, session));
         input.put("actionContext", request.actionContext());
 
         // DCP invocation metadata: request Foundry's governed harness mode so the
@@ -1111,6 +1110,69 @@ public final class StudioCatalogService {
                     List.of());
         }
         return mapAuthoringOutput(tenant, session.sessionId(), result.output());
+    }
+
+    /**
+     * Context projector: emits bounded catalog metadata for Foundry prompts. The
+     * full catalog stays behind Studio tools, so the model sees enough to ask
+     * grounded questions without receiving every visual manifest or claim row.
+     */
+    private Map<String, Object> authoringCatalogSummary(
+            StudioCatalogVisualsResponse catalogSnapshot,
+            StudioDraftSession session,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        Set<String> capabilities = new TreeSet<>();
+        for (StudioVisualCatalogEntry entry : entries == null ? List.<StudioVisualCatalogEntry>of() : entries) {
+            portsOfKind(entry.visualManifest(), "OFFER").stream()
+                    .map(PortDescriptor::capability)
+                    .forEach(capabilities::add);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("catalogHash", catalogSnapshot.catalogHash());
+        result.put("catalogFileId", session == null ? "" : session.catalogFileId());
+        result.put("entryCount", entries == null ? 0 : entries.size());
+        result.put("previewLimit", AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT);
+        result.put("omittedEntryCount", Math.max(0,
+                (entries == null ? 0 : entries.size()) - AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        result.put("offeredCapabilities", List.copyOf(capabilities));
+        return result;
+    }
+
+    /**
+     * Context projector: returns a small label/id/capability list for first-turn
+     * clarification. Agents must call `fabric.catalog-query` when they need more
+     * rows or detailed port metadata.
+     */
+    private List<Map<String, Object>> authoringCatalogPreview(List<StudioVisualCatalogEntry> entries, int limit) {
+        return (entries == null ? List.<StudioVisualCatalogEntry>of() : entries).stream()
+                .limit(Math.max(0, limit))
+                .map(entry -> {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("catalogEntryId", entry.catalogEntryId());
+                    item.put("displayName", labelForCatalogEntry(entry.catalogEntryId()));
+                    item.put("offeredCapabilities", portsOfKind(entry.visualManifest(), "OFFER").stream()
+                            .map(PortDescriptor::capability)
+                            .toList());
+                    return item;
+                })
+                .toList();
+    }
+
+    /**
+     * Context projector: gives Foundry exact Studio tool names and default
+     * tenant/session arguments for expanding compact authoring context.
+     */
+    private Map<String, Object> authoringToolHydration(String tenant, String assembly, StudioDraftSession session) {
+        Map<String, Object> defaults = new LinkedHashMap<>();
+        defaults.put("tenantId", tenant);
+        defaults.put("assemblyId", assembly);
+        defaults.put("sessionId", session == null ? "" : session.sessionId());
+        defaults.put("catalogFileId", session == null ? "" : session.catalogFileId());
+        return Map.of(
+                "catalogQueryTool", "fabric.catalog-query",
+                "dynamicDcpTool", "fabric.dynamic-dcp-project",
+                "defaults", defaults);
     }
 
     /**
@@ -1180,8 +1242,11 @@ public final class StudioCatalogService {
     ) {
         String answered = firstNonBlank(
                 answerAsString(answers.get("startingComponent")),
+                answerAsString(answers.get("starting_component")),
                 answerAsString(answers.get("rootComponent")),
-                answerAsString(answers.get("catalogEntryId")));
+                answerAsString(answers.get("root_component")),
+                answerAsString(answers.get("catalogEntryId")),
+                answerAsString(answers.get("catalog_entry_id")));
         if (answered.isBlank()) {
             return Optional.empty();
         }
@@ -1375,6 +1440,69 @@ public final class StudioCatalogService {
     }
 
     /**
+     * Adapter: preserves provider-emitted question ids while also adding the
+     * camelCase aliases used by Fabric's deterministic bridge and Foundry prompt
+     * guidance. This keeps clarification loops stable when a model emits
+     * snake_case ids such as {@code starting_component}.
+     */
+    private static Map<String, Object> canonicalAuthoringQuestionAnswers(Map<String, Object> answers) {
+        if (answers == null || answers.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>(answers);
+        for (Map.Entry<String, Object> entry : answers.entrySet()) {
+            String alias = camelCaseQuestionId(entry.getKey());
+            if (!alias.isBlank()) {
+                result.putIfAbsent(alias, entry.getValue());
+            }
+        }
+        copyFirstPresent(result, "startingComponent", "starting_component", "rootComponent", "root_component",
+                "catalogEntryId", "catalog_entry_id");
+        copyFirstPresent(result, "catalogFileId", "catalog_file_id");
+        copyFirstPresent(result, "recursiveCapabilities", "recursive_capabilities");
+        return Map.copyOf(result);
+    }
+
+    /**
+     * Name projector: converts a lower snake/kebab question id into the camelCase
+     * form used by Fabric and Foundry prompts while leaving already-canonical ids
+     * unchanged.
+     */
+    private static String camelCaseQuestionId(String id) {
+        if (id == null || id.isBlank()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        boolean upperNext = false;
+        for (char c : id.toCharArray()) {
+            if (c == '_' || c == '-' || c == ' ') {
+                upperNext = builder.length() > 0;
+                continue;
+            }
+            builder.append(upperNext ? Character.toUpperCase(c) : c);
+            upperNext = false;
+        }
+        return builder.toString();
+    }
+
+    /**
+     * Alias copier: makes one canonical answer key available from the first
+     * nonblank synonym without overwriting an explicit canonical value.
+     */
+    private static void copyFirstPresent(Map<String, Object> answers, String canonicalKey, String... aliases) {
+        if (answers.containsKey(canonicalKey) && !answerAsString(answers.get(canonicalKey)).isBlank()) {
+            return;
+        }
+        for (String alias : aliases) {
+            Object value = answers.get(alias);
+            if (!answerAsString(value).isBlank()) {
+                answers.put(canonicalKey, value);
+                return;
+            }
+        }
+    }
+
+    /**
      * Option factory: creates simple label=value authoring options for enum-like
      * choices where the operator-facing copy is already the stable value.
      */
@@ -1475,6 +1603,81 @@ public final class StudioCatalogService {
     }
 
     /**
+     * Context projector: keeps only the latest conversation turns in the
+     * prompt payload. Full chat replay belongs in Studio state, while Foundry
+     * receives enough local context plus the current structured answers.
+     */
+    private List<Map<String, Object>> boundedAuthoringConversation(
+            List<StudioAuthoringConversationMessage> conversation
+    ) {
+        List<StudioAuthoringConversationMessage> safe =
+                conversation == null ? List.of() : conversation;
+        int start = Math.max(0, safe.size() - AUTHORING_CONTEXT_CONVERSATION_LIMIT);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (StudioAuthoringConversationMessage message : safe.subList(start, safe.size())) {
+            result.add(Map.of(
+                    "role", message.role(),
+                    "content", message.content()));
+        }
+        return result;
+    }
+
+    /**
+     * Context projector: emits only recent tenant catalog file summaries for
+     * clarification UX. The selected `catalogFile` remains detailed and agents
+     * can call `fabric.file-list` for older versions or file paths.
+     */
+    private List<Map<String, Object>> boundedAuthoringCatalogFiles(List<StudioFileRecord> catalogFiles) {
+        return (catalogFiles == null ? List.<StudioFileRecord>of() : catalogFiles).stream()
+                .limit(AUTHORING_CONTEXT_CATALOG_FILE_LIMIT)
+                .map(this::authoringFilePreviewMap)
+                .toList();
+    }
+
+    /**
+     * Context projector: emits only recent session summaries so repeated
+     * authoring turns do not resend the full tenant history. Agents can call
+     * `fabric.session-history` when an older session matters.
+     */
+    private List<Map<String, Object>> boundedAuthoringSessionHistory(List<StudioSessionHistoryItem> history) {
+        return (history == null ? List.<StudioSessionHistoryItem>of() : history).stream()
+                .limit(AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT)
+                .map(this::authoringSessionHistoryPreviewMap)
+                .toList();
+    }
+
+    /**
+     * Context projector: records prompt-preview limits and omitted counts so
+     * the agent can explicitly ask for tool hydration instead of assuming the
+     * compact arrays are complete tenant state.
+     */
+    private Map<String, Object> authoringContextLimits(
+            List<StudioAuthoringConversationMessage> conversation,
+            List<StudioFileRecord> catalogFiles,
+            List<StudioSessionHistoryItem> sessionHistory,
+            List<StudioVisualCatalogEntry> catalogEntries
+    ) {
+        int conversationSize = conversation == null ? 0 : conversation.size();
+        int catalogFileSize = catalogFiles == null ? 0 : catalogFiles.size();
+        int sessionHistorySize = sessionHistory == null ? 0 : sessionHistory.size();
+        int catalogEntrySize = catalogEntries == null ? 0 : catalogEntries.size();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("conversationLimit", AUTHORING_CONTEXT_CONVERSATION_LIMIT);
+        result.put("conversationTotal", conversationSize);
+        result.put("conversationOmitted", Math.max(0, conversationSize - AUTHORING_CONTEXT_CONVERSATION_LIMIT));
+        result.put("catalogFilesLimit", AUTHORING_CONTEXT_CATALOG_FILE_LIMIT);
+        result.put("catalogFilesTotal", catalogFileSize);
+        result.put("catalogFilesOmitted", Math.max(0, catalogFileSize - AUTHORING_CONTEXT_CATALOG_FILE_LIMIT));
+        result.put("sessionHistoryLimit", AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT);
+        result.put("sessionHistoryTotal", sessionHistorySize);
+        result.put("sessionHistoryOmitted", Math.max(0, sessionHistorySize - AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT));
+        result.put("catalogPreviewLimit", AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT);
+        result.put("catalogPreviewTotal", catalogEntrySize);
+        result.put("catalogPreviewOmitted", Math.max(0, catalogEntrySize - AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        return result;
+    }
+
+    /**
      * Context projector: resolves the session-bound catalog file row so Foundry
      * can distinguish latest-catalog defaults from explicit user choices.
      */
@@ -1514,6 +1717,22 @@ public final class StudioCatalogService {
     }
 
     /**
+     * Context projector: emits the lightweight identity fields a model needs to
+     * render catalog-file choices without receiving local file paths or hashes.
+     */
+    private Map<String, Object> authoringFilePreviewMap(StudioFileRecord file) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("fileId", file.fileId());
+        result.put("logicalFileId", file.logicalFileId());
+        result.put("version", file.version());
+        result.put("fileName", file.fileName());
+        result.put("fileTitle", file.fileTitle());
+        result.put("fileType", file.fileType());
+        result.put("createdAt", file.createdAt().toString());
+        return result;
+    }
+
+    /**
      * Context projector: emits one historical authoring/draft session row so
      * the agent can ask whether to continue, fork, or start fresh.
      */
@@ -1529,6 +1748,23 @@ public final class StudioCatalogService {
         result.put("catalogFileId", item.catalogFileId());
         result.put("createdAt", item.createdAt().toString());
         result.put("updatedAt", item.updatedAt().toString());
+        result.put("lastOpenedAt", item.lastOpenedAt().toString());
+        result.put("linkedFileCount", item.linkedFileCount());
+        result.put("intentCount", item.intentCount());
+        return result;
+    }
+
+    /**
+     * Context projector: emits the lightweight history fields needed for
+     * continue-or-fork questions without resending catalog hashes every turn.
+     */
+    private Map<String, Object> authoringSessionHistoryPreviewMap(StudioSessionHistoryItem item) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", item.sessionId());
+        result.put("displayName", item.displayName());
+        result.put("sessionType", item.sessionType());
+        result.put("status", item.status());
+        result.put("catalogFileId", item.catalogFileId());
         result.put("lastOpenedAt", item.lastOpenedAt().toString());
         result.put("linkedFileCount", item.linkedFileCount());
         result.put("intentCount", item.intentCount());

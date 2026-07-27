@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.time.Duration;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,6 +79,45 @@ class DcpAuthoringClientTest {
                     .contains("models/gemini-3.1-flash-lite")
                     .contains("<redacted>")
                     .doesNotContain("AIza");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * Regression test: a slow or body-stalled Foundry endpoint must release the Studio
+     * authoring request with a structured timeout instead of leaving the browser spinner active.
+     */
+    @Test
+    void timesOutSlowFoundryDcpEndpoint() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        try {
+            server.createContext("/dcp/agent.run", exchange -> {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                }
+                byte[] bytes = mapper.writeValueAsBytes(ContractInvocationResult.success(Map.of("kind", "gap")));
+                exchange.getResponseHeaders().set("content-type", "application/json");
+                exchange.sendResponseHeaders(200, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            server.start();
+
+            DcpAuthoringClient client = new DcpAuthoringClient(
+                    URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/dcp/agent.run"),
+                    java.net.http.HttpClient.newHttpClient(),
+                    mapper,
+                    Duration.ofMillis(25));
+            ContractInvocationResult result = client.invoke(new ContractInvocation(
+                    "urn:unfurl:fabric:authoring", "agent.run", "fabric", "foundry",
+                    Map.of("tenantId", "tenant-a"), "corr", Map.of(), null, Map.of()), ExecutionContext.empty());
+
+            assertThat(result.success()).isFalse();
+            assertThat(result.errorCode()).isEqualTo("DCP_TRANSPORT_TIMEOUT");
+            assertThat(result.errorMessage()).contains("25 ms");
         } finally {
             server.stop(0);
         }

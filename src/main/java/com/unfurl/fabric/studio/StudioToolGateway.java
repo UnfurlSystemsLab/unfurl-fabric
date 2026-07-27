@@ -69,6 +69,7 @@ public final class StudioToolGateway {
             StudioToolCallResult result = switch (toolName) {
                 case "fabric.artifact-inventory" -> artifactInventoryTool(toolName, request.arguments());
                 case "fabric.catalog-admit" -> catalogAdmit(toolName, request.arguments());
+                case "fabric.catalog-query" -> catalogQuery(toolName, request.arguments());
                 case "fabric.catalog-verify" -> catalogVerify(toolName, request.arguments());
                 case "fabric.file-list" -> fileList(toolName, request.arguments());
                 case "fabric.assembly-create" -> assemblyCreate(toolName, request.arguments());
@@ -1215,6 +1216,183 @@ public final class StudioToolGateway {
     }
 
     /**
+     * Catalog hydration adapter: resolves compact or detailed tenant catalog data
+     * for Foundry/Flow tools without embedding full catalog metadata in an agent
+     * prompt. Pattern: read-model adapter over the existing Studio catalog routes.
+     */
+    private StudioToolCallResult catalogQuery(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String catalogFileId = text(arguments, "catalogFileId", "");
+        String catalogEntryId = text(arguments, "catalogEntryId", "");
+        boolean includeDetails = flag(value(arguments, "includeDetails"), false);
+        List<String> requiredCapabilities = strings(firstValue(arguments, "capabilities", "requiredCapabilities"));
+        String singleCapability = text(arguments, "capability", "");
+        if (!singleCapability.isBlank()) {
+            requiredCapabilities = new ArrayList<>(requiredCapabilities);
+            requiredCapabilities.add(singleCapability);
+        }
+
+        StudioCatalogVisualsResponse catalog = catalogFileId.isBlank()
+                ? service.listCatalogVisuals(tenantId)
+                : service.listCatalogVisuals(tenantId, catalogFileId);
+        List<Map<String, Object>> entries = catalog.entries().stream()
+                .map(entry -> catalogEntrySummary(entry, includeDetails))
+                .toList();
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("tenantId", tenantId);
+        payload.put("catalogFileId", catalogFileId);
+        payload.put("catalogHash", catalog.catalogHash());
+        payload.put("entryCount", catalog.entries().size());
+
+        if (!catalogEntryId.isBlank()) {
+            Optional<Map<String, Object>> selected = entries.stream()
+                    .filter(entry -> catalogEntryId.equals(entry.get("catalogEntryId")))
+                    .findFirst();
+            if (selected.isEmpty()) {
+                return gap(toolName, "catalog entry is not admitted in this tenant catalog", Map.of(
+                        "tenantId", tenantId,
+                        "catalogFileId", catalogFileId,
+                        "catalogEntryId", catalogEntryId,
+                        "catalogHash", catalog.catalogHash()));
+            }
+            payload.put("catalogEntry", selected.get());
+        }
+
+        if (!requiredCapabilities.isEmpty()) {
+            Map<String, List<String>> providers = providersByCapability(catalog.entries());
+            List<String> missing = requiredCapabilities.stream()
+                    .filter(capability -> !providers.containsKey(capability))
+                    .toList();
+            payload.put("requiredCapabilities", requiredCapabilities);
+            payload.put("missingCapabilities", missing);
+            payload.put("providersByCapability", providers);
+            payload.put("catalogEntryIds", requiredCapabilities.stream()
+                    .map(providers::get)
+                    .filter(list -> list != null && !list.isEmpty())
+                    .map(List::getFirst)
+                    .toList());
+            payload.put("allFound", missing.isEmpty());
+            payload.put("found", missing.isEmpty());
+            if (!missing.isEmpty()) {
+                return result("GAP", toolName, payload);
+            }
+        } else if (catalogEntryId.isBlank()) {
+            payload.put("entries", entries);
+        }
+        return pass(toolName, payload);
+    }
+
+    /**
+     * Catalog entry projector: emits only the fields a tool needs to reason
+     * about catalog selection and port binding. Detailed mode adds immutable
+     * hashes and port summaries but still avoids binary assets or raw files.
+     */
+    private Map<String, Object> catalogEntrySummary(StudioVisualCatalogEntry entry, boolean includeDetails) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("catalogEntryId", entry.catalogEntryId());
+        result.put("displayName", labelForCatalogEntry(entry.catalogEntryId()));
+        result.put("offeredCapabilities", capabilitiesOfKind(entry.visualManifest(), "OFFER"));
+        result.put("dependencyCapabilities", capabilitiesOfKind(entry.visualManifest(), "DEPENDENCY"));
+        if (includeDetails) {
+            result.put("claimHash", entry.claimHash());
+            result.put("artifactSha256", entry.artifactSha256());
+            result.put("visualIntegrity", entry.visualIntegrity());
+            result.put("warnings", entry.warnings());
+            result.put("ports", portSummaries(entry.visualManifest()));
+        }
+        return result;
+    }
+
+    /**
+     * Port projector: extracts stable port id/kind/capability triples from the
+     * visual manifest so tool callers can ask binding questions without pulling
+     * the full visual manifest into the model prompt.
+     */
+    private List<Map<String, Object>> portSummaries(Map<String, Object> visualManifest) {
+        Object ports = visualManifest == null ? null : visualManifest.get("ports");
+        if (!(ports instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> summaries = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> raw)) {
+                continue;
+            }
+            Map<?, ?> port = raw;
+            String id = stringValue(port.get("id"));
+            String kind = stringValue(port.get("kind"));
+            String capability = capabilityFromPort(port);
+            if (id.isBlank() || kind.isBlank() || capability.isBlank()) {
+                continue;
+            }
+            summaries.add(Map.of(
+                    "id", id,
+                    "kind", kind,
+                    "capability", capability));
+        }
+        return List.copyOf(summaries);
+    }
+
+    /**
+     * Capability projector: filters manifest ports by semantic kind and derives
+     * capability names from the DCP `mapsTo` path when present.
+     */
+    private List<String> capabilitiesOfKind(Map<String, Object> visualManifest, String kind) {
+        Object ports = visualManifest == null ? null : visualManifest.get("ports");
+        if (!(ports instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(Map.class::isInstance)
+                .map(Map.class::cast)
+                .filter(port -> kind.equals(String.valueOf(port.get("kind"))))
+                .map(this::capabilityFromPort)
+                .filter(capability -> !capability.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * Capability parser: supports both explicit `capability` fields and the
+     * current visual-manifest `mapsTo=claim.offers|dependencies.<capability>`
+     * convention used by Studio-generated catalog entries.
+     */
+    private String capabilityFromPort(Map<?, ?> port) {
+        Object direct = port.get("capability");
+        if (direct != null && !String.valueOf(direct).isBlank()) {
+            return String.valueOf(direct).trim();
+        }
+        String mapsTo = stringValue(port.get("mapsTo"));
+        String offerPrefix = "claim.offers.";
+        String dependencyPrefix = "claim.dependencies.";
+        if (mapsTo.startsWith(offerPrefix)) {
+            return mapsTo.substring(offerPrefix.length());
+        }
+        if (mapsTo.startsWith(dependencyPrefix)) {
+            return mapsTo.substring(dependencyPrefix.length());
+        }
+        return "";
+    }
+
+    /**
+     * Label formatter: mirrors Studio's component display name projection while
+     * keeping the tool gateway independent of StudioCatalogService private helpers.
+     */
+    private String labelForCatalogEntry(String catalogEntryId) {
+        String[] parts = (catalogEntryId == null ? "" : catalogEntryId).split(":");
+        String artifact = parts.length >= 2 ? parts[1] : catalogEntryId;
+        String slug = artifact == null ? "" : artifact.replace('_', '-').replace('.', '-');
+        List<String> words = new ArrayList<>();
+        for (String part : slug.split("-")) {
+            if (!part.isBlank()) {
+                words.add(part.substring(0, 1).toUpperCase() + part.substring(1));
+            }
+        }
+        return words.isEmpty() ? "Catalog Component" : String.join(" ", words);
+    }
+
+    /**
      * Catalog read adapter: verifies that the tenant catalog offers all required
      * capabilities requested by the current runbook phase.
      */
@@ -1662,6 +1840,28 @@ public final class StudioToolGateway {
     }
 
     /**
+     * Boolean helper: normalizes optional JSON booleans for detail toggles while
+     * preserving explicit defaults when the caller omits the flag.
+     */
+    private boolean flag(Object raw, boolean defaultValue) {
+        if (raw instanceof Boolean value) {
+            return value;
+        }
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            return defaultValue;
+        }
+        return Boolean.parseBoolean(String.valueOf(raw));
+    }
+
+    /**
+     * String helper: normalizes nullable JSON scalar values used by catalog
+     * projection code.
+     */
+    private String stringValue(Object raw) {
+        return raw == null ? "" : String.valueOf(raw).trim();
+    }
+
+    /**
      * Boolean helper: treats absent inventory flags as true and accepts JSON
      * booleans or strings from persisted run artifacts.
      */
@@ -1747,6 +1947,7 @@ public final class StudioToolGateway {
         return List.of(
                 "fabric.artifact-inventory",
                 "fabric.catalog-admit",
+                "fabric.catalog-query",
                 "fabric.catalog-verify",
                 "fabric.file-list",
                 "fabric.assembly-create",

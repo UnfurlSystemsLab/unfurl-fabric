@@ -692,6 +692,24 @@ class StudioServerTest {
                     .contains("\"status\":\"GAP\"")
                     .contains("missing.capability");
 
+            HttpResponse<String> catalogQuery = post(server, "/studio/tools/fabric.catalog-query", """
+                    {
+                      "callId": "catalog-query",
+                      "arguments": {
+                        "tenantId": "tenant-a",
+                        "capability": "validate.payment",
+                        "includeDetails": true
+                      }
+                    }
+                    """);
+            assertThat(catalogQuery.statusCode()).isEqualTo(200);
+            assertThat(catalogQuery.body())
+                    .contains("\"success\":true")
+                    .contains("\"status\":\"PASS\"")
+                    .contains("\"providersByCapability\"")
+                    .contains("validate.payment")
+                    .contains("\"catalogEntryIds\"");
+
             HttpResponse<String> fileList = post(server, "/studio/tools/fabric.file-list", """
                     {
                       "callId": "catalog-files",
