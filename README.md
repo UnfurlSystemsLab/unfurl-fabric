@@ -1,5 +1,12 @@
 # unfurl-fabric
 
+Use `unfurl-fabric` when you need to turn component claims and operator needs
+into a governed, signed, deployable Unfurl composition. Fabric is the
+design-time control plane: it admits catalogs, helps authors build drafts,
+matches needs to components, resolves deployment shapes, exports contract
+artifacts, and verifies drift before a runtime such as Flow or Foundry executes
+anything.
+
 `unfurl-fabric` is the design-time compiler for Unfurl. It scans component catalogs, matches operator needs, resolves deployment shapes, derives the substrate profile, compiles an unsigned contract, signs it, and verifies signed output.
 
 It also hosts the **Fabric Studio API** (`StudioServer`), including the conversational
