@@ -114,7 +114,11 @@ public final class StudioCatalogService {
     private static final int AUTHORING_CONTEXT_CONVERSATION_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_CATALOG_FILE_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT = 8;
-    private static final int AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT = 20;
+    private static final int AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT = 12;
+    private static final int AUTHORING_CONTEXT_FOLLOWUP_CONVERSATION_LIMIT = 4;
+    private static final int AUTHORING_CONTEXT_FOLLOWUP_CATALOG_FILE_LIMIT = 1;
+    private static final int AUTHORING_CONTEXT_FOLLOWUP_SESSION_HISTORY_LIMIT = 1;
+    private static final int AUTHORING_CONTEXT_FOLLOWUP_CATALOG_PREVIEW_LIMIT = 6;
 
     private final Map<String, List<StudioVisualCatalogEntry>> entriesByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant = new ConcurrentHashMap<>();
@@ -1072,7 +1076,21 @@ public final class StudioCatalogService {
         StudioCatalogVisualsResponse catalogSnapshot = response(entries);
         List<StudioAuthoringConversationMessage> requestConversation =
                 request.conversation() == null ? List.of() : request.conversation();
-        List<Map<String, Object>> conversation = boundedAuthoringConversation(requestConversation);
+        Map<String, Object> questionAnswers = canonicalAuthoringQuestionAnswers(request.questionAnswers());
+        boolean focusedTurn = focusedAuthoringContextTurn(questionAnswers, request.actionContext());
+        int conversationLimit = focusedTurn
+                ? AUTHORING_CONTEXT_FOLLOWUP_CONVERSATION_LIMIT
+                : AUTHORING_CONTEXT_CONVERSATION_LIMIT;
+        int catalogFilesLimit = focusedTurn
+                ? AUTHORING_CONTEXT_FOLLOWUP_CATALOG_FILE_LIMIT
+                : AUTHORING_CONTEXT_CATALOG_FILE_LIMIT;
+        int sessionHistoryLimit = focusedTurn
+                ? AUTHORING_CONTEXT_FOLLOWUP_SESSION_HISTORY_LIMIT
+                : AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT;
+        int catalogPreviewLimit = focusedTurn
+                ? AUTHORING_CONTEXT_FOLLOWUP_CATALOG_PREVIEW_LIMIT
+                : AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT;
+        List<Map<String, Object>> conversation = boundedAuthoringConversation(requestConversation, conversationLimit);
         List<StudioFileRecord> catalogFiles = listFiles(tenant, "CATALOG", "", "");
         List<StudioSessionHistoryItem> sessionHistory = listSessionHistory(tenant, assembly);
         Map<String, Object> input = new LinkedHashMap<>();
@@ -1080,20 +1098,25 @@ public final class StudioCatalogService {
         input.put("assemblyId", assembly);
         input.put("sessionId", session.sessionId());
         input.put("userMessage", request.userMessage());
-        input.put("questionAnswers", canonicalAuthoringQuestionAnswers(request.questionAnswers()));
+        input.put("questionAnswers", questionAnswers);
         input.put("conversation", conversation);
         input.put("catalogHash", catalogSnapshot.catalogHash());
         input.put("session", authoringSessionMap(session));
         input.put("catalogFile", authoringCatalogFileMap(tenant, session.catalogFileId()));
-        input.put("catalogFiles", boundedAuthoringCatalogFiles(catalogFiles));
-        input.put("sessionHistory", boundedAuthoringSessionHistory(sessionHistory));
-        input.put("catalogSummary", authoringCatalogSummary(catalogSnapshot, session, entries));
-        input.put("catalogPreview", authoringCatalogPreview(entries, AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        input.put("catalogFiles", boundedAuthoringCatalogFiles(catalogFiles, catalogFilesLimit, session.catalogFileId()));
+        input.put("sessionHistory", boundedAuthoringSessionHistory(sessionHistory, sessionHistoryLimit, session.sessionId()));
+        input.put("catalogSummary", authoringCatalogSummary(catalogSnapshot, session, entries, catalogPreviewLimit));
+        input.put("catalogPreview", authoringCatalogPreviewForTurn(
+                entries, questionAnswers, request.actionContext(), focusedTurn, catalogPreviewLimit));
         input.put("contextLimits", authoringContextLimits(
                 requestConversation,
                 catalogFiles,
                 sessionHistory,
-                entries));
+                entries,
+                conversationLimit,
+                catalogFilesLimit,
+                sessionHistoryLimit,
+                catalogPreviewLimit));
         input.put("toolHydration", authoringToolHydration(tenant, assembly, session));
         input.put("actionContext", request.actionContext());
 
@@ -1109,7 +1132,7 @@ public final class StudioCatalogService {
                     result.errorMessage() == null ? "the authoring agent could not respond." : result.errorMessage(),
                     List.of());
         }
-        return mapAuthoringOutput(tenant, session.sessionId(), result.output());
+        return mapAuthoringOutput(tenant, session.sessionId(), result.output(), entries);
     }
 
     /**
@@ -1120,7 +1143,8 @@ public final class StudioCatalogService {
     private Map<String, Object> authoringCatalogSummary(
             StudioCatalogVisualsResponse catalogSnapshot,
             StudioDraftSession session,
-            List<StudioVisualCatalogEntry> entries
+            List<StudioVisualCatalogEntry> entries,
+            int previewLimit
     ) {
         Set<String> capabilities = new TreeSet<>();
         for (StudioVisualCatalogEntry entry : entries == null ? List.<StudioVisualCatalogEntry>of() : entries) {
@@ -1132,9 +1156,8 @@ public final class StudioCatalogService {
         result.put("catalogHash", catalogSnapshot.catalogHash());
         result.put("catalogFileId", session == null ? "" : session.catalogFileId());
         result.put("entryCount", entries == null ? 0 : entries.size());
-        result.put("previewLimit", AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT);
-        result.put("omittedEntryCount", Math.max(0,
-                (entries == null ? 0 : entries.size()) - AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        result.put("previewLimit", previewLimit);
+        result.put("omittedEntryCount", Math.max(0, (entries == null ? 0 : entries.size()) - previewLimit));
         result.put("offeredCapabilities", List.copyOf(capabilities));
         return result;
     }
@@ -1157,6 +1180,114 @@ public final class StudioCatalogService {
                     return item;
                 })
                 .toList();
+    }
+
+    /**
+     * Context projector strategy: keeps first-turn catalog previews broad enough
+     * for discovery, then narrows follow-up turns to entries named by structured
+     * answers or action context. This preserves the prompt budget while keeping
+     * exact ids visible for the model's explanation.
+     */
+    private List<Map<String, Object>> authoringCatalogPreviewForTurn(
+            List<StudioVisualCatalogEntry> entries,
+            Map<String, Object> questionAnswers,
+            Map<String, Object> actionContext,
+            boolean focusedTurn,
+            int limit
+    ) {
+        List<StudioVisualCatalogEntry> safeEntries = entries == null ? List.of() : entries;
+        if (!focusedTurn) {
+            return authoringCatalogPreview(safeEntries, limit);
+        }
+        LinkedHashSet<String> selectedIds = selectedCatalogEntryIds(questionAnswers, actionContext, safeEntries);
+        List<StudioVisualCatalogEntry> focusedEntries = new ArrayList<>();
+        for (String selectedId : selectedIds) {
+            safeEntries.stream()
+                    .filter(entry -> selectedId.equals(entry.catalogEntryId()))
+                    .findFirst()
+                    .ifPresent(focusedEntries::add);
+        }
+        int max = Math.max(0, limit);
+        if (focusedEntries.size() < max) {
+            for (StudioVisualCatalogEntry entry : safeEntries) {
+                if (focusedEntries.size() >= max) {
+                    break;
+                }
+                if (!selectedIds.contains(entry.catalogEntryId())) {
+                    focusedEntries.add(entry);
+                }
+            }
+        }
+        return authoringCatalogPreview(focusedEntries, max);
+    }
+
+    /**
+     * Selection extractor: resolves answer/action fields that are expected to
+     * contain catalog entry ids or safe aliases into exact selected-catalog ids.
+     */
+    private LinkedHashSet<String> selectedCatalogEntryIds(
+            Map<String, Object> questionAnswers,
+            Map<String, Object> actionContext,
+            List<StudioVisualCatalogEntry> entries
+    ) {
+        LinkedHashSet<String> selected = new LinkedHashSet<>();
+        collectCatalogEntryAnswer(selected, questionAnswers, entries,
+                "startingComponent",
+                "rootComponent",
+                "catalogEntryId",
+                "modelProviderCatalogEntryId",
+                "toolImplementationCatalogEntryId",
+                "ragCorpusCatalogEntryId",
+                "vectorStoreCatalogEntryId",
+                "componentCatalogEntryId",
+                "newCatalogEntryId",
+                "selectedCatalogEntryId");
+        collectCatalogEntryAnswer(selected, actionContext, entries,
+                "catalogEntryId",
+                "modelProviderCatalogEntryId",
+                "toolImplementationCatalogEntryId",
+                "ragCorpusCatalogEntryId",
+                "vectorStoreCatalogEntryId",
+                "componentCatalogEntryId",
+                "newCatalogEntryId",
+                "selectedCatalogEntryId");
+        return selected;
+    }
+
+    /**
+     * Answer collector: supports single or list-valued catalog answers and uses
+     * the same alias resolver as proposal grounding before adding an id.
+     */
+    private void collectCatalogEntryAnswer(
+            Set<String> selected,
+            Map<String, Object> source,
+            List<StudioVisualCatalogEntry> entries,
+            String... keys
+    ) {
+        if (source == null || source.isEmpty()) {
+            return;
+        }
+        for (String key : keys) {
+            Object value = source.get(key);
+            if (value instanceof List<?> list) {
+                for (Object item : list) {
+                    addCatalogEntryAnswer(selected, entries, answerAsString(item));
+                }
+            } else {
+                addCatalogEntryAnswer(selected, entries, answerAsString(value));
+            }
+        }
+    }
+
+    /**
+     * Answer resolver: adds a canonical catalog entry id when the selected
+     * catalog can resolve the answer uniquely.
+     */
+    private void addCatalogEntryAnswer(Set<String> selected, List<StudioVisualCatalogEntry> entries, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        canonicalCatalogEntryId(entries, value).ifPresent(selected::add);
     }
 
     /**
@@ -1458,9 +1589,23 @@ public final class StudioCatalogService {
         }
         copyFirstPresent(result, "startingComponent", "starting_component", "rootComponent", "root_component",
                 "catalogEntryId", "catalog_entry_id");
-        copyFirstPresent(result, "catalogFileId", "catalog_file_id");
+        copyFirstPresent(result, "catalogFileId", "catalog_file_id", "selectedCatalogFile", "selected_catalog_file",
+                "catalogFile", "catalog_file");
         copyFirstPresent(result, "recursiveCapabilities", "recursive_capabilities");
         return Map.copyOf(result);
+    }
+
+    /**
+     * Context strategy: switches to focused prompt previews once a turn carries
+     * structured clarification answers or UI edit context. First-turn discovery
+     * stays broader; follow-up turns rely on hydration tools for expansion.
+     */
+    private static boolean focusedAuthoringContextTurn(
+            Map<String, Object> questionAnswers,
+            Map<String, Object> actionContext
+    ) {
+        return (questionAnswers != null && !questionAnswers.isEmpty())
+                || (actionContext != null && !actionContext.isEmpty());
     }
 
     /**
@@ -1608,11 +1753,12 @@ public final class StudioCatalogService {
      * receives enough local context plus the current structured answers.
      */
     private List<Map<String, Object>> boundedAuthoringConversation(
-            List<StudioAuthoringConversationMessage> conversation
+            List<StudioAuthoringConversationMessage> conversation,
+            int limit
     ) {
         List<StudioAuthoringConversationMessage> safe =
                 conversation == null ? List.of() : conversation;
-        int start = Math.max(0, safe.size() - AUTHORING_CONTEXT_CONVERSATION_LIMIT);
+        int start = Math.max(0, safe.size() - Math.max(0, limit));
         List<Map<String, Object>> result = new ArrayList<>();
         for (StudioAuthoringConversationMessage message : safe.subList(start, safe.size())) {
             result.add(Map.of(
@@ -1627,9 +1773,14 @@ public final class StudioCatalogService {
      * clarification UX. The selected `catalogFile` remains detailed and agents
      * can call `fabric.file-list` for older versions or file paths.
      */
-    private List<Map<String, Object>> boundedAuthoringCatalogFiles(List<StudioFileRecord> catalogFiles) {
-        return (catalogFiles == null ? List.<StudioFileRecord>of() : catalogFiles).stream()
-                .limit(AUTHORING_CONTEXT_CATALOG_FILE_LIMIT)
+    private List<Map<String, Object>> boundedAuthoringCatalogFiles(
+            List<StudioFileRecord> catalogFiles,
+            int limit,
+            String selectedCatalogFileId
+    ) {
+        List<StudioFileRecord> ordered = prioritizeCatalogFile(catalogFiles, selectedCatalogFileId);
+        return ordered.stream()
+                .limit(Math.max(0, limit))
                 .map(this::authoringFilePreviewMap)
                 .toList();
     }
@@ -1639,11 +1790,63 @@ public final class StudioCatalogService {
      * authoring turns do not resend the full tenant history. Agents can call
      * `fabric.session-history` when an older session matters.
      */
-    private List<Map<String, Object>> boundedAuthoringSessionHistory(List<StudioSessionHistoryItem> history) {
-        return (history == null ? List.<StudioSessionHistoryItem>of() : history).stream()
-                .limit(AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT)
+    private List<Map<String, Object>> boundedAuthoringSessionHistory(
+            List<StudioSessionHistoryItem> history,
+            int limit,
+            String selectedSessionId
+    ) {
+        List<StudioSessionHistoryItem> ordered = prioritizeSessionHistory(history, selectedSessionId);
+        return ordered.stream()
+                .limit(Math.max(0, limit))
                 .map(this::authoringSessionHistoryPreviewMap)
                 .toList();
+    }
+
+    /**
+     * Ordering strategy: moves the selected catalog file to the front of the
+     * prompt preview while preserving the store's existing recency order.
+     */
+    private List<StudioFileRecord> prioritizeCatalogFile(List<StudioFileRecord> catalogFiles, String selectedFileId) {
+        List<StudioFileRecord> safe = catalogFiles == null ? List.of() : catalogFiles;
+        if (selectedFileId == null || selectedFileId.isBlank()) {
+            return safe;
+        }
+        List<StudioFileRecord> ordered = new ArrayList<>();
+        safe.stream()
+                .filter(file -> selectedFileId.equals(file.fileId()))
+                .findFirst()
+                .ifPresent(ordered::add);
+        for (StudioFileRecord file : safe) {
+            if (!selectedFileId.equals(file.fileId())) {
+                ordered.add(file);
+            }
+        }
+        return List.copyOf(ordered);
+    }
+
+    /**
+     * Ordering strategy: moves the active authoring session to the front of the
+     * prompt preview while preserving existing history order for fallbacks.
+     */
+    private List<StudioSessionHistoryItem> prioritizeSessionHistory(
+            List<StudioSessionHistoryItem> history,
+            String selectedSessionId
+    ) {
+        List<StudioSessionHistoryItem> safe = history == null ? List.of() : history;
+        if (selectedSessionId == null || selectedSessionId.isBlank()) {
+            return safe;
+        }
+        List<StudioSessionHistoryItem> ordered = new ArrayList<>();
+        safe.stream()
+                .filter(item -> selectedSessionId.equals(item.sessionId()))
+                .findFirst()
+                .ifPresent(ordered::add);
+        for (StudioSessionHistoryItem item : safe) {
+            if (!selectedSessionId.equals(item.sessionId())) {
+                ordered.add(item);
+            }
+        }
+        return List.copyOf(ordered);
     }
 
     /**
@@ -1655,25 +1858,29 @@ public final class StudioCatalogService {
             List<StudioAuthoringConversationMessage> conversation,
             List<StudioFileRecord> catalogFiles,
             List<StudioSessionHistoryItem> sessionHistory,
-            List<StudioVisualCatalogEntry> catalogEntries
+            List<StudioVisualCatalogEntry> catalogEntries,
+            int conversationLimit,
+            int catalogFilesLimit,
+            int sessionHistoryLimit,
+            int catalogPreviewLimit
     ) {
         int conversationSize = conversation == null ? 0 : conversation.size();
         int catalogFileSize = catalogFiles == null ? 0 : catalogFiles.size();
         int sessionHistorySize = sessionHistory == null ? 0 : sessionHistory.size();
         int catalogEntrySize = catalogEntries == null ? 0 : catalogEntries.size();
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("conversationLimit", AUTHORING_CONTEXT_CONVERSATION_LIMIT);
+        result.put("conversationLimit", conversationLimit);
         result.put("conversationTotal", conversationSize);
-        result.put("conversationOmitted", Math.max(0, conversationSize - AUTHORING_CONTEXT_CONVERSATION_LIMIT));
-        result.put("catalogFilesLimit", AUTHORING_CONTEXT_CATALOG_FILE_LIMIT);
+        result.put("conversationOmitted", Math.max(0, conversationSize - conversationLimit));
+        result.put("catalogFilesLimit", catalogFilesLimit);
         result.put("catalogFilesTotal", catalogFileSize);
-        result.put("catalogFilesOmitted", Math.max(0, catalogFileSize - AUTHORING_CONTEXT_CATALOG_FILE_LIMIT));
-        result.put("sessionHistoryLimit", AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT);
+        result.put("catalogFilesOmitted", Math.max(0, catalogFileSize - catalogFilesLimit));
+        result.put("sessionHistoryLimit", sessionHistoryLimit);
         result.put("sessionHistoryTotal", sessionHistorySize);
-        result.put("sessionHistoryOmitted", Math.max(0, sessionHistorySize - AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT));
-        result.put("catalogPreviewLimit", AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT);
+        result.put("sessionHistoryOmitted", Math.max(0, sessionHistorySize - sessionHistoryLimit));
+        result.put("catalogPreviewLimit", catalogPreviewLimit);
         result.put("catalogPreviewTotal", catalogEntrySize);
-        result.put("catalogPreviewOmitted", Math.max(0, catalogEntrySize - AUTHORING_CONTEXT_CATALOG_PREVIEW_LIMIT));
+        result.put("catalogPreviewOmitted", Math.max(0, catalogEntrySize - catalogPreviewLimit));
         return result;
     }
 
@@ -1771,24 +1978,38 @@ public final class StudioCatalogService {
         return result;
     }
 
-    private StudioAuthoringConverseResponse mapAuthoringOutput(String tenant, String sessionId, Map<String, Object> output) {
+    /**
+     * Adapter: maps Foundry's advisory agent output into Studio's response
+     * contract, canonicalizing proposal intent aliases against the selected
+     * tenant catalog before running Fabric's normal grounding guard.
+     */
+    private StudioAuthoringConverseResponse mapAuthoringOutput(
+            String tenant,
+            String sessionId,
+            Map<String, Object> output,
+            List<StudioVisualCatalogEntry> selectedCatalogEntries
+    ) {
         String kind = String.valueOf(output.getOrDefault("kind", "clarify"));
         String message = output.get("assistantMessage") == null ? "" : String.valueOf(output.get("assistantMessage"));
         switch (kind) {
             case "proposal" -> {
                 Map<String, Object> proposalMap = asMap(output.get("proposal"));
                 String needsYaml = proposalMap.get("needsYaml") == null ? "" : String.valueOf(proposalMap.get("needsYaml"));
-                List<Map<String, Object>> intents = asListOfMap(proposalMap.get("intents"));
+                List<Map<String, Object>> intents = canonicalAuthoringProposalIntents(
+                        selectedCatalogEntries,
+                        asListOfMap(proposalMap.get("intents")));
                 // Grounding guard: Fabric re-validates every proposed component against the admitted
                 // catalog, regardless of what the agent/tools produced. An unadmitted component is a gap.
                 for (Map<String, Object> intent : intents) {
-                    Object entryId = intent.get("catalogEntryId");
+                    String type = canonicalStudioIntentType(
+                            intent.get("type") == null ? "ADD_COMPONENT" : String.valueOf(intent.get("type")));
+                    String key = catalogEntryIntentKey(type);
+                    Object entryId = key.isBlank() ? null : intent.get(key);
                     if (entryId == null) {
                         continue;
                     }
-                    String type = intent.get("type") == null ? "ADD_COMPONENT" : String.valueOf(intent.get("type"));
                     Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
-                            tenant, type, Map.of("catalogEntryId", String.valueOf(entryId)));
+                            tenant, type, Map.of(key, String.valueOf(entryId)), selectedCatalogEntries);
                     if (rejection.isPresent()) {
                         return StudioAuthoringConverseResponse.gap(sessionId,
                                 "A proposed component is not admitted in this tenant's catalog.",
@@ -1824,6 +2045,153 @@ public final class StudioCatalogService {
                 return StudioAuthoringConverseResponse.clarify(sessionId, message, questions);
             }
         }
+    }
+
+    /**
+     * Adapter: rewrites model-emitted proposal intent aliases to exact
+     * catalogEntryId values only when the selected catalog has a single
+     * authoritative match. Unknown or ambiguous values are left untouched so
+     * the grounding guard returns the normal catalog gap.
+     */
+    private List<Map<String, Object>> canonicalAuthoringProposalIntents(
+            List<StudioVisualCatalogEntry> selectedCatalogEntries,
+            List<Map<String, Object>> intents
+    ) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> intent : intents == null ? List.<Map<String, Object>>of() : intents) {
+            Map<String, Object> canonical = new LinkedHashMap<>(intent);
+            String type = canonicalStudioIntentType(
+                    intent.get("type") == null ? "ADD_COMPONENT" : String.valueOf(intent.get("type")));
+            if (!type.isBlank()) {
+                canonical.put("type", type);
+            }
+            String key = catalogEntryIntentKey(type);
+            String requested = key.isBlank() ? "" : answerAsString(intent.get(key));
+            if (!requested.isBlank()) {
+                canonicalCatalogEntryId(selectedCatalogEntries, requested)
+                        .ifPresent(entryId -> canonical.put(key, entryId));
+            }
+            result.add(Map.copyOf(canonical));
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * Intent-key strategy: identifies the catalog entry payload field for the
+     * Studio intent types that select components from the tenant catalog.
+     */
+    private static String catalogEntryIntentKey(String intentType) {
+        String canonicalType = canonicalStudioIntentType(intentType);
+        if ("ADD_COMPONENT".equals(canonicalType)) {
+            return "catalogEntryId";
+        }
+        if ("REPLACE_COMPONENT".equals(canonicalType)) {
+            return "newCatalogEntryId";
+        }
+        return "";
+    }
+
+    /**
+     * Intent-type normalizer: maps model-friendly Studio intent spellings into
+     * the canonical names consumed by the draft-intent log. Unknown intent
+     * values are preserved so downstream validation can still reject them
+     * explicitly when needed.
+     */
+    private static String canonicalStudioIntentType(String intentType) {
+        String value = intentType == null ? "" : intentType.trim();
+        if (value.isBlank()) {
+            return "";
+        }
+        String token = aliasToken(value);
+        return switch (token) {
+            case "addcomponent", "componentadd", "addcatalogentry" -> "ADD_COMPONENT";
+            case "replacecomponent", "componentreplace", "swapcomponent" -> "REPLACE_COMPONENT";
+            case "removecomponent", "componentremove", "deletecomponent" -> "REMOVE_COMPONENT";
+            case "connect", "connectports", "addconnection" -> "CONNECT";
+            case "disconnect", "disconnectports", "removeconnection" -> "DISCONNECT";
+            default -> value;
+        };
+    }
+
+    /**
+     * Catalog alias resolver: maps a display label or uploaded artifact basename
+     * back to the exact selected-catalog id only when there is exactly one match.
+     */
+    private Optional<String> canonicalCatalogEntryId(
+            List<StudioVisualCatalogEntry> selectedCatalogEntries,
+            String requested
+    ) {
+        String candidate = requested == null ? "" : requested.trim();
+        if (candidate.isBlank()) {
+            return Optional.empty();
+        }
+        List<StudioVisualCatalogEntry> entries = selectedCatalogEntries == null
+                ? List.of()
+                : selectedCatalogEntries;
+        Optional<String> exact = entries.stream()
+                .map(StudioVisualCatalogEntry::catalogEntryId)
+                .filter(candidate::equals)
+                .findFirst();
+        if (exact.isPresent()) {
+            return exact;
+        }
+        List<String> matches = entries.stream()
+                .filter(entry -> catalogEntryAliasMatches(entry, candidate))
+                .map(StudioVisualCatalogEntry::catalogEntryId)
+                .distinct()
+                .toList();
+        return matches.size() == 1 ? Optional.of(matches.getFirst()) : Optional.empty();
+    }
+
+    /**
+     * Alias matcher: compares a model-emitted value against safe, deterministic
+     * aliases derived from the catalog entry id and Fabric display label.
+     */
+    private boolean catalogEntryAliasMatches(StudioVisualCatalogEntry entry, String candidate) {
+        if (entry == null || candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        String id = entry.catalogEntryId();
+        List<String> aliases = new ArrayList<>();
+        aliases.add(id);
+        aliases.add(labelForCatalogEntry(id));
+        String uploaded = id.startsWith("uploaded:") ? id.substring("uploaded:".length()) : "";
+        if (!uploaded.isBlank()) {
+            aliases.add(uploaded);
+            if (uploaded.endsWith(".jar")) {
+                aliases.add(uploaded.substring(0, uploaded.length() - ".jar".length()));
+            }
+        }
+        return aliases.stream().anyMatch(alias -> aliasEquals(candidate, alias));
+    }
+
+    /**
+     * Alias equality helper: allows punctuation/case differences in UI labels
+     * while keeping the comparison deterministic and catalog-derived.
+     */
+    private static boolean aliasEquals(String left, String right) {
+        if (left == null || right == null || right.isBlank()) {
+            return false;
+        }
+        return left.equalsIgnoreCase(right) || aliasToken(left).equals(aliasToken(right));
+    }
+
+    /**
+     * Alias token normalizer: removes punctuation and casing so display labels
+     * like "Unfurl Fabric Advisor Gemini 0 1 0 SNAPSHOT Jar" can resolve to
+     * their exact uploaded artifact id when unique.
+     */
+    private static String aliasToken(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (char character : value.toLowerCase(Locale.ROOT).toCharArray()) {
+            if (Character.isLetterOrDigit(character)) {
+                builder.append(character);
+            }
+        }
+        return builder.toString();
     }
 
     /**
@@ -4840,10 +5208,29 @@ public final class StudioCatalogService {
      */
     private Optional<StudioIntentResponse> rejectIntentAgainstCatalog(
             String tenantId, String intentType, Map<String, Object> payload) {
+        String tenant = normalizeTenant(tenantId);
+        List<StudioVisualCatalogEntry> entries =
+                entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        return rejectIntentAgainstCatalog(tenant, intentType, payload, entries);
+    }
+
+    /**
+     * Guard strategy: validates catalog-selecting intents against the exact
+     * catalog snapshot that produced the proposal or draft mutation. This keeps
+     * Foundry proposal validation reproducible for historical catalog versions
+     * while the public overload still uses the tenant's active catalog.
+     */
+    private Optional<StudioIntentResponse> rejectIntentAgainstCatalog(
+            String tenantId,
+            String intentType,
+            Map<String, Object> payload,
+            List<StudioVisualCatalogEntry> catalogEntries
+    ) {
+        String canonicalType = canonicalStudioIntentType(intentType);
         String key;
-        if ("ADD_COMPONENT".equals(intentType)) {
+        if ("ADD_COMPONENT".equals(canonicalType)) {
             key = "catalogEntryId";
-        } else if ("REPLACE_COMPONENT".equals(intentType)) {
+        } else if ("REPLACE_COMPONENT".equals(canonicalType)) {
             key = "newCatalogEntryId";
         } else {
             return Optional.empty();
@@ -4852,11 +5239,10 @@ public final class StudioCatalogService {
         if (requestedEntryId.isBlank()) {
             return Optional.of(StudioIntentResponse.invalid(
                     "CATALOG_ENTRY_REQUIRED",
-                    intentType + " requires a non-blank " + key));
+                    canonicalType + " requires a non-blank " + key));
         }
         String tenant = normalizeTenant(tenantId);
-        List<StudioVisualCatalogEntry> entries =
-                entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = catalogEntries == null ? List.of() : catalogEntries;
         boolean known = entries.stream()
                 .anyMatch(entry -> requestedEntryId.equals(entry.catalogEntryId()));
         if (!known) {

@@ -264,7 +264,7 @@ Authoring delegates to Foundry through DCP `agent.run` when configured. When no 
 Fabric sets `invocation.metadata.executionMode=harness` on Foundry-backed authoring calls so the governed Foundry
 agent harness can call proposal tools until a terminal `clarify`, `gap`, or `proposal` response is produced.
 Fabric bounds the Foundry DCP HTTP exchange, including response body completion, with `UNFURL_FOUNDRY_DCP_TIMEOUT_MS`
-or `-Dunfurl.foundry.dcp.timeoutMillis` (default 30 seconds). A timeout maps to a structured authoring gap instead of
+or `-Dunfurl.foundry.dcp.timeoutMillis` (default 120 seconds). A timeout maps to a structured authoring gap instead of
 leaving the Studio UI waiting for an open response body.
 Clarification questions are typed API objects. Select-style questions expose options as `{ "label": "...", "value": "..." }`
 objects so Studio can render friendly text while sending stable catalog file ids, catalog entry ids, or enum values back
@@ -272,6 +272,14 @@ to Fabric/Foundry. Follow-up turns carry those choices in `StudioAuthoringConver
 map keyed by question id. Studio may also include a concise answer summary in `userMessage` that pairs question labels
 with selected labels and stable values; that summary is context for generic ids, while `questionAnswers` remains the
 authoritative machine-readable answer source.
+Foundry is still advisory: when a proposal returns an intent whose catalog entry looks like a display label, uploaded
+artifact basename, or other model-normalized alias, Fabric canonicalizes it only if the selected tenant catalog has a
+single exact authority match and then validates the rewritten intent against that exact `catalogEntryId`. Unknown or
+ambiguous aliases remain `CATALOG_ENTRY_NOT_FOUND` gaps.
+Proposal mapping also normalizes model-emitted Studio intent type spellings such as `add_component`, `Add Component`,
+or missing type with a `catalogEntryId` into canonical Studio intent names before alias grounding. Proposal validation
+must use the same session-selected catalog file that was passed to Foundry, not the tenant's mutable default catalog,
+so historical catalog-version runs remain reproducible.
 `StudioAuthoringConverseRequest` may carry `catalogFileId`. Fabric resolves that tenant catalog file before building
 the authoring context. When no session id is supplied, the authoring session is started from the requested catalog file
 or, when absent, from the latest tenant `CATALOG` file version. Foundry receives only a compact invocation context:
@@ -283,6 +291,11 @@ to call hydration tools. The full catalog, visual manifests, ports, file paths, 
 session history are not prompt payload. When the agent needs details it must call Fabric/Flow tools such as
 `fabric.catalog-query`, `fabric.file-list`, `fabric.session-history`, `fabric.dynamic-dcp-project`, or Flow workflow
 tools, keeping Fabric/Flow as the source of truth for expansion.
+Follow-up turns that already carry structured clarification answers must narrow the prompt previews further: Fabric
+keeps only the selected catalog file row, the active session history row, and catalog entries named by the answer/action
+context, plus a small fallback preview. This prevents repeated agent-harness turns from exhausting Foundry prompt
+budgets while preserving enough labels for the model to explain the current choice. Missing details remain a tool
+hydration concern rather than a larger prompt concern.
 The request may also carry an `actionContext` map for UI-originated edit assist.
 Valid action contexts include `ADD_COMPONENT`, `REMOVE_COMPONENT`,
 `REPLACE_COMPONENT`, `CONNECT`, `DISCONNECT`, and `CONFIGURE_SUBSTRATE`, plus
@@ -365,6 +378,10 @@ tool-runner convenience for already-inventoried files, not a public tenant uploa
 `catalogFileId`, `catalogEntryId`, `capability`, or `capabilities`. It can return compact entries for clarification,
 matching providers for required capabilities, and a detailed single-entry port summary when `includeDetails=true`.
 Foundry agents must use this tool instead of requiring Fabric to embed full catalog metadata in `agent.run` prompts.
+An unfiltered `fabric.catalog-query` call is also a bounded preview, not a full catalog dump: it returns at most the
+requested `entryLimit`/`limit` value, capped by Fabric, and reports `entryTotal`, `entryLimit`, and `entriesOmitted`.
+Agents that need authority for a specific decision should call the tool with `catalogEntryId`, `capability`, or
+`capabilities` rather than hydrating every entry into the model loop.
 
 `fabric.file-list` delegates to the tenant file registry and returns immutable file-version rows with optional
 `fileType`, `sessionId`, and `correlationId` filters. Step 6 should use it to select a `CATALOG` file id before starting

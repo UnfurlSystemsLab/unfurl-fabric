@@ -40,6 +40,8 @@ import java.util.zip.ZipInputStream;
 public final class StudioToolGateway {
     public static final String DEFAULT_TENANT_ID = "tenant-local";
     public static final String DEFAULT_ASSEMBLY_ID = "assembly-demo";
+    private static final int DEFAULT_CATALOG_QUERY_ENTRY_LIMIT = 12;
+    private static final int MAX_CATALOG_QUERY_ENTRY_LIMIT = 50;
 
     private final StudioCatalogService service;
     private final ObjectMapper mapper;
@@ -1225,6 +1227,11 @@ public final class StudioToolGateway {
         String catalogFileId = text(arguments, "catalogFileId", "");
         String catalogEntryId = text(arguments, "catalogEntryId", "");
         boolean includeDetails = flag(value(arguments, "includeDetails"), false);
+        int entryLimit = boundedInt(
+                firstValue(arguments, "entryLimit", "limit"),
+                DEFAULT_CATALOG_QUERY_ENTRY_LIMIT,
+                0,
+                MAX_CATALOG_QUERY_ENTRY_LIMIT);
         List<String> requiredCapabilities = strings(firstValue(arguments, "capabilities", "requiredCapabilities"));
         String singleCapability = text(arguments, "capability", "");
         if (!singleCapability.isBlank()) {
@@ -1243,6 +1250,7 @@ public final class StudioToolGateway {
         payload.put("catalogFileId", catalogFileId);
         payload.put("catalogHash", catalog.catalogHash());
         payload.put("entryCount", catalog.entries().size());
+        payload.put("entryTotal", catalog.entries().size());
 
         if (!catalogEntryId.isBlank()) {
             Optional<Map<String, Object>> selected = entries.stream()
@@ -1260,12 +1268,19 @@ public final class StudioToolGateway {
 
         if (!requiredCapabilities.isEmpty()) {
             Map<String, List<String>> providers = providersByCapability(catalog.entries());
+            Map<String, List<String>> requestedProviders = new LinkedHashMap<>();
+            for (String capability : requiredCapabilities) {
+                List<String> providerIds = providers.get(capability);
+                if (providerIds != null && !providerIds.isEmpty()) {
+                    requestedProviders.put(capability, providerIds);
+                }
+            }
             List<String> missing = requiredCapabilities.stream()
                     .filter(capability -> !providers.containsKey(capability))
                     .toList();
             payload.put("requiredCapabilities", requiredCapabilities);
             payload.put("missingCapabilities", missing);
-            payload.put("providersByCapability", providers);
+            payload.put("providersByCapability", requestedProviders);
             payload.put("catalogEntryIds", requiredCapabilities.stream()
                     .map(providers::get)
                     .filter(list -> list != null && !list.isEmpty())
@@ -1277,7 +1292,11 @@ public final class StudioToolGateway {
                 return result("GAP", toolName, payload);
             }
         } else if (catalogEntryId.isBlank()) {
-            payload.put("entries", entries);
+            payload.put("entryLimit", entryLimit);
+            payload.put("entriesOmitted", Math.max(0, entries.size() - entryLimit));
+            payload.put("entries", entries.stream()
+                    .limit(entryLimit)
+                    .toList());
         }
         return pass(toolName, payload);
     }
@@ -1884,6 +1903,18 @@ public final class StudioToolGateway {
             return defaultValue;
         }
         return Long.parseLong(String.valueOf(value));
+    }
+
+    /**
+     * Numeric argument helper: accepts optional JSON limits while clamping them
+     * to a tool-owned range so model/tool loops cannot request unbounded prompt
+     * payloads by accident.
+     */
+    private int boundedInt(Object value, int defaultValue, int minimum, int maximum) {
+        long parsed = longValue(value, defaultValue);
+        long lower = Math.max(minimum, parsed);
+        long upper = Math.min(maximum, lower);
+        return (int) upper;
     }
 
     /**

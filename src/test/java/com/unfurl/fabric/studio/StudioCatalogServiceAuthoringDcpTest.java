@@ -163,14 +163,14 @@ class StudioCatalogServiceAuthoringDcpTest {
                         .containsEntry("catalogFileId", catalogFile.fileId()));
         assertThat(stringMap(input.get("contextLimits")))
                 .containsEntry("sessionHistoryLimit", 8)
-                .containsEntry("catalogPreviewLimit", 20)
+                .containsEntry("catalogPreviewLimit", 12)
                 .containsEntry("catalogFilesLimit", 8)
                 .containsEntry("conversationLimit", 8);
         assertThat((Integer) stringMap(input.get("contextLimits")).get("sessionHistoryOmitted"))
                 .isGreaterThan(0);
         assertThat(stringMap(input.get("catalogSummary")))
                 .containsEntry("catalogFileId", catalogFile.fileId())
-                .containsEntry("previewLimit", 20);
+                .containsEntry("previewLimit", 12);
         assertThat(stringMap(input.get("toolHydration")))
                 .containsEntry("catalogQueryTool", "fabric.catalog-query");
         assertThat((List<?>) input.get("catalogPreview"))
@@ -273,6 +273,115 @@ class StudioCatalogServiceAuthoringDcpTest {
                 .containsExactly("tools", "rag");
     }
 
+    /**
+     * Regression guard: follow-up clarification turns carry only focused prompt
+     * previews and rely on Fabric tools for expansion, keeping Foundry's prompt
+     * budget available for the actual proposal reasoning.
+     */
+    @Test
+    void compactsAuthoringContextAfterStructuredAnswers() {
+        AtomicReference<ContractInvocation> seen = new AtomicReference<>();
+        String flow = "uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar";
+        String gemini = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
+        String tool = "uploaded:sample-tool-using-agent-0.1.0-SNAPSHOT.jar";
+        List<StudioVisualCatalogEntry> entries = new java.util.ArrayList<>(List.of(
+                visualEntry(flow),
+                visualEntry(gemini),
+                visualEntry(tool)));
+        for (int index = 0; index < 10; index++) {
+            entries.add(visualEntry("uploaded:extra-component-" + index + "-0.1.0-SNAPSHOT.jar"));
+        }
+        StudioCatalogService service = new StudioCatalogService();
+        service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
+                "tenant-local",
+                "sha256:focused-catalog",
+                entries,
+                List.of()));
+        StudioFileRecord catalogFile = service.listFiles("tenant-local", "CATALOG", "", "").getFirst();
+        StudioCreateDraftCompositionResponse draft = service.createDraftSession(
+                "tenant-local",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-local",
+                        "assembly-demo",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "alice",
+                        "Alice",
+                        catalogFile.fileId(),
+                        "Focused AgentFlow Draft"));
+        for (int index = 0; index < 4; index++) {
+            service.createDraftSession("tenant-local", "assembly-demo", new StudioCreateDraftCompositionRequest(
+                    "tenant-local",
+                    "assembly-demo",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "alice",
+                    "Alice",
+                    catalogFile.fileId(),
+                    "Other Draft " + index));
+        }
+        service.useAuthoringInvocable(new ContractInvocable() {
+            @Override
+            public String contractId() {
+                return "urn:unfurl:fabric:authoring";
+            }
+
+            @Override
+            public String contractVersion() {
+                return "1.0.0";
+            }
+
+            @Override
+            public ContractInvocationResult invoke(ContractInvocation invocation, ExecutionContext context) {
+                seen.set(invocation);
+                return new ContractInvocationResult(true, Map.of(
+                        "kind", "gap",
+                        "assistantMessage", "captured",
+                        "unmet", List.of()), null, null, Map.of());
+            }
+        });
+
+        service.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local",
+                "assembly-demo",
+                draft.session().sessionId(),
+                catalogFile.fileId(),
+                "Focused AgentFlow Draft",
+                List.of(
+                        new StudioAuthoringConversationMessage("USER", "Create an AgentFlow environment."),
+                        new StudioAuthoringConversationMessage("ASSISTANT", "Which catalog and model should I use?"),
+                        new StudioAuthoringConversationMessage("USER", "Use the latest catalog and Gemini.")),
+                "Here are the selected authoring answers.",
+                Map.of(
+                        "selectedCatalogFile", catalogFile.fileId(),
+                        "startingComponent", flow,
+                        "modelProviderCatalogEntryId", "unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT",
+                        "toolImplementationCatalogEntryId", tool),
+                Map.of()));
+
+        Map<String, Object> input = seen.get().input();
+        assertThat((List<?>) input.get("catalogFiles")).hasSize(1);
+        assertThat((List<?>) input.get("sessionHistory")).hasSize(1);
+        assertThat((List<?>) input.get("conversation")).hasSizeLessThanOrEqualTo(4);
+        assertThat(stringMap(input.get("contextLimits")))
+                .containsEntry("catalogFilesLimit", 1)
+                .containsEntry("sessionHistoryLimit", 1)
+                .containsEntry("catalogPreviewLimit", 6)
+                .containsEntry("conversationLimit", 4);
+        assertThat(stringMap(input.get("questionAnswers")))
+                .containsEntry("catalogFileId", catalogFile.fileId());
+        assertThat((List<?>) input.get("catalogPreview"))
+                .hasSizeLessThanOrEqualTo(6)
+                .anySatisfy(entry -> assertThat(stringMap(entry)).containsEntry("catalogEntryId", flow))
+                .anySatisfy(entry -> assertThat(stringMap(entry)).containsEntry("catalogEntryId", gemini))
+                .anySatisfy(entry -> assertThat(stringMap(entry)).containsEntry("catalogEntryId", tool));
+    }
+
     @Test
     void deterministicFallbackAcceptsSnakeCaseStartingComponentAnswer() {
         StudioCatalogService service = new StudioCatalogService();
@@ -320,6 +429,109 @@ class StudioCatalogServiceAuthoringDcpTest {
                             assertThat(option.label()).isEqualTo("Unfurl Flow");
                             assertThat(option.value()).isEqualTo("uploaded:unfurl-flow-0.1.0-SNAPSHOT.jar");
                         }));
+    }
+
+    /**
+     * Regression guard: maps a model-normalized uploaded artifact basename back
+     * to the exact tenant catalog id before returning a proposal to the UI.
+     */
+    @Test
+    void canonicalizesUniqueUploadedArtifactAliasInProposalIntents() {
+        String exactGeminiEntryId = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
+        StudioCatalogService service = new StudioCatalogService();
+        service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
+                "tenant-local",
+                "sha256:test-catalog",
+                List.of(
+                        new StudioVisualCatalogEntry(
+                                exactGeminiEntryId,
+                                "sha256:claim-gemini",
+                                "sha256:artifact-gemini",
+                                Map.of("ports", List.of()),
+                                Map.of(),
+                                List.of()),
+                        new StudioVisualCatalogEntry(
+                                "com.unfurl:validation-service:1.1.0",
+                                "sha256:claim-validation",
+                                "sha256:artifact-validation",
+                                Map.of("ports", List.of()),
+                                Map.of(),
+                                List.of())),
+                List.of()));
+        service.useAuthoringInvocable(invocable(Map.of(
+                "kind", "proposal",
+                "assistantMessage", "Proposed.",
+                "proposal", Map.of(
+                        "needsYaml", "targetApplicationName: agentflow\n",
+                        "intents", List.of(Map.of(
+                                "type", "add_component",
+                                "catalogEntryId", "unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT")),
+                        "deploymentPolicy", Map.of()))));
+
+        StudioAuthoringConverseResponse response = service.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local",
+                "assembly-demo",
+                "",
+                List.of(),
+                "Create AgentFlow with Gemini."));
+
+        assertThat(response.kind()).isEqualTo("proposal");
+        assertThat(response.proposal().intents())
+                .singleElement()
+                .satisfies(intent -> assertThat(intent)
+                        .containsEntry("type", "ADD_COMPONENT")
+                        .containsEntry("catalogEntryId", exactGeminiEntryId));
+    }
+
+    /**
+     * Regression guard: validates Foundry proposals against the catalog file
+     * selected for the authoring session, not the tenant's mutable latest
+     * catalog, so historical version runs stay reproducible.
+     */
+    @Test
+    void validatesProposalAgainstSelectedCatalogFile() {
+        String exactGeminiEntryId = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
+        StudioCatalogService service = new StudioCatalogService();
+        service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
+                "tenant-local",
+                "sha256:selected-catalog",
+                List.of(
+                        visualEntry(exactGeminiEntryId),
+                        visualEntry("uploaded:sample-tool-using-agent-0.1.0-SNAPSHOT.jar")),
+                List.of()));
+        StudioFileRecord selectedCatalogFile = service.listFiles("tenant-local", "CATALOG", "", "").getFirst();
+        service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
+                "tenant-local",
+                "sha256:active-catalog",
+                List.of(visualEntry("com.unfurl:validation-service:1.1.0")),
+                List.of()));
+        service.useAuthoringInvocable(invocable(Map.of(
+                "kind", "proposal",
+                "assistantMessage", "Proposed from selected catalog.",
+                "proposal", Map.of(
+                        "needsYaml", "targetApplicationName: agentflow\n",
+                        "intents", List.of(Map.of(
+                                "type", "Add Component",
+                                "catalogEntryId", "unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT")),
+                        "deploymentPolicy", Map.of()))));
+
+        StudioAuthoringConverseResponse response = service.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local",
+                "assembly-demo",
+                "",
+                selectedCatalogFile.fileId(),
+                "Selected Catalog AgentFlow Draft",
+                List.of(),
+                "Use the selected catalog file and Gemini.",
+                Map.of(),
+                Map.of()));
+
+        assertThat(response.kind()).isEqualTo("proposal");
+        assertThat(response.proposal().intents())
+                .singleElement()
+                .satisfies(intent -> assertThat(intent)
+                        .containsEntry("type", "ADD_COMPONENT")
+                        .containsEntry("catalogEntryId", exactGeminiEntryId));
     }
 
     @Test
@@ -464,6 +676,20 @@ class StudioCatalogServiceAuthoringDcpTest {
                 return new ContractInvocationResult(true, output, null, null, Map.of());
             }
         };
+    }
+
+    /**
+     * Test data factory: creates a minimal visual catalog entry with stable
+     * content hashes and no ports for authoring context projection tests.
+     */
+    private static StudioVisualCatalogEntry visualEntry(String catalogEntryId) {
+        return new StudioVisualCatalogEntry(
+                catalogEntryId,
+                "sha256:claim-" + catalogEntryId.hashCode(),
+                "sha256:artifact-" + catalogEntryId.hashCode(),
+                Map.of("ports", List.of()),
+                Map.of(),
+                List.of());
     }
 
     /**

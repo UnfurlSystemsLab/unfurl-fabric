@@ -22,7 +22,10 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * DCP-over-HTTP client for Fabric's authoring delegation to Foundry.
+ * Adapter: DCP-over-HTTP client for Fabric's authoring delegation to Foundry.
+ * It owns endpoint/timeout configuration, sends neutral {@link ContractInvocation}
+ * payloads, and converts transport failures into structured DCP results without
+ * leaking provider credentials or leaving Studio requests unbounded.
  */
 public final class DcpAuthoringClient implements ContractInvocable {
     public static final String ENDPOINT_PROPERTY = "unfurl.foundry.dcp.endpoint";
@@ -32,7 +35,7 @@ public final class DcpAuthoringClient implements ContractInvocable {
 
     private static final String CONTRACT_ID = "urn:unfurl:fabric:authoring";
     private static final String CONTRACT_VERSION = "1.0.0";
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
 
     private final URI endpoint;
     private final HttpClient client;
