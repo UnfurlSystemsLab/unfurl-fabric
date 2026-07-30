@@ -15,6 +15,7 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <github.packages.owner>UnfurlSystemsLab</github.packages.owner>
         <jackson.version>2.17.2</jackson.version>
         <jakarta.validation.version>3.1.0</jakarta.validation.version>
         <hibernate.validator.version>8.0.1.Final</hibernate.validator.version>
@@ -30,6 +31,20 @@
         <deployment.version>0.1.0-SNAPSHOT</deployment.version>
         <deploy-emitter.version>0.1.0-SNAPSHOT</deploy-emitter.version>
     </properties>
+
+    <repositories>
+        <repository>
+            <id>github</id>
+            <name>GitHub ${github.packages.owner} Apache Maven Packages</name>
+            <url>https://maven.pkg.github.com/${github.packages.owner}/*</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
 
     <dependencyManagement>
         <dependencies>
