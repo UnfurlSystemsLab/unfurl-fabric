@@ -141,7 +141,7 @@ When changing API records, run Fabric tests and the UI validation client tests i
 
 This repository participates in the `UnfurlSystemsLab` private Maven package chain.
 
-- Publish: GitHub Actions deploys this repository's Maven artifact to `https://maven.pkg.github.com/unfurlsystemslab/unfurl` using Maven server id `github`.
+- Publish: GitHub Actions verifies this repository, then dispatches `UnfurlSystemsLab/unfurl` `publish-lab-maven.yml` with `publish_scope=changed`; the root aggregator publishes this repository's Maven artifact to `https://maven.pkg.github.com/unfurlsystemslab/unfurl` using Maven server id `github`.
 - Consume: this repository resolves internal `com.unfurl...` artifacts through `https://maven.pkg.github.com/unfurlsystemslab/*`.
-- Credentials: local and CI Maven settings must provide server id `github`; use `CI_REPO_TOKEN` or a PAT with `read:packages` and `write:packages` for central Lab package publish and cross-repository private dependency reads.
+- Credentials: local and CI Maven settings must provide server id `github`; use `CI_REPO_TOKEN` or a PAT with `repo`, `workflow`, `read:packages`, and `write:packages` for central Lab package dispatch/publish and cross-repository private dependency reads.
 - Bootstrap order: publish all runtime/library dependencies through `unfurl-deploy-emitter` and `unfurl-foundry` before publishing `unfurl-fabric`; publish advisor artifacts after Fabric.
