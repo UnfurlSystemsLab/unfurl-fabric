@@ -15,7 +15,7 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <github.packages.owner>UnfurlSystemsLab</github.packages.owner>
+        <github.packages.owner>unfurlsystemslab</github.packages.owner>
         <jackson.version>2.17.2</jackson.version>
         <jakarta.validation.version>3.1.0</jakarta.validation.version>
         <hibernate.validator.version>8.0.1.Final</hibernate.validator.version>
