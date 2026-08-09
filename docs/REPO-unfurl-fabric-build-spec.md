@@ -121,6 +121,21 @@ For local Flowfoundry compose emits, the CLI must pass the `--trust-keys` direct
 target options as `trustKeysPath` so the deploy emitter can copy public DCP verification keys into
 the Flow deployment root and wire `UNFURL_DCP_TRUST_KEYS_DIR` for runtime child-contract hydration.
 
+## Studio Container
+
+The repository also ships a dev/lab container for the Studio server:
+
+```bash
+docker build -t ghcr.io/unfurlsystemslab/unfurl-fabric-studio:0.1.0-snapshot .
+docker run --rm -p 7878:7878 ghcr.io/unfurlsystemslab/unfurl-fabric-studio:0.1.0-snapshot
+```
+
+The image runs the shaded `unfurl-fabric-studio-server.jar`, binds to `0.0.0.0:7878`,
+and keeps mutable Studio state at `/opt/unfurl/fabric/state/studio-state.json`. Product secrets and
+cross-product endpoints stay externalized through environment variables such as
+`UNFURL_FOUNDRY_DCP_ENDPOINT`; the image does not bake in Foundry, Flow, provider keys,
+tenant catalogs, or deployment roots.
+
 ## Test Expectations
 
 Tests cover:
