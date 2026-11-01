@@ -3,11 +3,14 @@ package com.unfurl.fabric.cli;
 import java.io.PrintStream;
 import java.util.Arrays;
 
+/** Command Dispatcher: routes CLI operations to product adapters and returns stable process exit codes without hiding failures. */
 public final class FabricCli {
+    /** Process entry point: propagate the dispatched command result as the JVM exit code. */
     public static void main(String[] args) {
         System.exit(run(args, System.out, System.err));
     }
 
+    /** Dispatch caller-supplied arguments and streams; usage and runtime failures are reported without stack traces. */
     public static int run(String[] args, PrintStream out, PrintStream err) {
         try {
             if (args == null || args.length == 0) {
@@ -16,6 +19,8 @@ public final class FabricCli {
             String command = args[0];
             String[] rest = Arrays.copyOfRange(args, 1, args.length);
             return switch (command) {
+                case "assembly-init", "assembly-publish", "assembly-verify", "assembly-bind", "assembly-verify-binding"
+                        -> new AssemblyCommand().run(command, rest, out);
                 case "scan" -> new ScanCommand().run(rest, out);
                 case "list-capabilities" -> new ListCapabilitiesCommand().run(rest, out);
                 case "plan" -> new PlanCommand().run(rest, out);
@@ -46,6 +51,7 @@ public final class FabricCli {
         }
     }
 
+    /** Non-instantiable dispatcher; command instances own their invocation state. */
     private FabricCli() {
     }
 }
