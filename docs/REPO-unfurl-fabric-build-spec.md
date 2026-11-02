@@ -97,6 +97,11 @@ deploy
 apply
 explain-deployment
 resolve-deployment
+assembly-init
+assembly-publish
+assembly-verify
+assembly-bind
+assembly-verify-binding
 ```
 
 ## Build Outputs
@@ -137,6 +142,12 @@ cross-product endpoints stay externalized through environment variables such as
 tenant catalogs, or deployment roots.
 
 ## Test Expectations
+
+Composite source/release/binding storage follows `LLD-composite-artifact-storage.md`. Its Repository port and filesystem
+Adapter live under `com.unfurl.fabric.assembly`; CLI adapters reuse DCP signing/validation and existing catalog, needs,
+compiler, and runtime-binding formats. Test publication, offline verification, immutable retries/collisions,
+signature/hash tampering, closure validation, binding isolation, and path containment. Generated local repositories
+belong outside publisher source (or under ignored `target/` directories).
 
 Tests cover:
 

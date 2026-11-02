@@ -70,6 +70,12 @@ Dynamic DCP has two read-model modes. Catalog mode is available when no draft se
 
 ## Architectural Invariants
 
+Reusable composite sources, immutable signed releases, and environment-specific binding revisions are separate storage
+domains. Fabric exposes a repository port with a local filesystem adapter; publication retains existing DCP contracts
+and compiler output rather than inventing executable release contracts. See
+`HLD-reusable-composite-dcp-contracts.md` and `LLD-composite-artifact-storage.md` for identity mapping, storage paths,
+signing, validation, and CLI lifecycle. The source publisher and deployment owner may use different signing keys.
+
 - Contracts are deterministic for the same inputs.
 - Contract validity comes from catalog claims, needs, trust policy, substrate support, and deployment policy.
 - Signed root DCP contracts are the handoff artifact; support and diagnostic artifacts must not change validity.
