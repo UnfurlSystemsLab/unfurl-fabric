@@ -1,0 +1,16 @@
+# Smallest workflow that lets Flow start from an exported Flow + Foundry package.
+#
+# Flow refuses to start if a workflow uses a capability it cannot bind, so this
+# proves agent.run was hydrated from the frozen contract. It is a boot check only:
+# replace it with your own workflow before running anything.
+
+id: agent-smoke
+version: "1.0.0"
+metadata:
+  name: Agent smoke workflow
+  description: Boot check for the agent.run contract.
+nodes:
+  - id: ask-agent
+    type: ACTION
+    uses: agent.run
+    name: Ask agent

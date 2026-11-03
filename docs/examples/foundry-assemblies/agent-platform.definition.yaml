@@ -1,0 +1,54 @@
+# Example publisher definition for a reusable Flow + Foundry assembly.
+#
+# Replace the identity, publisher and artifact coordinates with your own before
+# publishing. Every offer below must be realized at exactly this version by the
+# compiled contract, so keep the versions equal to the catalog components'.
+
+claim:
+  identity:
+    uri: urn:example:assembly:agent-platform
+    name: agent-platform
+    kind: COMPONENT
+    version: 1.0.0
+    publisher: Example Org
+    publisher_uri: urn:example
+  domain:
+    summary: Reusable Flow and Foundry agent platform.
+    concerns:
+      - concern: agent-platform
+        description: Durable workflows that run governed agents.
+    boundary_principles:
+      - Flow and Foundry remain the runtimes; this composite only names the combination.
+  refusals:
+    - concern: workload-definitions
+      rationale: Workflows and agents are installed into the platform by its operators.
+  dependencies:
+    needs: []
+  offers:
+    - capability: workflow.execute
+      description: Durable workflow execution.
+      consumer_access: ANY
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+    - capability: agent.run
+      description: Governed agent execution.
+      consumer_access: ANY
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+  faults:
+    emitted: []
+  metadata:
+    dcp_version: 0.2.0
+    claim_version: 1.0.0
+catalog:
+  lifecycle:
+    status: ACTIVE
+  artifact:
+    coordinates: org.example:agent-platform:1.0.0
+    packaging: jar
+    source: assembly-source
+  binding:
+    default_mode: IN_PROCESS
+    supported_modes: [IN_PROCESS]

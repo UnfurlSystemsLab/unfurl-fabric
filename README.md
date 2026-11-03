@@ -23,6 +23,7 @@ mvn test
 
 ## Docs
 
+- `docs/examples/foundry-assemblies/README.md` - step-by-step guide to the catalog, assemblies, compile, and export for Foundry and its substrate combinations.
 - `docs/HLD-unfurl-fabric.md` - module architecture and invariants.
 - `docs/LLD-fabric-studio-api.md` - Studio HTTP API routes, records, and runtime configuration.
 - `docs/REPO-unfurl-fabric-build-spec.md` - build, test, packaging, and CLI notes.

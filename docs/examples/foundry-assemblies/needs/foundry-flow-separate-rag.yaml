@@ -1,0 +1,21 @@
+# The Foundry and Flow services with foundry-substrate-rag as its own component.
+#
+# Foundry and foundry-substrate-rag both offer rag.search. Fabric picks the smallest
+# set, which leaves the substrate out, so this file pins it by name. The pinned
+# component also needs its own vector-store and embedding-provider ports.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: workflow.execute
+    capabilityVersion: ^0.1
+  - capability: rag.search
+    capabilityVersion: ^0.1
+  - capability: embedding-provider
+    capabilityVersion: ^0.1
+  - capability: vector-store
+    capabilityVersion: ^0.1
+artifactConstraints:
+  - group: com.unfurl.foundry.substrate
+    name: foundry-substrate-rag
+    version: ^0.1

@@ -1,0 +1,20 @@
+# An embedded agent with every optional substrate: RAG, tools and prompts.
+#
+# Selects foundry-substrate-engine, -rag, -tools, -prompt and the Spring AI
+# adapter. No Foundry service, no Flow.
+
+requiredCapabilities:
+  - capability: agent.execute
+    capabilityVersion: ^0.1
+  - capability: rag.search
+    capabilityVersion: ^0.1
+  - capability: tool.invoke
+    capabilityVersion: ^0.1
+  - capability: prompt.compose
+    capabilityVersion: ^0.1
+  - capability: model-provider
+    capabilityVersion: ^0.1
+  - capability: embedding-provider
+    capabilityVersion: ^0.1
+  - capability: vector-store
+    capabilityVersion: ^0.1

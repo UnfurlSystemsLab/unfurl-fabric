@@ -1,0 +1,30 @@
+# Development settings for an exported Flow + Foundry package.
+#
+# Apply this after the emitted docker-compose.yaml. Compose resolves relative paths from the first
+# file, so the state path below is relative to the emitted deploy folder.
+#
+# The emitted file can't run current Foundry images by itself. It mounts the whole deployment root
+# read-only and selects no profile, so Foundry falls back to its secured profile, which needs
+# writable state and JWT verification keys. Flow doesn't send JWTs yet, so this file selects the
+# development profile, which has no authentication. Both ports are limited to this machine for
+# that reason.
+
+services:
+  flow:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    # The Foundry image has its own health check, but the Flow image doesn't.
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  foundry:
+    ports: !override
+      - "127.0.0.1:7979:7979"
+    environment:
+      UNFURL_FOUNDRY_PROFILE: profiles/foundry-runtime-profile.yaml
+    # The only writable path. The rest of the deployment root stays read-only.
+    volumes:
+      - ../foundry-deployment/.foundry:/opt/unfurl/foundry/.foundry
