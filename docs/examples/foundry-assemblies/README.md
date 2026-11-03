@@ -322,20 +322,18 @@ Stop-Process -Id $studio.Id
 
 `$compile.status` should be `COMPILED`.
 
-**Build the deployment package.** This copies Foundry's deployment folder and adds a `.foundry` folder
-for its state, so the running service doesn't write into your checkout.
+**Build the deployment package.** Foundry's deployment folder is mounted read-only, so the running
+service never writes into your checkout.
 
 ```powershell
-Copy-Item -Recurse unfurl-foundry\deployment "$export\foundry-deployment"
-New-Item -ItemType Directory -Force "$export\foundry-deployment\.foundry" | Out-Null
-
 fabric runtime-bindings --signed-contract "$export\signed-compiled-contract.yaml" --tenant demo --environment local --flow-base-url http://flow:8080 --foundry-base-url http://foundry:7979 --out "$export\runtime-binding.yaml"
 
-fabric emit --contract "$export\signed-compiled-contract.yaml" --profile "$export\substrate-profile.yaml" --runtime-binding "$export\runtime-binding.yaml" --dcp-runtime-bundle "$export\dcp-runtime-bundle.zip" --flow-workflows "$examples\workflows" --foundry-deployment-root "$export\foundry-deployment" --trust-keys "$work\keys\trust" --target "$examples\target-local-images.yaml" --out "$export\deploy"
+fabric emit --contract "$export\signed-compiled-contract.yaml" --profile "$export\substrate-profile.yaml" --runtime-binding "$export\runtime-binding.yaml" --dcp-runtime-bundle "$export\dcp-runtime-bundle.zip" --flow-workflows "$examples\workflows" --foundry-deployment-root unfurl-foundry\deployment --trust-keys "$work\keys\trust" --target "$examples\target-local-images.yaml" --out "$export\deploy"
 ```
 
 `deploy\` now holds `docker-compose.yaml` and a `flow-deployment` folder with the signed contract,
-frozen contracts, bindings, workflows and trust keys. `workflows\workflow.yaml` is a boot check, so
+frozen contracts, bindings, workflows and trust keys. The Compose file mounts each Foundry deployment
+folder read-only and keeps Foundry's state in a named volume. `workflows\workflow.yaml` is a boot check, so
 replace it with your own workflow.
 
 **Build the images.** This builds them from your checkout, using the tags in `target-local-images.yaml`.
@@ -347,9 +345,9 @@ foreach ($name in 'unfurl-foundry', 'unfurl-flow') {
 }
 ```
 
-**Start it.** `compose-development.yaml` adds what the exported file doesn't provide yet, including
-health checks for both services. It runs Foundry in development mode with **no authentication**, so it
-publishes both ports on this machine only. Foundry also needs a key for encrypting stored credentials.
+**Start it.** The exported file uses Foundry's secured profile, which needs JWT keys, and Flow can't
+send JWTs yet. `compose-development.yaml` therefore runs Foundry in development mode with **no
+authentication**, publishes both ports on this machine only, and adds health checks for both services. Foundry also needs a key for encrypting stored credentials.
 
 ```powershell
 $key = New-Object byte[] 32
@@ -381,7 +379,7 @@ containers, so you can fix the problem and run this block again. To stop the pac
 compose down
 ```
 
-Foundry's state stays in `$export\foundry-deployment\.foundry`.
+Foundry's state stays in the `foundry-dev-state` volume until you run `compose down -v`.
 
 If you see `flow deployment has unbound workflow capabilities`, a workflow uses something the contract
 doesn't provide. Flow does this on purpose, so it can't start with work it can't run. Check your
@@ -448,9 +446,9 @@ bindings change, use a new revision.
   `agent-platform.definition.yaml`, which has every required section.
 - The exported `docker-compose.yaml` contains the full path to your Foundry deployment folder, so it
   won't work unchanged on another machine.
-- The exported `docker-compose.yaml` can't start current Foundry images by itself. It mounts Foundry's
-  deployment folder read-only and selects no profile, so Foundry uses its secured profile, which needs
-  writable state and JWT verification keys. Always add `compose-development.yaml`.
+- The exported `docker-compose.yaml` uses Foundry's secured profile, the image default. On its own it
+  needs JWT verification keys in the deployment's `identity/keys/`, and Flow can't call it until Flow
+  sends JWTs. Add `compose-development.yaml` for local use.
 
 **Before production:**
 
