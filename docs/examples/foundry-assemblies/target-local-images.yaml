@@ -1,0 +1,14 @@
+# Local Docker Compose target with real image names.
+#
+# Without these overrides the emitter writes the catalog coordinates into `image:`,
+# which Docker cannot pull. Each key is `image.` plus the component's coordinates in
+# lower case, with every other character replaced by `-`.
+#
+# The guide builds these tags from your checkout, so an older local image can't be
+# picked up by accident.
+
+kind: local-compose
+environment: local
+options:
+  image.com-unfurl-flow-unfurl-flow-0-1-0: unfurl-flow:assembly-guide
+  image.com-unfurl-foundry-unfurl-foundry-0-1-0-snapshot: unfurl-foundry:assembly-guide

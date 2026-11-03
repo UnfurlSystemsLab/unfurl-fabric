@@ -1,0 +1,16 @@
+# The Foundry and Flow services plus the Spring AI adapter.
+#
+# Use this when the contract should record the adapter as the component that
+# supplies the model, embedding and vector store ports.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: workflow.execute
+    capabilityVersion: ^0.1
+  - capability: model-provider
+    capabilityVersion: ^0.1
+  - capability: embedding-provider
+    capabilityVersion: ^0.1
+  - capability: vector-store
+    capabilityVersion: ^0.1

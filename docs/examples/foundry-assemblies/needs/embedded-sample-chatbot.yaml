@@ -1,0 +1,12 @@
+# The sample chatbot agent with the substrates it runs on.
+#
+# Dependencies are not added automatically, so agent.execute and model-provider
+# must be listed next to agent.chatbot.
+
+requiredCapabilities:
+  - capability: agent.chatbot
+    capabilityVersion: ^0.1
+  - capability: agent.execute
+    capabilityVersion: ^0.1
+  - capability: model-provider
+    capabilityVersion: ^0.1

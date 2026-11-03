@@ -1,0 +1,12 @@
+# An embedded agent with prompt composition.
+#
+# Selects foundry-substrate-engine, foundry-substrate-prompt and the Spring AI
+# adapter. No Foundry service, no Flow.
+
+requiredCapabilities:
+  - capability: agent.execute
+    capabilityVersion: ^0.1
+  - capability: prompt.compose
+    capabilityVersion: ^0.1
+  - capability: model-provider
+    capabilityVersion: ^0.1
