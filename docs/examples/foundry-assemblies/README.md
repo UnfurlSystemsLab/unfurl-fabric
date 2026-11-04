@@ -23,13 +23,14 @@ and the other repos.
 | Compile and sign any combination below | Works | [Command line](#1-create-the-catalog) |
 | Review deployment files for a combination | Works | [Command line](#5-export) |
 | Export a Flow + Foundry package that starts | Works in development mode, without authentication | [Studio API](#export-a-package-that-starts) |
-| Publish a reusable `flow-foundry` or `flow-only` assembly | Works | [Publish](#publish-a-reusable-assembly) |
-| Publish a `foundry-only` assembly with real Foundry | **Not possible yet** | [Current limits](#current-limits) |
+| Export a Foundry-only package that starts | Works in development mode, without authentication | [Command line](#start-a-foundry-only-package) |
+| Publish a reusable `flow-foundry`, `flow-only` or `foundry-only` assembly | Works | [Publish](#publish-a-reusable-assembly) |
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
-package started, and Flow and Foundry both reported healthy. No agent or model call was made, so a
-real agent run is not covered here.
+package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
+November 2026, and Foundry on its own reported healthy and ready. No agent or model call was made, so
+a real agent run is not covered here.
 
 ## Before you start
 
@@ -43,9 +44,15 @@ Fabric's. If Fabric is running from its jar, stop it first, because the build re
 mvn -q package -DskipTests
 ```
 
-Then set up your session. This creates a work folder, and a `fabric` command that runs Fabric's CLI
-through its launch script, `unfurl-fabric\launch.ps1`. The script checks for Java 21 and rebuilds
-Fabric's jar if it's missing.
+Then set up your session. This creates a work folder and loads `guide-helpers.ps1` from this folder,
+which defines:
+
+| Helper | What it does |
+|---|---|
+| `fabric` | Runs a Fabric CLI command through Fabric's launch script, `unfurl-fabric\launch.ps1`, which checks for Java 21 and rebuilds Fabric's jar if it's missing |
+| `Wait-ForHealth <url>` | Waits up to a minute for a service to answer |
+| `Assert-PortFree <port>` | Stops with a clear message if a port is already in use |
+| `$launch`, `$shutdown` | The full paths of Fabric's launch and shutdown scripts |
 
 ```powershell
 $work = "$env:TEMP\foundry-assembly"
@@ -53,22 +60,11 @@ New-Item -ItemType Directory -Force "$work\catalog", "$work\keys\trust" | Out-Nu
 
 $examples = 'unfurl-fabric\docs\examples\foundry-assemblies'
 $fixtures = 'unfurl-e2e\fixtures'
-$launch   = (Resolve-Path unfurl-fabric\launch.ps1).Path
-function fabric { & $launch cli @args }
-
-function Wait-ForHealth($url) {
-    foreach ($attempt in 1..60) {
-        try { return Invoke-RestMethod $url -TimeoutSec 2 } catch { Start-Sleep -Seconds 1 }
-    }
-    throw "no response from $url"
-}
-
-function Assert-PortFree($port) {
-    if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
-        throw "port $port is already in use. Stop what is using it, then try again."
-    }
-}
+. "$examples\guide-helpers.ps1"
 ```
+
+Load the helpers again whenever you open a new PowerShell window. The dot and space at the start of
+the last line matter: without them the helpers disappear as soon as the line finishes.
 
 If PowerShell says that running scripts is disabled, allow local scripts for your account with
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then try again. From `cmd.exe`, use
@@ -111,13 +107,17 @@ are shared libraries, so you normally don't choose them.
 There are two ways to run Foundry:
 
 - **Service:** Foundry runs as its own container, and it already includes the substrates it needs.
-  Foundry's claim requires Flow, so Flow is always part of this combination.
+  Flow is optional: Foundry's claim lists `workflow.execute` as an optional dependency, so Foundry
+  runs on its own, and Flow is added only when the needs ask for `workflow.execute`. Without Flow,
+  agents and compositions run, but a composition task that delegates to a workflow fails with
+  `WORKFLOW_DELEGATE_UNBOUND`.
 - **Embedded:** the substrates run as libraries inside your own Java app. There is no Foundry service
   and no Flow.
 
 A needs file lists the capabilities you want. **Fabric doesn't add dependencies for you, so the file
 must list every capability the selected components require.** For example, `agent.execute` needs
-`model-provider`, and `agent.run` needs `workflow.execute`.
+`model-provider`. A component's optional dependencies are different: they are never required, and
+the component runs without them, so you list one only when you want its provider included.
 
 Pick a needs file:
 
@@ -129,6 +129,7 @@ Pick a needs file:
 | Agent with prompts | `$examples\needs\embedded-prompt-agent.yaml` | engine, prompt, Spring AI adapter | Embedded |
 | All substrates | `$examples\needs\embedded-full.yaml` | engine, RAG, tools, prompt, Spring AI adapter | Embedded |
 | Sample chatbot | `$examples\needs\embedded-sample-chatbot.yaml` | sample agent, engine, Spring AI adapter | Embedded |
+| Foundry only | `$examples\needs\foundry-only.yaml` | Foundry | Service, without Flow |
 | Foundry + Flow | `$examples\needs\foundry-flow.yaml` | Foundry, Flow | Service |
 | Foundry + Flow + adapter | `$examples\needs\foundry-flow-spring-ai.yaml` | Foundry, Flow, Spring AI adapter | Service |
 | Foundry + Flow + separate RAG | `$examples\needs\foundry-flow-separate-rag.yaml` | Foundry, Flow, RAG, Spring AI adapter | Service |
@@ -169,6 +170,16 @@ unmet need: the needs require identity-context ^1, but no catalog entry offers i
 ```
 
 `compile` prints the same lines and exits with an error.
+
+After `EXACT` or `AMBIGUOUS`, each candidate line can be followed by `optional, not provided:` lines.
+They are information, not errors: the component runs without that capability. For example,
+`foundry-only.yaml` gives:
+
+```text
+EXACT
+cand-… score=217 entries=com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+optional, not provided: com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT can use workflow.execute but runs without it; add workflow.execute to the needs to include a provider
+```
 
 `rag.search` is offered by both Foundry and `foundry-substrate-rag`, which is why **Everything** is
 ambiguous. To force the separate RAG component, pin it under `artifactConstraints`, as
@@ -236,6 +247,7 @@ What you get depends on the combination:
 | Combination | `local` target | `k8s-dev` target |
 |---|---|---|
 | Embedded | `flow-runtime-profile.yaml` only, because there are no services to start | Fails: Kubernetes can't place in-process components |
+| Foundry only | `docker-compose.yaml` with the Foundry service alone, and `flow-runtime-profile.yaml` | Helm chart and manifests |
 | Foundry + Flow | `docker-compose.yaml` and `flow-runtime-profile.yaml` | Helm chart and manifests |
 | Foundry + Flow with substrates | `docker-compose.yaml` and `flow-runtime-profile.yaml` | Fails: same reason as embedded |
 
@@ -258,11 +270,61 @@ fabric deploy --contract "$out\signed.yaml" --profile "$out\compiled.substrate-p
 ```
 
 These files are good for review, but they aren't a complete package. Flow needs a runtime bundle to
-start, and today only Studio creates that bundle.
+start, and today only Studio creates that bundle. Foundry on its own needs no bundle, so a
+Foundry-only package can be built from the command line, as the next section shows.
+
+## Start a Foundry-only package
+
+Foundry needs only its deployment folder, so this route uses the command line alone. Compile and sign
+`foundry-only.yaml` as in [Compile and sign](#3-compile-and-sign), then emit with Foundry's deployment
+folder:
+
+```powershell
+$needs = "$examples\needs\foundry-only.yaml"
+fabric compile --catalog "$work\catalog" --needs $needs --out "$out\compiled.yaml"
+fabric sign --contract "$out\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$out\signed.yaml"
+fabric verify --contract "$out\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"
+
+fabric emit --contract "$out\signed.yaml" --profile "$out\compiled.substrate-profile.yaml" --foundry-deployment-root unfurl-foundry\deployment --trust-keys "$work\keys\trust" --target "$examples\target-local-images.yaml" --out "$out\foundry-only"
+```
+
+Leave out `--runtime-binding`, `--dcp-runtime-bundle` and `--flow-workflows`. They build Flow's
+deployment folder, and `emit` refuses them for a composition without Flow.
+
+Build the Foundry image if you haven't already, then start it. `compose-development-foundry-only.yaml`
+runs Foundry in development mode with **no authentication**, on this machine only. Don't use
+`compose-development.yaml` here: it also configures a Flow service, which this package doesn't have.
+
+```powershell
+docker build -t unfurl-foundry:assembly-guide unfurl-foundry
+if ($LASTEXITCODE -ne 0) { throw 'could not build the unfurl-foundry image' }
+
+$key = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
+$env:UNFURL_FOUNDRY_CREDENTIAL_KEY = [Convert]::ToBase64String($key)
+
+function foundry-compose {
+    docker compose -p foundry-only -f "$out\foundry-only\docker-compose.yaml" -f "$examples\compose-development-foundry-only.yaml" @args
+}
+
+Assert-PortFree 7979
+foundry-compose up -d --pull never --wait --wait-timeout 180
+if ($LASTEXITCODE -ne 0) {
+    foundry-compose ps --all
+    foundry-compose logs --tail 40
+    foundry-compose down
+    throw 'the package did not start'
+}
+Invoke-RestMethod http://127.0.0.1:7979/health/ready
+```
+
+`/health/ready` should report `UP` for Foundry and each of its stores. Stop it with
+`foundry-compose down`; add `-v` to also delete Foundry's state. This package and the Flow + Foundry
+package below both use port 7979, so run one at a time.
 
 ## Export a package that starts
 
-This route uses the Studio API to create the bundle. It starts a separate Studio on port 7879 with its
+This route starts Flow and Foundry together. It uses the Studio API to create the bundle Flow needs. It starts a separate Studio on port 7879 with its
 own state file, so it doesn't touch a Fabric you already have running. It reuses `$work`, the catalog
 and the keys from above.
 
@@ -361,11 +423,12 @@ Save-Artifact $compile.signedContractArtifact 'signed-contract.json'
 Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'signed-compiled-contract*') 'signed-compiled-contract.yaml'
 Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'dcp-runtime-bundle*') 'dcp-runtime-bundle.zip'
 
-taskkill /pid $studio.Id /t /f | Out-Null
+& $shutdown --port 7879
 ```
 
-`$compile.status` should be `COMPILED`. `taskkill /t` stops the launch script and the Java process it
-started; `Stop-Process` would stop only the script and leave Studio holding port 7879.
+`$compile.status` should be `COMPILED`. The shutdown script stops only a Fabric Studio server, and the
+launch script that started it exits with it. Don't use `Stop-Process -Id $studio.Id`: that stops only
+the launch script and leaves Studio holding port 7879.
 
 **Build the deployment package.** Foundry's deployment folder is mounted read-only, so the running
 service never writes into your checkout.
@@ -394,6 +457,9 @@ foreach ($name in 'unfurl-foundry', 'unfurl-flow') {
 send JWTs yet. `compose-development.yaml` therefore runs Foundry in development mode with **no
 authentication**, publishes both ports on this machine only, and adds health checks for both services. Foundry also needs a key for encrypting stored credentials.
 
+Before starting anything, the block checks that the package from **Build the deployment package**
+exists and that every image it names has been built, and says which step to run if not.
+
 ```powershell
 $key = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
@@ -401,6 +467,14 @@ $env:UNFURL_FOUNDRY_CREDENTIAL_KEY = [Convert]::ToBase64String($key)
 
 function compose {
     docker compose -p foundry-assembly -f "$export\deploy\docker-compose.yaml" -f "$examples\compose-development.yaml" @args
+}
+
+if (-not $export -or -not (Test-Path "$export\deploy\docker-compose.yaml")) {
+    throw "there is no package in `$export\deploy. Run 'Build the deployment package' first, in this window."
+}
+foreach ($image in (compose config --images)) {
+    docker image inspect $image *> $null
+    if ($LASTEXITCODE -ne 0) { throw "the image $image isn't built. Run 'Build the images' first." }
 }
 
 Assert-PortFree 8080
@@ -504,9 +578,16 @@ bindings change, use a new revision.
 |---|---|---|
 | `flow-foundry` | `workflow.execute` and `agent.run` | Works |
 | `flow-only` | `workflow.execute`, no `agent.run` | Works |
-| `foundry-only` | `agent.run`, no `workflow.execute` | Blocked with real Foundry |
+| `foundry-only` | `agent.run`, no `workflow.execute` | Works, with `foundry-only.yaml` as the profile |
 
 No family requires identity. A release has it when its profile's needs ask for `identity-context`.
+
+To publish a `foundry-only` assembly, start from `agent-only.definition.yaml`, which offers
+`agent.run` alone, and use the same commands with `--family foundry-only --name agent-only`,
+`--needs "$examples\needs\foundry-only.yaml"` and `$uri = 'urn:example:assembly:agent-only'`. Its
+profile has no `identity-context`, so `runtime-bindings` needs no identity settings. Publishing a
+compiled contract that includes Flow into this family fails, because the family rejects
+`workflow.execute`.
 
 ## Current limits
 
@@ -514,7 +595,6 @@ No family requires identity. A release has it when its profile's needs ask for `
 
 | Limit | Why | What to do |
 |---|---|---|
-| The `foundry-only` family can't be published | Foundry's claim requires `workflow.execute`, but this family rejects it | Use `flow-foundry` |
 | Studio's `needs/extract` results can't compile | It asks for `^1`, but the components are `0.1.0`, so compile returns `NO_MATCH` | Leave `needsId` out of the session, as this guide does. Compile then checks the selected components' dependencies, not a needs list |
 | The Foundry jar can't be uploaded as `artifactBase64` | The request is too large and returns `400 malformed json body` | Send `claimYaml` |
 | The command line can't create `dcp-runtime-bundle.zip` | Only Studio's compile produces it | Use the Studio route |

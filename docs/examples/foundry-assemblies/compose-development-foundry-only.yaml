@@ -1,0 +1,19 @@
+# Development settings for an exported Foundry-only package (needs/foundry-only.yaml).
+#
+# Apply this after the emitted docker-compose.yaml, instead of compose-development.yaml, which also
+# configures a Flow service that this package doesn't have. The emitted file uses the Foundry image's
+# default secured profile, which needs JWT verification keys; this file selects the development
+# profile, which has no authentication, so the port is limited to this machine.
+
+services:
+  foundry:
+    ports: !override
+      - "127.0.0.1:7979:7979"
+    environment:
+      UNFURL_FOUNDRY_PROFILE: profiles/foundry-runtime-profile.yaml
+    # The development profile keeps its state in .foundry/, which the image creates writable for this volume.
+    volumes:
+      - foundry-dev-state:/opt/unfurl/foundry/.foundry
+
+volumes:
+  foundry-dev-state: {}

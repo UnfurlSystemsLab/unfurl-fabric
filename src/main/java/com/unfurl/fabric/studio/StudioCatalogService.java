@@ -687,8 +687,8 @@ public final class StudioCatalogService {
                 entryId,
                 claimHash,
                 artifactSha,
-                visual(category, fallbackKind, capabilities, requiredCapabilities),
-                dynamicComposition("COMPONENT", List.of(), rawNeeds, shapeProfile),
+                visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
+                dynamicComposition("COMPONENT", List.of(), rawNeeds, rawOptionalNeeds(claim), shapeProfile),
                 Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
                 List.of());
     }
@@ -1475,7 +1475,9 @@ public final class StudioCatalogService {
             dependencyPorts = entries.stream()
                     .filter(entry -> catalogEntryId.equals(entry.catalogEntryId()))
                     .findFirst()
+                    // Only required ports need a binding before the component is added; optional ones may stay unbound.
                     .map(entry -> portsOfKind(entry.visualManifest(), "DEPENDENCY").stream()
+                            .filter(port -> !port.optional())
                             .map(PortDescriptor::capability)
                             .toList())
                     .orElse(List.of());
@@ -2755,7 +2757,10 @@ public final class StudioCatalogService {
             }
             offersByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "OFFER"));
             needsByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "DEPENDENCY"));
-            rawNeedsByNodeId.put(node.nodeId(), rawDependencyStrings(entry));
+            // Owner qualifiers mean the same in both lists, so external optional dependencies are skipped too.
+            List<String> rawDependencies = new ArrayList<>(rawDependencyStrings(entry));
+            rawDependencies.addAll(rawOptionalDependencyStrings(entry));
+            rawNeedsByNodeId.put(node.nodeId(), rawDependencies);
         }
         Map<String, String> labelByNodeId = new LinkedHashMap<>();
         for (StudioDynamicDcpNode node : childNodes) {
@@ -2777,6 +2782,7 @@ public final class StudioCatalogService {
             Set<String> externalNeeds = externallyOwnedNeeds(
                     rawNeedsByNodeId.getOrDefault(consumer.nodeId(), List.of()));
             for (PortDescriptor need : needs) {
+                    String relation = need.optional() ? " optionally used by " : " required by ";
                 if (substrateCapabilities.contains(need.capability())) {
                     StudioSubstratePort substrate = substrateByCapability.get(need.capability());
                     connections.add(new StudioPortConnectionEdge(
@@ -2787,7 +2793,7 @@ public final class StudioCatalogService {
                             need.capability(),
                             "ALLOWED",
                             "Unfurl substrate offers " + need.capability()
-                                    + " required by "
+                                    + relation
                                     + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
                     continue;
                 }
@@ -2810,7 +2816,7 @@ public final class StudioCatalogService {
                                     "ALLOWED",
                                     labelByNodeId.getOrDefault(provider.nodeId(), provider.nodeId())
                                             + " offers " + offer.capability()
-                                            + " required by "
+                                            + relation
                                             + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
                         }
                     }
@@ -2869,7 +2875,8 @@ public final class StudioCatalogService {
                         "AVAILABLE"));
             }
             for (PortDescriptor need : portsOfKind(entry.visualManifest(), "DEPENDENCY")) {
-                if (offeredCapabilities.contains(need.capability())
+                // Optional dependencies are never substrate requirements (HLD-unfurl-fabric, Core Flow step 3).
+                if (need.optional() || offeredCapabilities.contains(need.capability())
                         || !isUnfurlSubstrateCapability(need.capability())) {
                     continue;
                 }
@@ -2921,6 +2928,21 @@ public final class StudioCatalogService {
                     .toList();
         }
         return List.of();
+    }
+
+    /**
+     * Reader: the entry's raw {@code claim.dependencies.optional} strings from the dynamic-composition block's
+     * {@code rawOptionalNeeds}, or an empty list when it declares none.
+     */
+    private List<String> rawOptionalDependencyStrings(StudioVisualCatalogEntry entry) {
+        Map<String, Object> dynamicComposition = entry.dynamicComposition();
+        if (dynamicComposition == null || !(dynamicComposition.get("rawOptionalNeeds") instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .toList();
     }
 
     /**
@@ -3193,12 +3215,19 @@ public final class StudioCatalogService {
             if (capability.isBlank()) {
                 continue;
             }
-            out.add(new PortDescriptor(id, capability));
+            out.add(new PortDescriptor(id, capability, Boolean.TRUE.equals(port.get("optional"))));
         }
         return out;
     }
 
-    private record PortDescriptor(String id, String capability) {
+    /**
+     * Value Object: one visual-manifest port.
+     *
+     * @param id         the port id.
+     * @param capability the capability it offers or depends on.
+     * @param optional   true for a DEPENDENCY port from {@code claim.dependencies.optional}, which may stay unconnected.
+     */
+    private record PortDescriptor(String id, String capability, boolean optional) {
     }
 
     public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
@@ -4083,6 +4112,9 @@ public final class StudioCatalogService {
     /**
      * Projector: records component-to-component and external dependency bindings for the
      * selected entry set so the compiled audit has a truthful draft dependency view.
+     * Every need is recorded, bound or not. An optional dependency is recorded only when it is actually bound, by a
+     * selected provider or externally; an unprovided one is no binding (HLD-unfurl-fabric, Core Flow step 3), and
+     * {@link com.unfurl.fabric.matcher.OptionalDependencies} reports it instead.
      */
     private List<DependencyBinding> dependencyBindings(List<CatalogEntry> entries) {
         Map<String, String> providersByCapability = new LinkedHashMap<>();
@@ -4105,6 +4137,14 @@ public final class StudioCatalogService {
                 boolean hostBound = provider == null
                         && (dep.contains("substrate=true") || CandidateValidator.isExternallyOwnedDependency(dep));
                 bindings.add(new DependencyBinding(dep, provider, hostBound));
+            }
+            for (String dep : entry.claimDescriptor().claim().dependencies().optional()) {
+                String capability = capabilityNameFromDependencyUri(dep);
+                String provider = capability == null ? null : providersByCapability.get(capability);
+                boolean hostBound = provider == null && CandidateValidator.isExternallyOwnedDependency(dep);
+                if (provider != null || hostBound) {
+                    bindings.add(new DependencyBinding(dep, provider, hostBound));
+                }
             }
         }
         return bindings;
@@ -4597,12 +4637,13 @@ public final class StudioCatalogService {
                 "COMPONENT",
                 List.of(),
                 rawNeeds,
+                rawOptionalNeeds(claim),
                 entry.componentShapeProfile());
         return new StudioVisualCatalogEntry(
                 entry.artifact().coordinates(),
                 entry.claimDescriptor().claimHash(),
                 entry.artifact().sha256(),
-                visual(category, fallbackKind, capabilities, requiredCapabilities),
+                visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
                 dynamicComposition,
                 Map.of(),
                 List.of());
@@ -4612,10 +4653,7 @@ public final class StudioCatalogService {
      * Parses {@code claim.dependencies.needs} strings (format
      * {@code <cap>[@<version>][?<params>]}) into bare capability names so
      * the visual manifest can emit DEPENDENCY ports alongside its OFFER
-     * ports. Mirrors the parser in
-     * {@code com.unfurl.fabric.matcher.CandidateValidator.capabilityNameFromDependencyUri}
-     * (which is private to that class — duplicating the 8-line trim here
-     * is cheaper than widening that class's API for this one caller).
+     * ports, using DCP's dependency-name rule like the matcher does.
      * Customer-controlled / host-owned dependencies stay in the list
      * because the hover-preview wants to surface them as connection
      * candidates even when fabric's resolver would skip them.
@@ -4631,20 +4669,31 @@ public final class StudioCatalogService {
                 .toList();
     }
 
+    /**
+     * Parser: the capability names of {@code claim.dependencies.optional}, for the visual manifest's optional
+     * DEPENDENCY ports. Names that are also needs are dropped, so a port is never both required and optional (DCP's
+     * claim validator rejects such claims; this keeps an unvalidated fixture from producing duplicate port ids).
+     */
+    private List<String> optionalCapabilitiesFromClaim(Claim claim) {
+        if (claim == null || claim.dependencies() == null) {
+            return List.of();
+        }
+        List<String> required = requiredCapabilitiesFromClaim(claim);
+        return claim.dependencies().optional().stream()
+                .map(StudioCatalogService::capabilityNameFromDependencyUri)
+                .filter(name -> name != null && !name.isBlank() && !required.contains(name))
+                .distinct()
+                .toList();
+    }
+
+    /** Reader: the raw {@code claim.dependencies.optional} strings, qualifiers intact, for the dynamic-composition block. */
+    private static List<String> rawOptionalNeeds(Claim claim) {
+        return claim == null || claim.dependencies() == null ? List.of() : List.copyOf(claim.dependencies().optional());
+    }
+
+    /** Parser: a dependency URI's capability name, by DCP's own rule ({@link com.unfurl.dcp.claim.Dependencies#capabilityOf}). */
     private static String capabilityNameFromDependencyUri(String dep) {
-        if (dep == null) {
-            return null;
-        }
-        String trimmed = dep;
-        int q = trimmed.indexOf('?');
-        if (q >= 0) {
-            trimmed = trimmed.substring(0, q);
-        }
-        int at = trimmed.indexOf('@');
-        if (at >= 0) {
-            trimmed = trimmed.substring(0, at);
-        }
-        return trimmed.isBlank() ? null : trimmed;
+        return com.unfurl.dcp.claim.Dependencies.capabilityOf(dep);
     }
 
     private static String queryParam(String dep, String key, String fallback) {
@@ -4731,7 +4780,7 @@ public final class StudioCatalogService {
      * a hand-authored {@code .glb} model.
      */
     private Map<String, Object> visual(String category, String fallbackKind, List<String> offeredCapabilities) {
-        return visual(category, fallbackKind, offeredCapabilities, List.of());
+        return visual(category, fallbackKind, offeredCapabilities, List.of(), List.of());
     }
 
     /**
@@ -4741,13 +4790,16 @@ public final class StudioCatalogService {
      * SQUARE_PLUG}) so the renderer naturally separates "what I provide"
      * from "what I need" along opposite faces of the component group.
      * Both lists feed the hover-preview compatibility matcher in
-     * {@link #connectionCandidates}.
+     * {@link #connectionCandidates}. Optional dependencies get DEPENDENCY
+     * ports too, marked {@code optional: true}, so a selected provider
+     * still connects to them while the component stays valid without one.
      */
     private Map<String, Object> visual(
             String category,
             String fallbackKind,
             List<String> offeredCapabilities,
-            List<String> requiredCapabilities
+            List<String> requiredCapabilities,
+            List<String> optionalCapabilities
     ) {
         List<Map<String, Object>> ports = new ArrayList<>();
         for (String capability : offeredCapabilities) {
@@ -4763,6 +4815,15 @@ public final class StudioCatalogService {
                     "id", "need-" + capability.replace('.', '-'),
                     "mapsTo", "claim.dependencies." + capability,
                     "kind", "DEPENDENCY",
+                    "anchor", "left",
+                    "connectorShape", "SQUARE_PLUG"));
+        }
+        for (String capability : optionalCapabilities) {
+            ports.add(Map.of(
+                    "id", "need-" + capability.replace('.', '-'),
+                    "mapsTo", "claim.dependencies." + capability,
+                    "kind", "DEPENDENCY",
+                    "optional", true,
                     "anchor", "left",
                     "connectorShape", "SQUARE_PLUG"));
         }
@@ -4815,7 +4876,7 @@ public final class StudioCatalogService {
             List<String> compatibleDescendants,
             List<String> rawNeeds
     ) {
-        return dynamicComposition(dcpType, compatibleDescendants, rawNeeds, null);
+        return dynamicComposition(dcpType, compatibleDescendants, rawNeeds, List.of(), null);
     }
 
     /**
@@ -4823,11 +4884,14 @@ public final class StudioCatalogService {
      * dependency strings and optional deployment shape profile metadata from catalog
      * manifests. The shape profile is kept as primitive JSON values so persisted Studio
      * state remains a portable read model rather than a Java-domain serialization.
+     * {@code rawNeeds} and {@code rawOptionalNeeds} hold a claim's {@code dependencies.needs} and
+     * {@code dependencies.optional} strings with their qualifiers; each key is written only when non-empty.
      */
     private Map<String, Object> dynamicComposition(
             String dcpType,
             List<String> compatibleDescendants,
             List<String> rawNeeds,
+            List<String> rawOptionalNeeds,
             ComponentShapeProfile shapeProfile
     ) {
         Map<String, Object> dynamic = new LinkedHashMap<>();
@@ -4838,6 +4902,9 @@ public final class StudioCatalogService {
         dynamic.put("binding", Map.of("mode", "LATE_BOUND", "validation", "REQUIRED_BEFORE_ACTIVATION"));
         if (rawNeeds != null && !rawNeeds.isEmpty()) {
             dynamic.put("rawNeeds", List.copyOf(rawNeeds));
+        }
+        if (rawOptionalNeeds != null && !rawOptionalNeeds.isEmpty()) {
+            dynamic.put("rawOptionalNeeds", List.copyOf(rawOptionalNeeds));
         }
         if (shapeProfile != null) {
             dynamic.put("componentShapeProfile", Map.of(

@@ -16,7 +16,8 @@ public record AssemblySource(Claim claim, Need need) {
         JsonNode manifest = AssemblyCodec.YAML.readTree(definition);
         require(manifest != null && manifest.isObject() && manifest.has("claim"), "catalog claim envelope required");
         JsonNode dependencies = manifest.path("claim").get("dependencies");
-        if (dependencies != null) fields(dependencies, Set.of("needs"));
+        // DCP dependency lists (HLD-C v0.2 §3.4): required needs and optional dependencies.
+        if (dependencies != null) fields(dependencies, Set.of("needs", "optional"));
         Claim claim = new CatalogManifestCodec().parse(definition).claim();
         require(new ClaimValidator().validate(claim).valid(), "invalid composite claim");
         require(claim.identity() != null && claim.identity().uri() != null && claim.identity().uri().isAbsolute(), "absolute logical URI required");

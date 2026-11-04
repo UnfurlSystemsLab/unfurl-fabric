@@ -98,13 +98,48 @@ final class CliTestFixtures {
     static final String FOUNDRY_IDENTITY_DEPENDENCY =
             "identity-context@v1?transport=in-process&shape=com.unfurl.substrate.policy.ExecutionContext&owner=customer-idp";
 
+    /** Optional dependency the real Foundry claim declares on Flow: Foundry runs without it (DCP HLD-C v0.2 §3.4). */
+    static final String FOUNDRY_WORKFLOW_DEPENDENCY =
+            "workflow.execute@v1?transport=dcp&shape=com.unfurl.substrate.composition.ContractInvocation&owner=unfurl-flow";
+
     /**
      * Fixture: a Foundry stand-in offering {@code agent.run} whose claim depends on {@code identity-context} as the real
      * Foundry claim does, so a composition with the identity provider records it as a protected service (HLD-needs-driven-
-     * identity §5). The dependency is externally owned, so compositions without identity still compile.
+     * identity §5). The dependency is externally owned, so compositions without identity still compile. Like the real
+     * claim it lists {@code workflow.execute} as optional, so it composes with or without Flow.
      */
     static Path writeFoundryJar(Path dir, String fileName) throws IOException {
-        return writeCatalogJarWithDependencies(dir, fileName, "agent.run", "agent.run", "\"" + FOUNDRY_IDENTITY_DEPENDENCY + "\"");
+        return writeCatalogJarWithOptionalDependencies(dir, fileName, "agent.run", "agent.run",
+                java.util.List.of(FOUNDRY_IDENTITY_DEPENDENCY), java.util.List.of(FOUNDRY_WORKFLOW_DEPENDENCY));
+    }
+
+    /**
+     * Fixture: a catalog jar whose claim has both {@code dependencies.needs} and {@code dependencies.optional}.
+     *
+     * @param needs    required dependency URIs; at least one, because the manifest template writes the optional list
+     *                 as a sibling block after the needs block.
+     * @param optional optional dependency URIs.
+     */
+    static Path writeCatalogJarWithOptionalDependencies(
+            Path dir,
+            String fileName,
+            String artifact,
+            String capability,
+            java.util.List<String> needs,
+            java.util.List<String> optional) throws IOException {
+        if (needs.isEmpty()) {
+            throw new IllegalArgumentException("this fixture needs at least one required dependency");
+        }
+        String needsYaml = needs.stream()
+                .map(dep -> "                      - \"" + dep + "\"")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        // The manifest template is a text block, so its own indentation is stripped while inserted text is not: the
+        // optional key must sit at the stripped depth of "needs:" (4 spaces), and its items deeper.
+        String optionalYaml = optional.stream()
+                .map(dep -> "      - \"" + dep + "\"")
+                .collect(java.util.stream.Collectors.joining("\n"));
+        return writeCatalogJar(dir, fileName, artifact, capability, "Unfurl", "ACTIVE",
+                needsYaml + "\n    optional:\n" + optionalYaml);
     }
 
     /** Claim URI of the identity provider component, as published by unfurl-adapter-keycloak. */

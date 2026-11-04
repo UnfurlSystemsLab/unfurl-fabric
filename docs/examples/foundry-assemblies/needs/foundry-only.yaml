@@ -1,0 +1,12 @@
+# The Foundry service on its own, without Flow.
+#
+# Foundry lists workflow.execute as an optional dependency, so needs without it
+# select Foundry alone. Agents and compositions run; a composition task that
+# delegates to a workflow fails with WORKFLOW_DELEGATE_UNBOUND, because there is
+# no Flow to delegate to. Add workflow.execute (see foundry-flow.yaml) to include
+# Flow. Model, embedding and vector providers are bound at deployment time through
+# the Foundry deployment root.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1

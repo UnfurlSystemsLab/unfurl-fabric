@@ -1,0 +1,51 @@
+# Example publisher definition for a reusable Foundry-only assembly: Foundry on
+# its own, without Flow (family foundry-only, profile needs/foundry-only.yaml).
+#
+# Replace the identity, publisher and artifact coordinates with your own before
+# publishing. Every offer below must be realized at exactly this version by the
+# compiled contract, so keep the versions equal to the catalog components'.
+
+claim:
+  identity:
+    uri: urn:example:assembly:agent-only
+    name: agent-only
+    kind: COMPONENT
+    version: 1.0.0
+    publisher: Example Org
+    publisher_uri: urn:example
+  domain:
+    summary: Reusable Foundry agent service without Flow.
+    concerns:
+      - concern: agent-service
+        description: Governed agents and compositions, with no workflow delegation.
+    boundary_principles:
+      - Foundry remains the runtime; this composite only names the combination.
+  refusals:
+    - concern: workload-definitions
+      rationale: Agents and compositions are installed into the service by its operators.
+    - concern: durable-workflow-execution
+      rationale: This assembly has no Flow; workflow tasks need the flow-foundry family.
+  dependencies:
+    needs: []
+  offers:
+    - capability: agent.run
+      description: Governed agent execution.
+      consumer_access: ANY
+      stability: EVOLVING
+      version: 0.1.0
+      metered: false
+  faults:
+    emitted: []
+  metadata:
+    dcp_version: 0.2.0
+    claim_version: 1.0.0
+catalog:
+  lifecycle:
+    status: ACTIVE
+  artifact:
+    coordinates: org.example:agent-only:1.0.0
+    packaging: jar
+    source: assembly-source
+  binding:
+    default_mode: IN_PROCESS
+    supported_modes: [IN_PROCESS]

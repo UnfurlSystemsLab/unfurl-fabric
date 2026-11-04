@@ -79,6 +79,8 @@ public final class SubstrateProfileDeriver {
             if (dependencies == null) {
                 continue;
             }
+            // Only needs are substrate requirements; an optional dependency's substrate=true qualifier is not
+            // (HLD-unfurl-fabric, Core Flow step 3), because the component must run without it.
             for (String raw : dependencies.needs()) {
                 if (raw == null || !raw.contains("substrate=true")) {
                     continue;
