@@ -21,6 +21,47 @@ See `unfurl-ui/docs/REPO-ai-contract-authoring-build-spec.md`.
 mvn test
 ```
 
+## Run Fabric on its own
+
+The launch scripts run Fabric without the UI, Flow or Foundry. They build
+`target/unfurl-fabric-studio-server.jar` first if it is missing (or with `--build`), check for
+Java 21 or later, and run in the foreground, so Ctrl-C stops them.
+
+| Shell | Script |
+|---|---|
+| PowerShell | `.\launch.ps1` |
+| cmd.exe | `launch.bat` (runs `launch.ps1`) |
+| bash (Linux, macOS, Git Bash) | `./launch.sh` |
+
+Start the Fabric Studio server, by default on `http://127.0.0.1:7878`:
+
+```powershell
+.\launch.ps1
+.\launch.ps1 --port 7979 --state-path "$env:TEMP\fabric\studio-state.json"
+Invoke-RestMethod http://127.0.0.1:7878/health
+```
+
+Run a Fabric CLI command instead of the server:
+
+```powershell
+.\launch.ps1 cli plan --catalog .\catalog --needs .\needs.yaml
+```
+
+Server options are passed through unchanged: `--bind`, `--port`, `--state-path`, `--asset-root`,
+`--event-bus`, `--redis-url`, `--kafka-bootstrap-servers`, `--kafka-topic`. The scripts refuse to
+start when the port is already in use.
+
+| Variable | Effect |
+|---|---|
+| `UNFURL_STUDIO_BIND`, `UNFURL_STUDIO_PORT` | Defaults for `--bind` and `--port`, the same names the Dockerfile uses |
+| `UNFURL_STUDIO_STATE_PATH`, `UNFURL_STUDIO_ASSET_ROOT` | Read by the server itself |
+| `UNFURL_FOUNDRY_DCP_ENDPOINT` | Foundry endpoint for authoring; without it Studio uses its deterministic bridge |
+| `JAVA_OPTS` | Extra JVM options, split on spaces |
+| `FABRIC_STUDIO_JAR` | Run this jar instead of building one |
+
+Binding to anything other than loopback exposes the Studio API with no authentication; keep it on
+`127.0.0.1` unless an authenticated boundary is in front of it.
+
 ## Docs
 
 - `docs/examples/foundry-assemblies/README.md` - step-by-step guide to the catalog, assemblies, compile, and export for Foundry and its substrate combinations.
