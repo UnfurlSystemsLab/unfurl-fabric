@@ -3,8 +3,10 @@ package com.unfurl.fabric.studio;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,15 +54,42 @@ public final class StudioStateStore {
         }
     }
 
+    /**
+     * Persists the normalized state atomically (RELIABILITY.md, Studio State): it is written to a temporary file in the
+     * same directory, which then replaces the state file in one move. A process stopped at any point, including the
+     * forced stop the Windows shutdown script uses, leaves the previous or the new state, never a truncated file. Where
+     * the filesystem cannot move atomically, the replace falls back to a plain move, which still never exposes a partly
+     * written file under the state file's name.
+     *
+     * @param state the state to persist.
+     * @throws IllegalStateException when the state cannot be written.
+     */
     public synchronized void save(State state) {
+        Path target = path.toAbsolutePath();
+        Path parent = target.getParent();
+        Path temp = null;
         try {
-            Path parent = path.toAbsolutePath().getParent();
             if (parent != null) {
                 Files.createDirectories(parent);
             }
-            mapper.writerWithDefaultPrettyPrinter().writeValue(path.toFile(), state.normalized());
+            temp = Files.createTempFile(parent, target.getFileName().toString() + ".", ".tmp");
+            mapper.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), state.normalized());
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException ex) {
             throw new IllegalStateException("unable to write Studio state to " + path, ex);
+        } finally {
+            if (temp != null) {
+                try {
+                    Files.deleteIfExists(temp);
+                } catch (IOException ignored) {
+                    // The temporary file is only left behind if both the move and this cleanup failed; the state file
+                    // itself is intact, and the save already reported the failure.
+                }
+            }
         }
     }
 
