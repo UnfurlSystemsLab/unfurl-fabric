@@ -3,7 +3,6 @@ package com.unfurl.fabric.studio;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -57,9 +56,8 @@ public final class StudioStateStore {
     /**
      * Persists the normalized state atomically (RELIABILITY.md, Studio State): it is written to a temporary file in the
      * same directory, which then replaces the state file in one move. A process stopped at any point, including the
-     * forced stop the Windows shutdown script uses, leaves the previous or the new state, never a truncated file. Where
-     * the filesystem cannot move atomically, the replace falls back to a plain move, which still never exposes a partly
-     * written file under the state file's name.
+     * forced stop the Windows shutdown script uses, leaves the previous or the new state, never a truncated file.
+     * A filesystem without atomic replacement support fails the save instead of weakening this guarantee.
      *
      * @param state the state to persist.
      * @throws IllegalStateException when the state cannot be written.
@@ -74,11 +72,8 @@ public final class StudioStateStore {
             }
             temp = Files.createTempFile(parent, target.getFileName().toString() + ".", ".tmp");
             mapper.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), state.normalized());
-            try {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException unsupported) {
-                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            // Fail closed if the filesystem cannot provide the atomic replacement required for forced-stop safety.
+            Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException ex) {
             throw new IllegalStateException("unable to write Studio state to " + path, ex);
         } finally {

@@ -41,6 +41,8 @@ Use in-memory only for local/dev or single-process tests. Use Redis or Kafka whe
 `StudioStateStore` writes the state file on every change, not at shutdown, and writes it atomically: the new state
 goes to a temporary file beside it, which then replaces the state file in one move. A process stopped at any moment
 therefore leaves either the previous or the new state, never a truncated file. That is what makes a forced stop safe.
+The filesystem must support atomic replacement. A save fails explicitly when it does not; Studio never falls back to
+a non-atomic move that would invalidate this process-stop guarantee. This does not certify power-loss durability.
 
 ## Stopping Studio
 
