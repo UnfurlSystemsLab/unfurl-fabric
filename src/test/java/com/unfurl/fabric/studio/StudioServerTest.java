@@ -102,16 +102,16 @@ class StudioServerTest {
                       "assemblyId": "assembly-checkout",
                       "artifacts": [
                         {
-                          "fileName": "payment.yaml",
-                          "claimYaml": %s
+                          "fileName": "payment.jar",
+                          "artifactBase64": "%s"
                         }
                       ]
                     }
-                    """.formatted(jsonString(validClaimYaml("payment", "payment.process"))));
+                    """.formatted(jarBase64(manifest("payment", "payment.process"))));
             assertThat(admission.statusCode()).isEqualTo(200);
             assertThat(admission.body())
                     .contains("\"status\":\"VERIFIED\"")
-                    .contains("\"catalogEntryId\":\"uploaded:payment.yaml\"")
+                    .contains("\"catalogEntryId\":\"uploaded:payment.jar\"")
                     .contains("\"diagnostics\":[]")
                     .contains("\"claimBundleArtifact\"");
             StudioCatalogAdmissionResponse admissionBody = StudioJson.mapper()
@@ -139,7 +139,7 @@ class StudioServerTest {
             assertThat(catalogLoaded.statusCode()).isEqualTo(200);
             assertThat(catalogLoaded.body())
                     .contains("\"catalogHash\":\"sha256:")
-                    .contains("\"catalogEntryId\":\"uploaded:payment.yaml\"");
+                    .contains("\"catalogEntryId\":\"uploaded:payment.jar\"");
 
             HttpResponse<String> staleDiagnostic = get(
                     server,
@@ -154,7 +154,7 @@ class StudioServerTest {
             assertThat(claimBundle.statusCode()).isEqualTo(200);
             assertThat(claimBundle.headers().firstValue("Content-Type")).contains("application/zip");
             assertThat(zipEntries(claimBundle.body()))
-                    .contains("claims/01-payment-yaml.claim.yaml", "admission-manifest.yaml", "diagnostics.json");
+                    .contains("claims/01-payment-jar.claim.yaml", "admission-manifest.yaml", "diagnostics.json");
 
             HttpResponse<String> needs = post(
                     server,
@@ -381,9 +381,17 @@ class StudioServerTest {
         }
     }
 
+    /**
+     * Compiles an admitted component and serves the compiled contract. Only a component admitted from its jar can be
+     * compiled; built-in display entries cannot (DCP HLD-C §3.10).
+     */
     @Test
     void servesCompiledExportArtifactContent() throws Exception {
         StudioCatalogService service = new StudioCatalogService();
+        assertThat(service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-demo", List.of(
+                new StudioComponentArtifactDraft("validation.jar", "", "",
+                        jarBase64(manifest("validation-service", "validate.order")))))).status())
+                .isEqualTo("VERIFIED");
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -403,7 +411,7 @@ class StudioServerTest {
         intent.baseRevision = 0;
         intent.type = "ADD_COMPONENT";
         intent.collaboratorId = "alice";
-        intent.put("catalogEntryId", "com.unfurl:validation-service:1.1.0");
+        intent.put("catalogEntryId", "uploaded:validation.jar");
         service.applyIntent("tenant-a", "assembly-demo", created.session().sessionId(), intent);
         StudioCompileDraftCandidateResponse compiled = service.compileCandidate(
                 "tenant-a",
@@ -725,6 +733,21 @@ class StudioServerTest {
                     .contains("\"status\":\"PASS\"")
                     .contains("\"fileType\":\"CATALOG\"");
 
+            // Only a component admitted from its jar can be composed and compiled (DCP HLD-C §3.10).
+            HttpResponse<String> admitted = post(server, "/studio/tenants/tenant-a/catalog/admissions", """
+                    {
+                      "assemblyId": "assembly-tools",
+                      "artifacts": [
+                        {
+                          "fileName": "validation.jar",
+                          "artifactBase64": "%s"
+                        }
+                      ]
+                    }
+                    """.formatted(jarBase64(manifest("validation-service", "validate.payment"))));
+            assertThat(admitted.statusCode()).isEqualTo(200);
+            assertThat(admitted.body()).contains("\"status\":\"VERIFIED\"");
+
             HttpResponse<String> assembly = post(server, "/studio/tools/fabric.assembly-create", """
                     {
                       "callId": "assembly",
@@ -792,7 +815,7 @@ class StudioServerTest {
                           "baseRevision": 0,
                           "type": "ADD_COMPONENT",
                           "collaboratorId": "alice",
-                          "catalogEntryId": "com.unfurl:validation-service:1.1.0"
+                          "catalogEntryId": "uploaded:validation.jar"
                         }
                       }
                     }
@@ -813,7 +836,7 @@ class StudioServerTest {
             assertThat(projection.statusCode()).isEqualTo(200);
             assertThat(projection.body())
                     .contains("\"status\":\"PASS\"")
-                    .contains("\"catalogEntryId\":\"com.unfurl:validation-service:1.1.0\"")
+                    .contains("\"catalogEntryId\":\"uploaded:validation.jar\"")
                     .doesNotContain("\"catalogEntryId\":\"com.unfurl:storage-s3:1.2.0\"");
 
             HttpResponse<String> compiled = post(server, "/studio/tools/fabric.candidate-compile", """
@@ -873,11 +896,13 @@ class StudioServerTest {
                     {
                       "path": %s,
                       "exists": true,
-                      "sha256": "sha256:test"
+                      "sha256": "%s"
                     }
                   ]
                 }
-                """.formatted(jsonString(catalog.resolve("agent.jar").toString())), StandardCharsets.UTF_8);
+                """.formatted(jsonString(catalog.resolve("agent.jar").toString()),
+                        "sha256:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                                .digest(Files.readAllBytes(catalog.resolve("agent.jar"))))), StandardCharsets.UTF_8);
         Path outputPath = dir.resolve("step-02-catalog-admission-response.json");
 
         try (StudioServer server = started()) {

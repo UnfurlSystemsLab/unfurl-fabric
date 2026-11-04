@@ -120,6 +120,8 @@ public final class CandidateValidator {
      * Gate: every required component-to-component dependency resolves within the selected set.
      * Substrate ({@code substrate=true}) and customer-controlled dependencies are excluded — they are
      * not component-to-component gates (substrate is derived into a profile; customer deps are host-bound).
+     * Only {@code dependencies.needs} gate: a claim's {@code dependencies.optional} entries are satisfied by absence
+     * (HLD-unfurl-fabric, Core Flow step 3), and {@link OptionalDependencies} reports the ones left unprovided.
      *
      * @param entries   the entries.
      * @param need      the need (unused directly; kept for signature symmetry/extension).
@@ -165,9 +167,9 @@ public final class CandidateValidator {
 
     /**
      * Gate: required concerns (from needs, or implied by peer dependencies on a refused concern) are
-     * owned by some selected component. A peer dependency implies a refused concern only when its
-     * capability name (see {@link #capabilityNameFromDependencyUri}) equals the concern exactly and it is
-     * not externally owned (HLD-unfurl-fabric, Core Flow step 3). Substring matching would let an
+     * owned by some selected component. A peer dependency implies a refused concern only when it is a need (an optional
+     * dependency may go unprovided), its capability name (see {@link #capabilityNameFromDependencyUri}) equals the
+     * concern exactly, and it is not externally owned (HLD-unfurl-fabric, Core Flow step 3). Substring matching would let an
      * unrelated dependency such as {@code oidc.identity-provider@v1} demand an owner for a refused
      * {@code identity} concern.
      *
@@ -296,23 +298,14 @@ public final class CandidateValidator {
 
     /**
      * Extract the capability/scheme name from a dependency URI by stripping the {@code @version} suffix
-     * and any {@code ?query} parameters.
+     * and any {@code ?query} parameters. Delegates to DCP's {@link com.unfurl.dcp.claim.Dependencies#capabilityOf}, which
+     * DCP's claim validator also uses, so Fabric and the protocol library agree on what a dependency names.
      *
      * @param dep the dependency URI string.
      * @return the capability name, or null if blank.
      */
     public static String capabilityNameFromDependencyUri(String dep) {
-        // Strip "@" suffix and any "?" query params to extract the capability/scheme name
-        String trimmed = dep;
-        int q = trimmed.indexOf('?');
-        if (q >= 0) {
-            trimmed = trimmed.substring(0, q);
-        }
-        int at = trimmed.indexOf('@');
-        if (at >= 0) {
-            trimmed = trimmed.substring(0, at);
-        }
-        return trimmed.isBlank() ? null : trimmed;
+        return com.unfurl.dcp.claim.Dependencies.capabilityOf(dep);
     }
 
     /**

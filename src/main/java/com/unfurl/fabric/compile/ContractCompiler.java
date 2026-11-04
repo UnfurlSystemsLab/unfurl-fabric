@@ -187,6 +187,8 @@ public final class ContractCompiler {
     /**
      * Dependency index: the claim URIs of the other selected entries whose claim dependencies name {@code capability} (by the
      * dependency URI's capability name, whatever its owner marker), sorted and distinct so the contract stays deterministic.
+     * Needs and optional dependencies both count: an optional dependency whose provider is selected is an ordinary edge
+     * (HLD-unfurl-fabric, Core Flow steps 3 and 7).
      *
      * @param entries    deterministic selected entries.
      * @param provider   the entry offering the capability, excluded from its own consumers.
@@ -200,7 +202,7 @@ public final class ContractCompiler {
             if (entry == provider || dependencies == null) {
                 continue;
             }
-            boolean depends = dependencies.needs().stream()
+            boolean depends = java.util.stream.Stream.concat(dependencies.needs().stream(), dependencies.optional().stream())
                     .anyMatch(dep -> dep != null && capability.equals(CandidateValidator.capabilityNameFromDependencyUri(dep)));
             if (depends) {
                 consumers.add(entry.claimDescriptor().claim().identity().uri().toString());

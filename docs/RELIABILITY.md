@@ -38,6 +38,24 @@ kafka
 
 Use in-memory only for local/dev or single-process tests. Use Redis or Kafka when session events must survive beyond one server process or support multiple Studio server instances.
 
+`StudioStateStore` writes the state file on every change, not at shutdown, and writes it atomically: the new state
+goes to a temporary file beside it, which then replaces the state file in one move. A process stopped at any moment
+therefore leaves either the previous or the new state, never a truncated file. That is what makes a forced stop safe.
+The filesystem must support atomic replacement. A save fails explicitly when it does not; Studio never falls back to
+a non-atomic move that would invalidate this process-stop guarantee. This does not certify power-loss durability.
+
+## Stopping Studio
+
+`shutdown.ps1`, `shutdown.sh` and `shutdown.bat` stop a Studio server started by the launch scripts. They find the
+process listening on the port (`--port`, else `UNFURL_STUDIO_PORT`, else `7878`), or every Studio server with `--all`,
+and stop it only when its command line runs the Studio server jar, so an unrelated process on the port is never
+stopped. Nothing running is not an error.
+
+- Linux and macOS: `SIGTERM`, so the shutdown hook closes the HTTP server, executor and event bus; `SIGKILL` only if it
+  is still running after the timeout (`--timeout`, default 10 seconds).
+- Windows: a console Java process cannot be asked to exit, so it is stopped forcefully. The atomic state write above
+  means no state is lost; event-bus connections are dropped and Redis or Kafka clients reconnect on the next start.
+
 ## Session Events
 
 Session event streams are server-sent events. Live streams run for a bounded window and send keep-alives when idle. Clients should reconnect and treat the stream as an update channel, not the source of truth. The session resource remains the source of truth.

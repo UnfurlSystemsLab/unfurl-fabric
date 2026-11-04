@@ -35,7 +35,7 @@
 
 ## Core Flow
 
-1. Catalog scan reads component artifacts and produces content-pinned catalog entries. Studio upload admission follows the same manifest model: when an uploaded artifact contains `catalog.component_shape_profile`, the visual read model persists that profile metadata so restart, snapshot, compile, and deployment resolution do not degrade product runtimes to visual fallback shapes.
+1. Catalog scan reads component artifacts and produces content-pinned catalog entries. A claim is always the one read from its artifact (DCP HLD-C §3.10): Studio upload admission takes the jar bytes, never a detached claim document, pins the SHA-256 it computes from those bytes, and persists the manifest text it read so restart, snapshot, compile, and deployment resolution use that exact claim and its `catalog.component_shape_profile`. Compilation is the only step that narrows or binds a claim; Fabric never rebuilds a claim from visual metadata, and a display-only catalog entry cannot be compiled.
 2. Needs loading parses the required capabilities and constraints. Every capability in the needs is mandatory: one that
    no allowed catalog entry satisfies fails planning and compilation with its reason (not in the catalog, offered only at
    other versions, without the required offer details, or only by trust-rejected entries) and the fix, and an invalid
@@ -43,13 +43,24 @@
    named (`NoMatchExplanation`; HLD-needs-driven-identity §3). Identity is one such capability: a composition has
    authentication and authorization exactly when its needs require `identity-context` (HLD-needs-driven-identity).
 3. Matching creates composition candidates and validates dependency bindings. Dependencies marked `owner=host`, `owner=fabric`, `owner=customer-controlled`, or a concrete customer owner such as `owner=customer-idp` are external runtime/profile bindings, not peer catalog gates. The binding must still be preserved in the candidate audit and deployment handoff so production packaging can require the real customer system.
-   Refusal alignment: a concern one selected component refuses becomes required (some selected component must offer a capability of that exact name) when the needs list it under `refusalExpectations`, or when another selected component's peer dependency names it as its capability, that is the part of the dependency URI before `@` and `?`. Matching is exact, never a substring, so a dependency such as `oidc.identity-provider@v1` does not make Foundry's refused `identity` concern required. Externally owned dependencies never make a concern required, because the customer system they name is bound outside the catalog.
+   Optional dependencies (a claim's `dependencies.optional`, DCP HLD-C v0.2 §3.4) never gate a candidate: a composition
+   without a provider for one is valid, and the component runs without it. When a selected component does provide one, it
+   is an ordinary edge: it appears in the candidate audit's dependency bindings and in `neededBy` (step 7) exactly as a
+   need would. Fabric doesn't add a provider because a claim lists it as optional, just as it doesn't for needs; the
+   operator's needs decide. For example, Flow lists Foundry's `agent.run` and `tool.call` as optional, because Flow
+   depends on Foundry and never the reverse: needs with `workflow.execute` alone select Flow without Foundry (a
+   `flow-only` assembly), needs that also ask for `agent.run` bind Flow to Foundry and record Flow in the `agent.run`
+   child contract's `neededBy`, and needs with `agent.run` alone select Foundry without Flow (a `foundry-only`
+   assembly), since Foundry declares no dependency on Flow. An unprovided optional dependency is reported in the plan
+   output as informational, never as a conflict.
+   Optional dependencies are not substrate requirements: a `substrate=true` qualifier is honoured only under `needs`.
+   Refusal alignment: a concern one selected component refuses becomes required (some selected component must offer a capability of that exact name) when the needs list it under `refusalExpectations`, or when another selected component's peer dependency (a need, not an optional dependency) names it as its capability, that is the part of the dependency URI before `@` and `?`. Matching is exact, never a substring, so a dependency such as `oidc.identity-provider@v1` does not make Foundry's refused `identity` concern required. Externally owned dependencies never make a concern required, because the customer system they name is bound outside the catalog.
 4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
 5. Deployment resolution selects supported runtime shapes and records rejected shapes. Product runtimes such as Flow and Foundry must resolve from their catalog `component_shape_profile`; substrate libraries and adapters may resolve in-process when they are bundled inside those product runtimes.
 6. Substrate profile derivation emits the required runtime profile without secret values.
 7. Compilation writes a light unsigned root DCP contract, the substrate profile, and support/diagnostic compiler
    envelopes. Each child contract's metadata records `neededBy`: the sorted claim URIs of the other selected components
-   whose claims depend on its capability, so later steps (for example identity audience coverage,
+   whose claims depend on its capability, through a need or an optional dependency, so later steps (for example identity audience coverage,
    HLD-needs-driven-identity §5) read that fact from the signed contract. The full `CompiledContract` remains useful for Fabric explain/replay tooling, but it is not the default
    deployment handoff.
 8. Signing freezes the root DCP contract as the primary signed handoff artifact. When downstream Fabric tools still need

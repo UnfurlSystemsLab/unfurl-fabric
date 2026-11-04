@@ -13,6 +13,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -159,18 +160,32 @@ public final class CatalogScanner {
      * @throws SkipJar if the manifest is missing or the JAR cannot be opened/read.
      */
     private byte[] readManifestBytes(Path jarPath) {
-        try (JarFile jar = new JarFile(jarPath.toFile(), false)) {
-            JarEntry entry = jar.getJarEntry(MANIFEST_PATH);
-            if (entry == null) {
-                throw new SkipJar(SkippedEntry.SkipReason.MISSING_MANIFEST,
-                        "JAR has no " + MANIFEST_PATH);
-            }
-            try (InputStream in = jar.getInputStream(entry)) {
-                return in.readAllBytes();
-            }
+        try {
+            return readCatalogManifest(jarPath).orElseThrow(() -> new SkipJar(SkippedEntry.SkipReason.MISSING_MANIFEST,
+                    "JAR has no " + MANIFEST_PATH));
         } catch (IOException ex) {
             throw new SkipJar(SkippedEntry.SkipReason.UNREADABLE_JAR,
                     "unable to open JAR or read manifest: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Reads a JAR's catalog manifest bytes exactly as packaged (metadata access only; no code execution). Studio keeps
+     * these bytes as the claim document for a scanned entry, so the claim it compiles is the one the JAR carries.
+     *
+     * @param jarPath the JAR path.
+     * @return the manifest bytes, or empty when the JAR has no {@code META-INF/unfurl-catalog.yaml}.
+     * @throws IOException if the JAR cannot be opened or the entry cannot be read.
+     */
+    public static Optional<byte[]> readCatalogManifest(Path jarPath) throws IOException {
+        try (JarFile jar = new JarFile(jarPath.toFile(), false)) {
+            JarEntry entry = jar.getJarEntry(MANIFEST_PATH);
+            if (entry == null) {
+                return Optional.empty();
+            }
+            try (InputStream in = jar.getInputStream(entry)) {
+                return Optional.of(in.readAllBytes());
+            }
         }
     }
 

@@ -35,6 +35,7 @@ import com.unfurl.fabric.catalog.BindingDescriptor;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogManifestCodec;
 import com.unfurl.fabric.catalog.CatalogMetadata;
+import com.unfurl.fabric.catalog.CatalogScanException;
 import com.unfurl.fabric.catalog.CatalogScanReport;
 import com.unfurl.fabric.catalog.CatalogScanner;
 import com.unfurl.fabric.catalog.ClaimDescriptor;
@@ -355,16 +356,6 @@ public final class StudioCatalogService {
                         List.of(new StudioDcpDiagnostic("ERROR", "CLAIM_MALFORMED", "fileName", "fileName is required"))));
                 continue;
             }
-            if (!artifact.fileName().endsWith(".jar") && !artifact.fileName().endsWith(".yaml") && !artifact.fileName().endsWith(".yml")) {
-                results.add(new StudioClaimVerificationResult(artifact.fileName(), "REJECTED", "", "",
-                        List.of("unsupported artifact type"),
-                        List.of(new StudioDcpDiagnostic(
-                                "ERROR",
-                                "CLAIM_MALFORMED",
-                                "fileName",
-                                "unsupported artifact type"))));
-                continue;
-            }
             StudioClaimAdmissionValidator.AdmissionValidation validation = claimAdmissionValidator.validate(artifact);
             if (!validation.verified()) {
                 results.add(new StudioClaimVerificationResult(
@@ -379,9 +370,10 @@ public final class StudioCatalogService {
             String entryId = "uploaded:" + artifact.fileName().replace('\\', '/');
             String claimHash = "sha256:" + new com.unfurl.fabric.catalog.CatalogManifestCodec()
                     .computeClaimHash(validation.claim());
-            String artifactSha = artifactSha(artifact, validation);
-            CatalogEntry runtimeEntry = admittedCatalogEntry(entryId, validation, artifactSha);
-            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha);
+            String artifactSha = validation.artifactSha();
+            CatalogEntry runtimeEntry = catalogEntryFromManifest(validation.claimYaml(), artifactSha);
+            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha,
+                    validation.claimYaml());
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
             catalogEntriesByTenant
@@ -560,31 +552,6 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Provenance helper: computes the artifact hash Fabric should use for a Studio
-     * admission. JAR uploads are hashed by bytes; pure claim YAML uploads are hashed by the
-     * admitted YAML so claim-only development flows still have deterministic provenance.
-     */
-    private String artifactSha(
-            StudioComponentArtifactDraft artifact,
-            StudioClaimAdmissionValidator.AdmissionValidation validation
-    ) {
-        if (artifact.sha256() != null && !artifact.sha256().isBlank()) {
-            return artifact.sha256();
-        }
-        if (!artifact.artifactBase64().isBlank()) {
-            try {
-                return sha256(Base64.getDecoder().decode(artifact.artifactBase64()));
-            } catch (IllegalArgumentException ignored) {
-                // Explicit claim YAML is the admission source in this case; hash that below.
-            }
-        }
-        if (!validation.claimYaml().isBlank()) {
-            return sha256(validation.claimYaml().getBytes(StandardCharsets.UTF_8));
-        }
-        return sha256("artifact:" + artifact.fileName());
-    }
-
-    /**
      * Provenance helper: converts Studio/API hash pins into the bare lowercase SHA-256
      * form required by compiled contract selection records.
      */
@@ -600,73 +567,44 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: converts an admitted Studio upload back into the runtime catalog entry
-     * shape used by matcher/compile/deployment resolution.
+     * Factory: builds the runtime catalog entry for a component from the exact manifest text read from its artifact and
+     * the SHA-256 computed from the artifact's bytes. Used at admission and to rebuild an entry from persisted Studio
+     * state; there is no fallback, so an entry exists only for a complete manifest (DCP HLD-C §3.10).
      *
-     * <p>Pattern: parser adapter with a strict manifest path and a DCP-only fallback. JAR
-     * manifests keep authored artifact, lifecycle, binding, and component-shape metadata;
-     * pure claim YAML remains usable for local Studio authoring with explicit
-     * in-process-only binding semantics.
+     * @param manifestYaml the {@code META-INF/unfurl-catalog.yaml} text read from the artifact.
+     * @param artifactSha  the artifact hash, {@code sha256:<hex>} or bare hex.
+     * @return the catalog entry, with the claim hash computed from the manifest's claim.
+     * @throws CatalogScanException when the manifest is malformed or incomplete.
      */
-    private CatalogEntry admittedCatalogEntry(
-            String entryId,
-            StudioClaimAdmissionValidator.AdmissionValidation validation,
-            String artifactSha
-    ) {
+    private CatalogEntry catalogEntryFromManifest(String manifestYaml, String artifactSha) {
         CatalogManifestCodec codec = new CatalogManifestCodec();
-        try {
-            ParsedManifest parsed = codec.parse(validation.claimYaml().getBytes(StandardCharsets.UTF_8));
-            ArtifactDescriptor artifact = new ArtifactDescriptor(
-                    parsed.authoredArtifact().coordinates(),
-                    parsed.authoredArtifact().packaging(),
-                    parsed.authoredArtifact().source(),
-                    artifactDescriptorSha(artifactSha),
-                    parsed.authoredArtifact().signature());
-            return new CatalogEntry(
-                    artifact,
-                    new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
-                    new CatalogMetadata(parsed.lifecycle(), parsed.binding()),
-                    parsed.componentShapeProfile(),
-                    null);
-        } catch (RuntimeException ignored) {
-            Claim claim = validation.claim();
-            ArtifactDescriptor artifact = new ArtifactDescriptor(
-                    fallbackArtifactCoordinates(entryId, claim),
-                    "studio-claim",
-                    "studio-admission",
-                    artifactDescriptorSha(artifactSha),
-                    null);
-            return new CatalogEntry(
-                    artifact,
-                    new ClaimDescriptor(claim, codec.computeClaimHash(claim)),
-                    new CatalogMetadata(Lifecycle.active(), BindingDescriptor.inProcessOnly()),
-                    null,
-                    null);
-        }
-    }
-
-    /**
-     * Naming helper: chooses stable artifact coordinates for direct claim uploads that do
-     * not carry a catalog artifact block.
-     */
-    private String fallbackArtifactCoordinates(String entryId, Claim claim) {
-        if (claim != null && claim.identity() != null && claim.identity().uri() != null) {
-            return claim.identity().uri().toString();
-        }
-        return entryId == null || entryId.isBlank() ? "studio:uploaded-claim:1.0.0" : entryId;
+        ParsedManifest parsed = codec.parse(manifestYaml.getBytes(StandardCharsets.UTF_8));
+        ArtifactDescriptor artifact = new ArtifactDescriptor(
+                parsed.authoredArtifact().coordinates(),
+                parsed.authoredArtifact().packaging(),
+                parsed.authoredArtifact().source(),
+                artifactDescriptorSha(artifactSha),
+                parsed.authoredArtifact().signature());
+        return new CatalogEntry(
+                artifact,
+                new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
+                new CatalogMetadata(parsed.lifecycle(), parsed.binding()),
+                parsed.componentShapeProfile(),
+                null);
     }
 
     /**
      * Projector: turns a verified uploaded catalog entry into the Studio visual-catalog
      * shape. The catalog entry id stays upload-scoped, while the visual and dynamic
-     * metadata preserve the parsed manifest shape profile so persisted Studio state can
-     * later reconstruct deployment-resolution inputs without the original uploaded JAR.
+     * metadata preserve the parsed manifest shape profile, and the entry keeps the manifest text read from the jar so
+     * persisted Studio state rebuilds the same claim without the original uploaded JAR.
      */
     private StudioVisualCatalogEntry admittedVisualEntry(
             String entryId,
             CatalogEntry runtimeEntry,
             String claimHash,
-            String artifactSha
+            String artifactSha,
+            String catalogManifest
     ) {
         Claim claim = runtimeEntry.claimDescriptor().claim();
         List<String> capabilities = claim.offers() == null
@@ -687,10 +625,11 @@ public final class StudioCatalogService {
                 entryId,
                 claimHash,
                 artifactSha,
-                visual(category, fallbackKind, capabilities, requiredCapabilities),
-                dynamicComposition("COMPONENT", List.of(), rawNeeds, shapeProfile),
+                visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
+                dynamicComposition("COMPONENT", List.of(), rawNeeds, rawOptionalNeeds(claim), shapeProfile),
                 Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
-                List.of());
+                List.of(),
+                catalogManifest);
     }
 
     /**
@@ -1475,7 +1414,9 @@ public final class StudioCatalogService {
             dependencyPorts = entries.stream()
                     .filter(entry -> catalogEntryId.equals(entry.catalogEntryId()))
                     .findFirst()
+                    // Only required ports need a binding before the component is added; optional ones may stay unbound.
                     .map(entry -> portsOfKind(entry.visualManifest(), "DEPENDENCY").stream()
+                            .filter(port -> !port.optional())
                             .map(PortDescriptor::capability)
                             .toList())
                     .orElse(List.of());
@@ -2502,8 +2443,10 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: reconstructs a DCP claim from a Studio visual catalog entry, including
-     * raw manifest dependencies when the visual item originated from a real catalog claim.
+     * Projector: builds the recursive-projection view node for one catalog entry, named under Studio's own
+     * {@code urn:unfurl:studio:} URI, with the entry's raw dependencies so the tree can draw its edges. It is a view
+     * for the navigator only (DCP HLD-C §3.10): it is never admitted, compiled, exported or reported as the
+     * component's claim; compile uses {@link #catalogEntryForVisual}.
      */
     private Claim claimForEntry(StudioVisualCatalogEntry entry) {
         Map<String, Object> dynamic = entry.dynamicComposition();
@@ -2519,8 +2462,8 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Builder: assembles a synthetic DCP claim for Studio aggregate/visual-only entries
-     * while keeping dependencies explicit for later candidate reconstruction.
+     * Builder: assembles one recursive-projection view node (aggregate, assembly or entry) in the DCP claim shape the
+     * projector reads. View nodes stay inside the projection read model and never stand in for a component's claim.
      */
     private Claim claim(
             URI claimUri,
@@ -2755,7 +2698,10 @@ public final class StudioCatalogService {
             }
             offersByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "OFFER"));
             needsByNodeId.put(node.nodeId(), portsOfKind(entry.visualManifest(), "DEPENDENCY"));
-            rawNeedsByNodeId.put(node.nodeId(), rawDependencyStrings(entry));
+            // Owner qualifiers mean the same in both lists, so external optional dependencies are skipped too.
+            List<String> rawDependencies = new ArrayList<>(rawDependencyStrings(entry));
+            rawDependencies.addAll(rawOptionalDependencyStrings(entry));
+            rawNeedsByNodeId.put(node.nodeId(), rawDependencies);
         }
         Map<String, String> labelByNodeId = new LinkedHashMap<>();
         for (StudioDynamicDcpNode node : childNodes) {
@@ -2777,6 +2723,7 @@ public final class StudioCatalogService {
             Set<String> externalNeeds = externallyOwnedNeeds(
                     rawNeedsByNodeId.getOrDefault(consumer.nodeId(), List.of()));
             for (PortDescriptor need : needs) {
+                    String relation = need.optional() ? " optionally used by " : " required by ";
                 if (substrateCapabilities.contains(need.capability())) {
                     StudioSubstratePort substrate = substrateByCapability.get(need.capability());
                     connections.add(new StudioPortConnectionEdge(
@@ -2787,7 +2734,7 @@ public final class StudioCatalogService {
                             need.capability(),
                             "ALLOWED",
                             "Unfurl substrate offers " + need.capability()
-                                    + " required by "
+                                    + relation
                                     + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
                     continue;
                 }
@@ -2810,7 +2757,7 @@ public final class StudioCatalogService {
                                     "ALLOWED",
                                     labelByNodeId.getOrDefault(provider.nodeId(), provider.nodeId())
                                             + " offers " + offer.capability()
-                                            + " required by "
+                                            + relation
                                             + labelByNodeId.getOrDefault(consumer.nodeId(), consumer.nodeId())));
                         }
                     }
@@ -2869,7 +2816,8 @@ public final class StudioCatalogService {
                         "AVAILABLE"));
             }
             for (PortDescriptor need : portsOfKind(entry.visualManifest(), "DEPENDENCY")) {
-                if (offeredCapabilities.contains(need.capability())
+                // Optional dependencies are never substrate requirements (HLD-unfurl-fabric, Core Flow step 3).
+                if (need.optional() || offeredCapabilities.contains(need.capability())
                         || !isUnfurlSubstrateCapability(need.capability())) {
                     continue;
                 }
@@ -2921,6 +2869,21 @@ public final class StudioCatalogService {
                     .toList();
         }
         return List.of();
+    }
+
+    /**
+     * Reader: the entry's raw {@code claim.dependencies.optional} strings from the dynamic-composition block's
+     * {@code rawOptionalNeeds}, or an empty list when it declares none.
+     */
+    private List<String> rawOptionalDependencyStrings(StudioVisualCatalogEntry entry) {
+        Map<String, Object> dynamicComposition = entry.dynamicComposition();
+        if (dynamicComposition == null || !(dynamicComposition.get("rawOptionalNeeds") instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .toList();
     }
 
     /**
@@ -3193,12 +3156,19 @@ public final class StudioCatalogService {
             if (capability.isBlank()) {
                 continue;
             }
-            out.add(new PortDescriptor(id, capability));
+            out.add(new PortDescriptor(id, capability, Boolean.TRUE.equals(port.get("optional"))));
         }
         return out;
     }
 
-    private record PortDescriptor(String id, String capability) {
+    /**
+     * Value Object: one visual-manifest port.
+     *
+     * @param id         the port id.
+     * @param capability the capability it offers or depends on.
+     * @param optional   true for a DEPENDENCY port from {@code claim.dependencies.optional}, which may stay unconnected.
+     */
+    private record PortDescriptor(String id, String capability, boolean optional) {
     }
 
     public StudioAssemblySummary createAssembly(String tenantId, StudioCreateAssemblyRequest request) {
@@ -3873,7 +3843,11 @@ public final class StudioCatalogService {
         List<CatalogEntry> selected = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         for (StudioVisualCatalogEntry visual : selectedVisuals) {
-            selected.add(catalogEntryForVisual(session.tenantId(), visual));
+            try {
+                selected.add(catalogEntryForVisual(session.tenantId(), visual));
+            } catch (CatalogEntryNotAdmittedException ex) {
+                return CandidateBuild.invalid(new InvalidDraft("CATALOG_ENTRY_NOT_ADMITTED", ex.getMessage()));
+            }
             warnings.addAll(visual.warnings());
         }
         CandidateValidity validity = new CandidateValidator().validate(selected, need);
@@ -3963,8 +3937,15 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: returns the runtime catalog entry backing a visual catalog item, reconstructing
-     * a DCP-only entry when the visual came from legacy visual assets.
+     * Repository lookup: returns the runtime catalog entry backing a draft component. The entry is the one admitted or
+     * scanned in this process, or, after a restart or snapshot load, the one rebuilt by parsing the manifest text the
+     * visual entry kept from the artifact, accepted only when its recomputed claim hash equals the pinned one. Studio
+     * never builds a stand-in claim from visual metadata (DCP HLD-C §3.10).
+     *
+     * @param tenantId the tenant whose catalog the draft uses.
+     * @param entry    the draft component's visual catalog entry.
+     * @return the catalog entry carrying the component's own claim.
+     * @throws CatalogEntryNotAdmittedException when the entry is display-only or its manifest does not match its hash.
      */
     private CatalogEntry catalogEntryForVisual(String tenantId, StudioVisualCatalogEntry entry) {
         String tenant = normalizeTenant(tenantId);
@@ -3974,23 +3955,37 @@ public final class StudioCatalogService {
         if (known != null) {
             return known;
         }
-        Claim claim = claimForEntry(entry);
-        ArtifactDescriptor artifact = new ArtifactDescriptor(
-                fallbackArtifactCoordinates(entry.catalogEntryId(), claim),
-                "studio-visual",
-                "studio-catalog",
-                artifactDescriptorSha(entry.artifactSha256()),
-                null);
-        CatalogEntry reconstructed = new CatalogEntry(
-                artifact,
-                new ClaimDescriptor(claim, artifactDescriptorSha(entry.claimHash())),
-                new CatalogMetadata(Lifecycle.active(), BindingDescriptor.inProcessOnly()),
-                shapeProfileFromVisual(entry),
-                null);
+        if (!entry.admitted()) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " is display-only: it has no claim read"
+                    + " from a component artifact; admit the component's jar to compose it");
+        }
+        CatalogEntry rebuilt;
+        try {
+            rebuilt = catalogEntryFromManifest(entry.catalogManifest(), entry.artifactSha256());
+        } catch (CatalogScanException ex) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " has an unreadable catalog manifest: "
+                    + ex.getMessage());
+        }
+        if (!artifactDescriptorSha(rebuilt.claimDescriptor().claimHash()).equals(artifactDescriptorSha(entry.claimHash()))) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " has a catalog manifest whose claim no"
+                    + " longer matches its pinned hash " + entry.claimHash() + "; admit the component's jar again");
+        }
         catalogEntriesByTenant
                 .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
-                .put(entry.catalogEntryId(), reconstructed);
-        return reconstructed;
+                .put(entry.catalogEntryId(), rebuilt);
+        return rebuilt;
+    }
+
+    /**
+     * Raised when a draft component has no claim read from its artifact, so compile cannot ground it.
+     */
+    private static final class CatalogEntryNotAdmittedException extends RuntimeException {
+        /**
+         * @param message names the entry and how to admit it.
+         */
+        private CatalogEntryNotAdmittedException(String message) {
+            super(message);
+        }
     }
 
     /**
@@ -4083,6 +4078,9 @@ public final class StudioCatalogService {
     /**
      * Projector: records component-to-component and external dependency bindings for the
      * selected entry set so the compiled audit has a truthful draft dependency view.
+     * Every need is recorded, bound or not. An optional dependency is recorded only when it is actually bound, by a
+     * selected provider or externally; an unprovided one is no binding (HLD-unfurl-fabric, Core Flow step 3), and
+     * {@link com.unfurl.fabric.matcher.OptionalDependencies} reports it instead.
      */
     private List<DependencyBinding> dependencyBindings(List<CatalogEntry> entries) {
         Map<String, String> providersByCapability = new LinkedHashMap<>();
@@ -4105,6 +4103,14 @@ public final class StudioCatalogService {
                 boolean hostBound = provider == null
                         && (dep.contains("substrate=true") || CandidateValidator.isExternallyOwnedDependency(dep));
                 bindings.add(new DependencyBinding(dep, provider, hostBound));
+            }
+            for (String dep : entry.claimDescriptor().claim().dependencies().optional()) {
+                String capability = capabilityNameFromDependencyUri(dep);
+                String provider = capability == null ? null : providersByCapability.get(capability);
+                boolean hostBound = provider == null && CandidateValidator.isExternallyOwnedDependency(dep);
+                if (provider != null || hostBound) {
+                    bindings.add(new DependencyBinding(dep, provider, hostBound));
+                }
             }
         }
         return bindings;
@@ -4597,25 +4603,44 @@ public final class StudioCatalogService {
                 "COMPONENT",
                 List.of(),
                 rawNeeds,
+                rawOptionalNeeds(claim),
                 entry.componentShapeProfile());
         return new StudioVisualCatalogEntry(
                 entry.artifact().coordinates(),
                 entry.claimDescriptor().claimHash(),
                 entry.artifact().sha256(),
-                visual(category, fallbackKind, capabilities, requiredCapabilities),
+                visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
                 dynamicComposition,
                 Map.of(),
-                List.of());
+                List.of(),
+                scannedManifest(entry));
+    }
+
+    /**
+     * Reads the manifest text of a scanned jar, so the visual entry keeps the exact claim document the jar carries.
+     *
+     * @param entry a catalog entry produced by {@link CatalogScanner}, which records the jar path.
+     * @return the manifest text.
+     * @throws IllegalStateException when the jar path is unknown or the jar can no longer be read.
+     */
+    private static String scannedManifest(CatalogEntry entry) {
+        if (entry.localPath() == null) {
+            throw new IllegalStateException("scanned catalog entry " + entry.artifact().coordinates() + " has no jar path");
+        }
+        try {
+            return new String(CatalogScanner.readCatalogManifest(entry.localPath())
+                    .orElseThrow(() -> new IllegalStateException(entry.localPath() + " no longer has a catalog manifest")),
+                    StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to read the catalog manifest of " + entry.localPath(), ex);
+        }
     }
 
     /**
      * Parses {@code claim.dependencies.needs} strings (format
      * {@code <cap>[@<version>][?<params>]}) into bare capability names so
      * the visual manifest can emit DEPENDENCY ports alongside its OFFER
-     * ports. Mirrors the parser in
-     * {@code com.unfurl.fabric.matcher.CandidateValidator.capabilityNameFromDependencyUri}
-     * (which is private to that class — duplicating the 8-line trim here
-     * is cheaper than widening that class's API for this one caller).
+     * ports, using DCP's dependency-name rule like the matcher does.
      * Customer-controlled / host-owned dependencies stay in the list
      * because the hover-preview wants to surface them as connection
      * candidates even when fabric's resolver would skip them.
@@ -4631,20 +4656,31 @@ public final class StudioCatalogService {
                 .toList();
     }
 
+    /**
+     * Parser: the capability names of {@code claim.dependencies.optional}, for the visual manifest's optional
+     * DEPENDENCY ports. Names that are also needs are dropped, so a port is never both required and optional (DCP's
+     * claim validator rejects such claims; this keeps an unvalidated fixture from producing duplicate port ids).
+     */
+    private List<String> optionalCapabilitiesFromClaim(Claim claim) {
+        if (claim == null || claim.dependencies() == null) {
+            return List.of();
+        }
+        List<String> required = requiredCapabilitiesFromClaim(claim);
+        return claim.dependencies().optional().stream()
+                .map(StudioCatalogService::capabilityNameFromDependencyUri)
+                .filter(name -> name != null && !name.isBlank() && !required.contains(name))
+                .distinct()
+                .toList();
+    }
+
+    /** Reader: the raw {@code claim.dependencies.optional} strings, qualifiers intact, for the dynamic-composition block. */
+    private static List<String> rawOptionalNeeds(Claim claim) {
+        return claim == null || claim.dependencies() == null ? List.of() : List.copyOf(claim.dependencies().optional());
+    }
+
+    /** Parser: a dependency URI's capability name, by DCP's own rule ({@link com.unfurl.dcp.claim.Dependencies#capabilityOf}). */
     private static String capabilityNameFromDependencyUri(String dep) {
-        if (dep == null) {
-            return null;
-        }
-        String trimmed = dep;
-        int q = trimmed.indexOf('?');
-        if (q >= 0) {
-            trimmed = trimmed.substring(0, q);
-        }
-        int at = trimmed.indexOf('@');
-        if (at >= 0) {
-            trimmed = trimmed.substring(0, at);
-        }
-        return trimmed.isBlank() ? null : trimmed;
+        return com.unfurl.dcp.claim.Dependencies.capabilityOf(dep);
     }
 
     private static String queryParam(String dep, String key, String fallback) {
@@ -4731,7 +4767,7 @@ public final class StudioCatalogService {
      * a hand-authored {@code .glb} model.
      */
     private Map<String, Object> visual(String category, String fallbackKind, List<String> offeredCapabilities) {
-        return visual(category, fallbackKind, offeredCapabilities, List.of());
+        return visual(category, fallbackKind, offeredCapabilities, List.of(), List.of());
     }
 
     /**
@@ -4741,13 +4777,16 @@ public final class StudioCatalogService {
      * SQUARE_PLUG}) so the renderer naturally separates "what I provide"
      * from "what I need" along opposite faces of the component group.
      * Both lists feed the hover-preview compatibility matcher in
-     * {@link #connectionCandidates}.
+     * {@link #connectionCandidates}. Optional dependencies get DEPENDENCY
+     * ports too, marked {@code optional: true}, so a selected provider
+     * still connects to them while the component stays valid without one.
      */
     private Map<String, Object> visual(
             String category,
             String fallbackKind,
             List<String> offeredCapabilities,
-            List<String> requiredCapabilities
+            List<String> requiredCapabilities,
+            List<String> optionalCapabilities
     ) {
         List<Map<String, Object>> ports = new ArrayList<>();
         for (String capability : offeredCapabilities) {
@@ -4763,6 +4802,15 @@ public final class StudioCatalogService {
                     "id", "need-" + capability.replace('.', '-'),
                     "mapsTo", "claim.dependencies." + capability,
                     "kind", "DEPENDENCY",
+                    "anchor", "left",
+                    "connectorShape", "SQUARE_PLUG"));
+        }
+        for (String capability : optionalCapabilities) {
+            ports.add(Map.of(
+                    "id", "need-" + capability.replace('.', '-'),
+                    "mapsTo", "claim.dependencies." + capability,
+                    "kind", "DEPENDENCY",
+                    "optional", true,
                     "anchor", "left",
                     "connectorShape", "SQUARE_PLUG"));
         }
@@ -4815,7 +4863,7 @@ public final class StudioCatalogService {
             List<String> compatibleDescendants,
             List<String> rawNeeds
     ) {
-        return dynamicComposition(dcpType, compatibleDescendants, rawNeeds, null);
+        return dynamicComposition(dcpType, compatibleDescendants, rawNeeds, List.of(), null);
     }
 
     /**
@@ -4823,11 +4871,14 @@ public final class StudioCatalogService {
      * dependency strings and optional deployment shape profile metadata from catalog
      * manifests. The shape profile is kept as primitive JSON values so persisted Studio
      * state remains a portable read model rather than a Java-domain serialization.
+     * {@code rawNeeds} and {@code rawOptionalNeeds} hold a claim's {@code dependencies.needs} and
+     * {@code dependencies.optional} strings with their qualifiers; each key is written only when non-empty.
      */
     private Map<String, Object> dynamicComposition(
             String dcpType,
             List<String> compatibleDescendants,
             List<String> rawNeeds,
+            List<String> rawOptionalNeeds,
             ComponentShapeProfile shapeProfile
     ) {
         Map<String, Object> dynamic = new LinkedHashMap<>();
@@ -4838,6 +4889,9 @@ public final class StudioCatalogService {
         dynamic.put("binding", Map.of("mode", "LATE_BOUND", "validation", "REQUIRED_BEFORE_ACTIVATION"));
         if (rawNeeds != null && !rawNeeds.isEmpty()) {
             dynamic.put("rawNeeds", List.copyOf(rawNeeds));
+        }
+        if (rawOptionalNeeds != null && !rawOptionalNeeds.isEmpty()) {
+            dynamic.put("rawOptionalNeeds", List.copyOf(rawOptionalNeeds));
         }
         if (shapeProfile != null) {
             dynamic.put("componentShapeProfile", Map.of(

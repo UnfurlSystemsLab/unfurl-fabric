@@ -146,20 +146,18 @@ For now, the five cross-cutting claim rows above are non-blocking catalog inputs
 
 Use Fabric Studio catalog admission so every uploaded artifact is validated by DCP before it becomes selectable.
 
-The JSON admission API accepts either explicit DCP claim material in `claimYaml` or JAR artifact bytes in
-`artifactBase64`. When a `.jar` draft includes `artifactBase64` and omits `claimYaml`, Studio reads the embedded
-catalog manifest from:
+The JSON admission API takes JAR artifact bytes in `artifactBase64`. A claim is admitted only from the artifact that
+carries it (DCP HLD-C §3.10): Studio reads the embedded catalog manifest from
 
 ```text
 META-INF/unfurl-catalog.yaml
 ```
 
-The Studio UI performs this archive read automatically for JAR uploads. Direct API clients can either send the full JAR
-as base64 in `artifactBase64`, or extract `META-INF/unfurl-catalog.yaml` locally and send that YAML as `claimYaml`.
-The YAML may be either:
-
-- a pure DCP `Claim` document; or
-- the Fabric catalog-manifest envelope with a top-level `claim` block and a `catalog` block.
+computes the artifact SHA-256 from the bytes, and refuses a draft whose declared `sha256` differs
+(`ARTIFACT_HASH_MISMATCH`). A draft that sends `claimYaml`, or a `.yaml` file, is refused with `CLAIM_DETACHED`. The
+manifest must carry both blocks: the `claim` block and the `catalog` block (lifecycle, artifact, binding). The Studio
+UI performs the archive read automatically for JAR uploads; direct API clients send the full JAR as base64. Studio
+accepts artifacts up to 96 MiB decoded.
 
 #### Field-name convention: snake_case is canonical
 
@@ -193,11 +191,6 @@ Example `catalog-admission.json` shape:
       "fileName": "foundry-runtime.jar",
       "sha256": "sha256:<artifact-sha>",
       "artifactBase64": "<base64-encoded JAR bytes>"
-    },
-    {
-      "fileName": "workflow-runtime-claim.yaml",
-      "sha256": "sha256:<claim-file-sha>",
-      "claimYaml": "<pure DCP claim YAML or META-INF/unfurl-catalog.yaml contents>"
     }
   ]
 }

@@ -62,6 +62,24 @@ start when the port is already in use.
 Binding to anything other than loopback exposes the Studio API with no authentication; keep it on
 `127.0.0.1` unless an authenticated boundary is in front of it.
 
+### Stop it
+
+Press Ctrl-C in the window running the launch script, or, from anywhere, run the matching shutdown
+script: `.\shutdown.ps1`, `shutdown.bat` or `./shutdown.sh`.
+
+```powershell
+.\shutdown.ps1                 # the Studio server on UNFURL_STUDIO_PORT, else port 7878
+.\shutdown.ps1 --port 7979
+.\shutdown.ps1 --all           # every Fabric Studio server on this machine
+```
+
+It stops a process only when that process is a Fabric Studio server, so an unrelated program on the
+port is left alone, and it reports when nothing is running. On Linux and macOS the server gets
+`SIGTERM` and a clean shutdown, then `SIGKILL` if it is still running after `--timeout` seconds
+(default 10). On Windows it is stopped forcefully, which is safe because Studio writes its state file
+atomically on every change (`docs/RELIABILITY.md`). From `cmd.exe` in another folder, call
+`shutdown.bat` by its path: a bare `shutdown` there is Windows' own command.
+
 ## Docs
 
 - `docs/examples/foundry-assemblies/README.md` - step-by-step guide to the catalog, assemblies, compile, and export for Foundry and its substrate combinations.

@@ -1,0 +1,11 @@
+# The Foundry service on its own, without Flow.
+#
+# Foundry declares no dependency on Flow (Flow calls Foundry, never the reverse),
+# so needs without workflow.execute select Foundry alone, and agents and
+# compositions run in full. Add workflow.execute (see foundry-flow.yaml) to include
+# Flow. Model, embedding and vector providers are bound at deployment time through
+# the Foundry deployment root.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1

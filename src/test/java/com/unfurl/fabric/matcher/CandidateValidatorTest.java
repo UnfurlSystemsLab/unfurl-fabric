@@ -152,6 +152,52 @@ class CandidateValidatorTest {
         assertThat(validator.validate(List.of(customerAuditOwned), need).isValid()).isTrue();
     }
 
+    /**
+     * An optional dependency never gates (HLD-unfurl-fabric, Core Flow step 3): Flow's optional agent.run leaves a
+     * Flow-only composition valid, reported as unprovided; with Foundry selected it is provided and nothing is reported.
+     * The same dependency as a need still gates.
+     */
+    @Test
+    void optionalDependencyIsSatisfiedByAbsenceAndReportedWhenUnprovided() {
+        String agent = "agent.run@v1?transport=dcp";
+        CatalogEntry flow = FabricTestFixtures.entry(
+                "unfurl-flow", "workflow.execute", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("workflow.contract.signed@v1?owner=fabric"), List.of(agent)), List.of());
+        CatalogEntry requiresFoundry = FabricTestFixtures.entry(
+                "unfurl-flow", "workflow.execute", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of(agent)), List.of());
+        CatalogEntry foundry = FabricTestFixtures.entry("unfurl-foundry", "agent.run");
+        Need workflowOnly = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("workflow.execute", "^1"));
+
+        CandidateValidity alone = validator.validate(List.of(flow), workflowOnly);
+
+        assertThat(alone.isValid()).isTrue();
+        assertThat(alone.conflicts()).isEmpty();
+        assertThat(OptionalDependencies.unprovided(List.of(flow)))
+                .containsExactly(new OptionalDependencies.Unprovided("com.unfurl:unfurl-flow:1.0.0", agent, "agent.run"));
+        assertThat(OptionalDependencies.unprovided(List.of(flow, foundry))).isEmpty();
+        assertThat(validator.validate(List.of(requiresFoundry), workflowOnly).isValid()).isFalse();
+    }
+
+    /** An externally owned optional dependency is bound by the host, so it is never reported as unprovided. */
+    @Test
+    void externallyOwnedOptionalDependencyIsNotReported() {
+        CatalogEntry entry = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of(), List.of("audit-sink@v1?owner=customer-audit-store")), List.of());
+
+        assertThat(OptionalDependencies.unprovided(List.of(entry))).isEmpty();
+    }
+
     @Test
     void substrateDependenciesAreDerivedNotComponentGates() {
         CatalogEntry entry = FabricTestFixtures.entry(

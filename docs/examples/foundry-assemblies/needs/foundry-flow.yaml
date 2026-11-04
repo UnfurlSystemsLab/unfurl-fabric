@@ -1,9 +1,10 @@
 # The Foundry service and the Flow service.
 #
-# Foundry's claim requires workflow.execute from Flow, so asking for agent.run
-# alone gives NO_MATCH. Foundry already bundles the substrate modules it runs on,
-# so none are selected separately. Model, embedding and vector providers are bound
-# at deployment time through the Foundry deployment root.
+# Flow depends on Foundry, never the reverse: Flow's claim lists agent.run and
+# tool.call as optional dependencies, so asking for both capabilities here binds
+# Flow's agent steps to Foundry. Foundry already bundles the substrate modules it
+# runs on, so none are selected separately. Model, embedding and vector providers
+# are bound at deployment time through the Foundry deployment root.
 
 requiredCapabilities:
   - capability: agent.run

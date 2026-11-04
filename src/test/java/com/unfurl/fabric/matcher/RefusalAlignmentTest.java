@@ -82,6 +82,27 @@ class RefusalAlignmentTest {
         assertThat(validity.conflicts()).anyMatch(Conflict.RefusalConflict.class::isInstance);
     }
 
+    /** An optional peer dependency on a refused concern doesn't make it required: the peer runs without it. */
+    @Test
+    void optionalPeerDependencyDoesNotMakeRefusedConcernRequired() {
+        CatalogEntry storage = FabricTestFixtures.entry(
+                "storage-s3", "storage.put", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS), null,
+                List.of(FabricTestFixtures.refusal("identity-management")));
+        CatalogEntry peer = FabricTestFixtures.entry(
+                "audit", "audit.write", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of(), List.of("identity-management@1")), List.of());
+        Need need = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("storage.put", "^1"),
+                CapabilityRequirement.requiredOf("audit.write", "^1"));
+
+        assertThat(validator.validate(List.of(storage, peer), need).isValid()).isTrue();
+    }
+
     /**
      * Regression: Foundry refuses {@code identity}, and the identity provider component depends on the externally owned
      * {@code oidc.identity-provider}. A dependency whose capability merely contains the refused concern, or one owned by a

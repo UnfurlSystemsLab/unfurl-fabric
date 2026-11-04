@@ -141,10 +141,10 @@ class FabricToFlowEndToEndIT {
             assertThat(flow.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(flow.exitValue()).isNotZero();
             assertThat(Files.readString(flowLog, StandardCharsets.UTF_8))
-                    .contains("flow substrate claim is incompatible")
-                    .contains("required capability is not offered: substrate.container.runtime")
-                    .contains("required capability is not offered: substrate.endpoint.discovery")
-                    .contains("required capability is not offered: substrate.http.client");
+                    .contains("this flow process cannot host the compiled substrate profile")
+                    .contains("required capability is not hosted by an enabled component: substrate.container.runtime")
+                    .contains("required capability is not hosted by an enabled component: substrate.endpoint.discovery")
+                    .contains("required capability is not hosted by an enabled component: substrate.http.client");
         } finally {
             flow.destroyForcibly();
             flow.waitFor();
