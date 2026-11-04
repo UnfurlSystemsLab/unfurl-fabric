@@ -15,34 +15,50 @@ import java.util.stream.StreamSupport;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Black-box CLI tests for optional claim dependencies (HLD-unfurl-fabric, Core Flow steps 3 and 7), using a Foundry
- * stand-in whose claim lists {@code workflow.execute} as optional, as the real Foundry claim does, and a Flow stand-in.
- * The operator's needs decide whether Flow is included: needs with {@code agent.run} alone give a Foundry-only
- * composition, and needs that also ask for {@code workflow.execute} bind Foundry to Flow.
+ * Black-box CLI tests for optional claim dependencies (HLD-unfurl-fabric, Core Flow steps 3 and 7), using a Flow
+ * stand-in whose claim lists Foundry's {@code agent.run} as optional, as the real Flow claim does, and a Foundry stand-in
+ * that, like the real Foundry claim, declares no dependency on Flow. The edge runs one way, Flow → Foundry, and the
+ * operator's needs decide whether Foundry is included.
  */
 class FabricCliOptionalDependencyTest {
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
-    private static final String FOUNDRY_URI = "urn:unfurl:test:agent.run";
+    private static final String FLOW_URI = "urn:unfurl:test:flow";
 
-    /** Without workflow.execute in the needs, Foundry compiles alone, and plan says what it runs without. */
+    /** Without agent.run in the needs, Flow compiles alone, and plan says what it runs without. */
     @Test
-    void foundryComposesWithoutFlowWhenTheNeedsDoNotAskForIt(@TempDir Path dir) throws Exception {
+    void flowComposesWithoutFoundryWhenTheNeedsDoNotAskForIt(@TempDir Path dir) throws Exception {
         Path catalog = catalog(dir);
-        Path needs = needs(dir, "agent.run");
+        Path needs = needs(dir, "workflow.execute");
 
         CliTestFixtures.CliRun plan = CliTestFixtures.run("plan", "--catalog", catalog.toString(), "--needs", needs.toString());
 
         assertThat(plan.exitCode()).isZero();
         List<String> lines = plan.stdout().lines().toList();
         assertThat(lines.get(0)).isEqualTo("EXACT");
-        assertThat(lines).contains("optional, not provided: com.unfurl:agent.run:1.0.0 can use workflow.execute"
-                + " but runs without it; add workflow.execute to the needs to include a provider");
+        assertThat(lines).contains("optional, not provided: com.unfurl:flow:1.0.0 can use agent.run"
+                + " but runs without it; add agent.run to the needs to include a provider");
 
         JsonNode children = compile(dir, catalog, needs);
-        assertThat(capabilities(children)).containsExactly("agent.run");
+        assertThat(capabilities(children)).containsExactly("workflow.execute");
     }
 
-    /** With workflow.execute in the needs, Flow is selected and its contract records Foundry as the consumer. */
+    /** Foundry alone depends on nothing in the catalog, so it composes without Flow and plan reports nothing. */
+    @Test
+    void foundryComposesAloneWithNothingUnprovided(@TempDir Path dir) throws Exception {
+        Path catalog = catalog(dir);
+        Path needs = needs(dir, "agent.run");
+
+        CliTestFixtures.CliRun plan = CliTestFixtures.run("plan", "--catalog", catalog.toString(), "--needs", needs.toString());
+
+        assertThat(plan.exitCode()).isZero();
+        assertThat(plan.stdout()).startsWith("EXACT").doesNotContain("optional, not provided");
+        assertThat(capabilities(compile(dir, catalog, needs))).containsExactly("agent.run");
+    }
+
+    /**
+     * With both in the needs, Flow's optional agent.run is provided by Foundry: the agent.run contract records Flow as the
+     * component that needs it, and the workflow.execute contract records no component, because Foundry never calls Flow.
+     */
     @Test
     void providedOptionalDependencyIsAnOrdinaryEdge(@TempDir Path dir) throws Exception {
         Path catalog = catalog(dir);
@@ -55,19 +71,24 @@ class FabricCliOptionalDependencyTest {
 
         JsonNode children = compile(dir, catalog, needs);
         assertThat(capabilities(children)).containsExactlyInAnyOrder("agent.run", "workflow.execute");
-        JsonNode workflow = StreamSupport.stream(children.spliterator(), false)
-                .filter(child -> "workflow.execute".equals(child.at("/binding/providerCapability").asText()))
-                .findFirst().orElseThrow();
-        assertThat(workflow.at("/metadata/extensions/neededBy")).hasSize(1);
-        assertThat(workflow.at("/metadata/extensions/neededBy/0").asText()).isEqualTo(FOUNDRY_URI);
+        assertThat(child(children, "agent.run").at("/metadata/extensions/neededBy")).hasSize(1);
+        assertThat(child(children, "agent.run").at("/metadata/extensions/neededBy/0").asText()).isEqualTo(FLOW_URI);
+        assertThat(child(children, "workflow.execute").at("/metadata/extensions/neededBy")).isEmpty();
     }
 
-    /** Fixture: a catalog with the Foundry stand-in and a Flow stand-in offering workflow.execute. */
+    /** Fixture: a catalog with the Flow stand-in and the Foundry stand-in. */
     private static Path catalog(Path dir) throws Exception {
         Path catalog = dir.resolve("catalog");
         CliTestFixtures.writeFoundryJar(catalog, "foundry.jar");
-        CliTestFixtures.writeCatalogJar(catalog, "flow.jar", "flow", "workflow.execute");
+        CliTestFixtures.writeFlowJar(catalog, "flow.jar");
         return catalog;
+    }
+
+    /** The child contract whose provider capability is {@code capability}. */
+    private static JsonNode child(JsonNode children, String capability) {
+        return StreamSupport.stream(children.spliterator(), false)
+                .filter(child -> capability.equals(child.at("/binding/providerCapability").asText()))
+                .findFirst().orElseThrow();
     }
 
     /** Fixture: a needs file requiring each capability at ^1. */

@@ -1,8 +1,8 @@
 # The Foundry service and the Flow service.
 #
-# Foundry lists workflow.execute as an optional dependency, so it runs without
-# Flow; asking for workflow.execute here is what adds Flow, and Foundry then
-# delegates workflow tasks to it. Foundry already bundles the substrate modules it
+# Flow depends on Foundry, never the reverse: Flow's claim lists agent.run and
+# tool.call as optional dependencies, so asking for both capabilities here binds
+# Flow's agent steps to Foundry. Foundry already bundles the substrate modules it
 # runs on, so none are selected separately. Model, embedding and vector providers
 # are bound at deployment time through the Foundry deployment root.
 

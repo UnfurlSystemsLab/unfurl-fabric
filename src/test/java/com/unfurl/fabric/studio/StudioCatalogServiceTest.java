@@ -64,30 +64,34 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void verifiesAndAdmitsComponentClaims() {
+    void verifiesAndAdmitsComponentClaims(@TempDir Path dir) throws Exception {
         StudioCatalogService service = new StudioCatalogService();
+        String manifest = catalogManifestYaml("payment", "payment.process");
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
+                List.of(jarDraft(dir, "payment.jar", manifest))));
 
         assertThat(response.status()).isEqualTo("VERIFIED");
         assertThat(response.results()).singleElement()
                 .satisfies(result -> {
                     assertThat(result.status()).isEqualTo("VERIFIED");
-                    assertThat(result.catalogEntryId()).isEqualTo("uploaded:payment.yaml");
+                    assertThat(result.catalogEntryId()).isEqualTo("uploaded:payment.jar");
                     assertThat(result.claimHash()).startsWith("sha256:");
                     assertThat(result.diagnostics()).isEmpty();
                 });
         assertThat(response.catalog().entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("uploaded:payment.yaml");
+                .contains("uploaded:payment.jar");
         assertThat(response.catalog().entries().stream()
-                .filter(entry -> "uploaded:payment.yaml".equals(entry.catalogEntryId()))
+                .filter(entry -> "uploaded:payment.jar".equals(entry.catalogEntryId()))
                 .findFirst()
-                .orElseThrow()
-                .visualManifest().toString())
-                .contains("claim.offers.payment.process");
+                .orElseThrow())
+                .satisfies(entry -> {
+                    assertThat(entry.visualManifest().toString()).contains("claim.offers.payment.process");
+                    assertThat(entry.catalogManifest()).isEqualTo(manifest);
+                    assertThat(entry.admitted()).isTrue();
+                });
         assertThat(response.claimBundleArtifact())
                 .satisfies(artifact -> {
                     assertThat(artifact.mediaType()).isEqualTo("application/zip");
@@ -173,12 +177,12 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void rejectsAdmissionWhenDcpClaimValidationFails() {
+    void rejectsAdmissionWhenDcpClaimValidationFails(@TempDir Path dir) throws Exception {
         StudioCatalogService service = new StudioCatalogService();
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("broken.yaml", "", """
+                List.of(jarDraft(dir, "broken.jar", "claim:\n" + indent("""
                         identity:
                           uri: urn:unfurl:test:broken
                           name: broken
@@ -190,7 +194,7 @@ class StudioCatalogServiceTest {
                         metadata:
                           dcp_version: 0.1.0
                           claim_version: 1.0.0
-                        """))));
+                        """, 2)))));
 
         assertThat(response.status()).isEqualTo("REJECTED");
         assertThat(response.results()).singleElement()
@@ -206,11 +210,14 @@ class StudioCatalogServiceTest {
                 });
         assertThat(response.catalog().entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .doesNotContain("uploaded:broken.yaml");
+                .doesNotContain("uploaded:broken.jar");
     }
 
+    /**
+     * A draft that names a jar but sends no bytes has no claim to admit.
+     */
     @Test
-    void rejectsAdmissionWithoutUploadedClaimYaml() {
+    void rejectsAdmissionWithoutArtifactBytes() {
         StudioCatalogService service = new StudioCatalogService();
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
@@ -224,10 +231,80 @@ class StudioCatalogServiceTest {
                     assertThat(result.diagnostics()).singleElement()
                             .satisfies(diagnostic -> {
                                 assertThat(diagnostic.code()).isEqualTo("CLAIM_MALFORMED");
-                                assertThat(diagnostic.path()).isEqualTo("claim");
-                                assertThat(diagnostic.message()).contains("DCP claim YAML is required");
+                                assertThat(diagnostic.path()).isEqualTo("artifactBase64");
+                                assertThat(diagnostic.message()).contains("artifactBase64 is required");
                             });
                 });
+    }
+
+    /**
+     * A claim document without the artifact that carries it is refused (DCP HLD-C §3.10), whether it comes as a .yaml
+     * file or as claimYaml next to a jar.
+     */
+    @Test
+    void refusesDetachedClaimDocuments(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioComponentArtifactDraft jar = jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process"));
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(
+                        new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")),
+                        new StudioComponentArtifactDraft("payment.jar", "", validClaimYaml("payment", "payment.process"),
+                                jar.artifactBase64()))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).hasSize(2).allSatisfy(result -> {
+            assertThat(result.status()).isEqualTo("REJECTED");
+            assertThat(result.diagnostics()).singleElement()
+                    .satisfies(diagnostic -> assertThat(diagnostic.code()).isEqualTo("CLAIM_DETACHED"));
+        });
+        assertThat(response.catalog().entries())
+                .extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .doesNotContain("uploaded:payment.yaml", "uploaded:payment.jar");
+    }
+
+    /**
+     * Studio computes the artifact hash itself; a declared hash that does not match the uploaded bytes is refused.
+     */
+    @Test
+    void refusesArtifactWhoseDeclaredHashDiffers(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioComponentArtifactDraft jar = jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process"));
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(new StudioComponentArtifactDraft("payment.jar", "sha256:" + "0".repeat(64), "",
+                        jar.artifactBase64()))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> assertThat(result.diagnostics()).singleElement()
+                        .satisfies(diagnostic -> {
+                            assertThat(diagnostic.code()).isEqualTo("ARTIFACT_HASH_MISMATCH");
+                            assertThat(diagnostic.path()).isEqualTo("sha256");
+                        }));
+    }
+
+    /**
+     * A jar whose manifest carries a claim but no catalog block is refused; Studio never fills in catalog metadata.
+     */
+    @Test
+    void refusesJarWhoseManifestHasNoCatalogBlock(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+
+        StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
+                "assembly-checkout",
+                List.of(jarDraft(dir, "payment.jar", "claim:\n" + indent(validClaimYaml("payment", "payment.process"), 2)))));
+
+        assertThat(response.status()).isEqualTo("REJECTED");
+        assertThat(response.results()).singleElement()
+                .satisfies(result -> assertThat(result.diagnostics()).singleElement()
+                        .satisfies(diagnostic -> {
+                            assertThat(diagnostic.code()).isEqualTo("CLAIM_MALFORMED");
+                            assertThat(diagnostic.path()).isEqualTo("artifact.META-INF/unfurl-catalog.yaml");
+                            assertThat(diagnostic.message()).contains("catalog");
+                        }));
     }
 
     /**
@@ -237,9 +314,8 @@ class StudioCatalogServiceTest {
     @Test
     void admitsJarArtifactByReadingEmbeddedCatalogManifest(@TempDir Path dir) throws Exception {
         StudioCatalogService service = new StudioCatalogService();
-        String artifactBase64 = Base64.getEncoder().encodeToString(jarWithManifest(
-                dir,
-                validClaimYaml("jar-payment", "payment.process")));
+        byte[] jarBytes = jarWithManifest(dir, catalogManifestYaml("jar-payment", "payment.process"));
+        String artifactBase64 = Base64.getEncoder().encodeToString(jarBytes);
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
@@ -253,9 +329,13 @@ class StudioCatalogServiceTest {
                     assertThat(result.claimHash()).startsWith("sha256:");
                     assertThat(result.diagnostics()).isEmpty();
                 });
-        assertThat(response.catalog().entries())
-                .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("uploaded:payment.jar");
+        assertThat(response.catalog().entries().stream()
+                .filter(entry -> "uploaded:payment.jar".equals(entry.catalogEntryId()))
+                .findFirst()
+                .orElseThrow()
+                .artifactSha256())
+                .isEqualTo("sha256:" + java.util.HexFormat.of().formatHex(
+                        java.security.MessageDigest.getInstance("SHA-256").digest(jarBytes)));
     }
 
     /**
@@ -265,15 +345,11 @@ class StudioCatalogServiceTest {
     @Test
     void emitsDownloadableClaimBundleForMultiFileAdmission(@TempDir Path dir) throws Exception {
         StudioCatalogService service = new StudioCatalogService();
-        String artifactBase64 = Base64.getEncoder().encodeToString(jarWithManifest(
-                dir,
-                validClaimYaml("jar-payment", "payment.authorize")));
-
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
                 List.of(
-                        new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")),
-                        new StudioComponentArtifactDraft("payment.jar", "", "", artifactBase64))));
+                        jarDraft(dir, "payment-process.jar", catalogManifestYaml("payment", "payment.process")),
+                        jarDraft(dir, "payment.jar", catalogManifestYaml("jar-payment", "payment.authorize")))));
 
         StudioExportArtifact bundle = response.claimBundleArtifact();
         assertThat(bundle).isNotNull();
@@ -283,7 +359,7 @@ class StudioCatalogServiceTest {
         assertThat(content.sha256()).isEqualTo(bundle.sha256());
         assertThat(zipEntries(content.bytes()))
                 .contains(
-                        "claims/01-payment-yaml.claim.yaml",
+                        "claims/01-payment-process-jar.claim.yaml",
                         "claims/02-payment-jar.claim.yaml",
                         "admission-manifest.yaml",
                         "diagnostics.json");
@@ -528,6 +604,72 @@ class StudioCatalogServiceTest {
                 response.contractArtifact().artifactId(),
                 "sha256:wrong"))
                 .isEmpty();
+    }
+
+    /**
+     * After a restart, compile rebuilds each admitted component from the manifest text Studio kept from its jar, so the
+     * compiled claim is still the one the jar carries.
+     */
+    @Test
+    void compilesAfterRestartFromThePersistedManifest(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService first = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(first);
+        addComponent(first, created.session(), "uploaded:flow.jar", 0);
+        addComponent(first, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioCompileDraftCandidateResponse response = compile(new StudioCatalogService(store, null), created.session());
+
+        assertThat(response.status()).as(response.reason() + ": " + response.details()).isEqualTo("COMPILED");
+    }
+
+    /**
+     * A persisted manifest whose claim no longer matches its pinned hash is not compiled.
+     */
+    @Test
+    void refusesCompileWhenThePersistedManifestNoLongerMatchesItsHash(@TempDir Path dir) throws Exception {
+        Path statePath = dir.resolve("studio-state.json");
+        StudioStateStore store = new StudioStateStore(statePath);
+        StudioCatalogService first = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(first);
+        addComponent(first, created.session(), "uploaded:flow.jar", 0);
+        addComponent(first, created.session(), "uploaded:foundry.jar", 1);
+        String state = Files.readString(statePath);
+        assertThat(state).contains("description: Provides agent.run");
+        Files.writeString(statePath, state.replace("description: Provides agent.run", "description: Provides agent.run, edited"));
+
+        StudioCompileDraftCandidateResponse response = compile(new StudioCatalogService(store, null), created.session());
+
+        assertThat(response.status()).isNotEqualTo("COMPILED");
+        assertThat(response.reason()).isEqualTo("CATALOG_ENTRY_NOT_ADMITTED");
+        assertThat(response.details()).contains("uploaded:foundry.jar").contains("no longer matches its pinned hash");
+    }
+
+    /**
+     * A built-in display-only entry has no claim read from an artifact, so compile refuses it instead of building a
+     * stand-in claim from its visual metadata.
+     */
+    @Test
+    void refusesCompileOfADisplayOnlyEntry() {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioCreateDraftCompositionResponse created = service.createDraftSession(
+                "tenant-a",
+                "assembly-demo",
+                new StudioCreateDraftCompositionRequest(
+                        "tenant-a",
+                        "assembly-demo",
+                        "sha256:catalog",
+                        "",
+                        "trust-prod",
+                        "",
+                        "alice",
+                        "Alice"));
+        addComponent(service, created.session(), "com.unfurl:storage-s3:1.2.0", 0);
+
+        StudioCompileDraftCandidateResponse response = compile(service, created.session());
+
+        assertThat(response.reason()).isEqualTo("CATALOG_ENTRY_NOT_ADMITTED");
+        assertThat(response.details()).contains("com.unfurl:storage-s3:1.2.0").contains("display-only");
     }
 
     /**
@@ -827,13 +969,13 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void persistsTenantCatalogAssembliesAndLayouts(@TempDir Path dir) {
+    void persistsTenantCatalogAssembliesAndLayouts(@TempDir Path dir) throws Exception {
         StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
         StudioCatalogService first = new StudioCatalogService(store);
 
         first.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
+                List.of(jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process")))));
         first.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
                 "assembly-checkout",
                 "Checkout Platform",
@@ -848,8 +990,10 @@ class StudioCatalogServiceTest {
         StudioCatalogService second = new StudioCatalogService(store);
 
         assertThat(second.listCatalogVisuals("tenant-a").entries())
-                .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("uploaded:payment.yaml");
+                .filteredOn(entry -> "uploaded:payment.jar".equals(entry.catalogEntryId()))
+                .singleElement()
+                .satisfies(entry -> assertThat(entry.catalogManifest())
+                        .isEqualTo(catalogManifestYaml("payment", "payment.process")));
         assertThat(second.listAssemblies("tenant-a").assemblies())
                 .extracting(StudioAssemblySummary::assemblyId)
                 .contains("assembly-checkout");
@@ -863,7 +1007,7 @@ class StudioCatalogServiceTest {
     }
 
     @Test
-    void tracksTenantFileVersionsAndBindsDraftsToSelectedCatalogFile(@TempDir Path dir) {
+    void tracksTenantFileVersionsAndBindsDraftsToSelectedCatalogFile(@TempDir Path dir) throws Exception {
         StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
         StudioCatalogService service = new StudioCatalogService(store);
 
@@ -876,7 +1020,7 @@ class StudioCatalogServiceTest {
 
         service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
-                List.of(new StudioComponentArtifactDraft("payment.yaml", "", validClaimYaml("payment", "payment.process")))));
+                List.of(jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process")))));
 
         List<StudioFileRecord> catalogFiles = service.listFiles("tenant-a", "CATALOG", "", "");
         assertThat(catalogFiles).hasSize(2);
@@ -892,7 +1036,7 @@ class StudioCatalogServiceTest {
                 .get()
                 .satisfies(content -> {
                     assertThat(content.mediaType()).isEqualTo("application/json");
-                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8)).contains("uploaded:payment.yaml");
+                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8)).contains("uploaded:payment.jar");
                 });
 
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
@@ -1379,6 +1523,24 @@ class StudioCatalogServiceTest {
     }
 
     /**
+     * Fixture helper: compiles a draft session at its current revision with the container deployment policy.
+     */
+    private static StudioCompileDraftCandidateResponse compile(StudioCatalogService service, StudioDraftSession session) {
+        long revision = service.draftSession(session.tenantId(), session.assemblyId(), session.sessionId()).sceneRevision();
+        return service.compileCandidate(
+                session.tenantId(),
+                session.assemblyId(),
+                session.sessionId(),
+                new StudioCompileDraftCandidateRequest(
+                        session.tenantId(),
+                        session.assemblyId(),
+                        session.sessionId(),
+                        revision,
+                        false,
+                        containerPolicy()));
+    }
+
+    /**
      * Fixture helper: creates a minimal JAR carrying the Fabric catalog manifest entry
      * used by Studio admission.
      */
@@ -1390,6 +1552,20 @@ class StudioCatalogServiceTest {
             output.closeEntry();
         }
         return Files.readAllBytes(jar);
+    }
+
+    /**
+     * Fixture helper: an admission draft carrying the bytes of a jar named {@code fileName} whose
+     * {@code META-INF/unfurl-catalog.yaml} is {@code manifestYaml}.
+     */
+    private static StudioComponentArtifactDraft jarDraft(Path dir, String fileName, String manifestYaml) throws Exception {
+        Path jar = dir.resolve(fileName);
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
+            output.write(manifestYaml.getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        return new StudioComponentArtifactDraft(fileName, "", "", Base64.getEncoder().encodeToString(Files.readAllBytes(jar)));
     }
 
     /**

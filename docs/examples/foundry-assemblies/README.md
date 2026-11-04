@@ -107,10 +107,9 @@ are shared libraries, so you normally don't choose them.
 There are two ways to run Foundry:
 
 - **Service:** Foundry runs as its own container, and it already includes the substrates it needs.
-  Flow is optional: Foundry's claim lists `workflow.execute` as an optional dependency, so Foundry
-  runs on its own, and Flow is added only when the needs ask for `workflow.execute`. Without Flow,
-  agents and compositions run, but a composition task that delegates to a workflow fails with
-  `WORKFLOW_DELEGATE_UNBOUND`.
+  Flow is optional. The dependency runs one way: Flow calls Foundry (`agent.run`, `tool.call`), and
+  Foundry never calls Flow, so Foundry's claim declares nothing on Flow and Foundry runs on its own.
+  Flow is added only when the needs ask for `workflow.execute`.
 - **Embedded:** the substrates run as libraries inside your own Java app. There is no Foundry service
   and no Flow.
 
@@ -172,14 +171,17 @@ unmet need: the needs require identity-context ^1, but no catalog entry offers i
 `compile` prints the same lines and exits with an error.
 
 After `EXACT` or `AMBIGUOUS`, each candidate line can be followed by `optional, not provided:` lines.
-They are information, not errors: the component runs without that capability. For example,
-`foundry-only.yaml` gives:
+They are information, not errors: the component runs without that capability. For example, needs
+with `workflow.execute` alone select Flow without Foundry and give:
 
 ```text
 EXACT
-cand-… score=217 entries=com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
-optional, not provided: com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT can use workflow.execute but runs without it; add workflow.execute to the needs to include a provider
+cand-… entries=com.unfurl.flow:unfurl-flow:0.1.0
+optional, not provided: com.unfurl.flow:unfurl-flow:0.1.0 can use agent.run but runs without it; add agent.run to the needs to include a provider
+optional, not provided: com.unfurl.flow:unfurl-flow:0.1.0 can use tool.call but runs without it; add tool.call to the needs to include a provider
 ```
+
+`foundry-only.yaml` prints no such line, because Foundry depends on nothing in the catalog.
 
 `rag.search` is offered by both Foundry and `foundry-substrate-rag`, which is why **Everything** is
 ambiguous. To force the separate RAG component, pin it under `artifactConstraints`, as
@@ -352,30 +354,27 @@ function studio($path, $body) {
 Wait-ForHealth "$api/health"
 ```
 
-**Add components to the catalog.** This sends each jar's claim rather than the whole jar, because the
-Foundry jar is too big to upload. Admission validates each claim.
+**Add components to the catalog.** This uploads each jar. Studio reads the claim out of the jar, hashes the jar
+itself, and checks that hash against the `sha256` you send. A claim sent on its own, without its jar, is refused
+(`CLAIM_DETACHED`), because nothing would tie it to the component that runs. The JSON body is built as text here
+because the Foundry jar is about 25 MB, and base64 contains no characters that need escaping.
 
 ```powershell
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-
-function Read-Claim($jar) {
-    $zip = [IO.Compression.ZipFile]::OpenRead($jar)
-    try {
-        $reader = New-Object IO.StreamReader($zip.GetEntry('META-INF/unfurl-catalog.yaml').Open())
-        $reader.ReadToEnd()
-    } finally { $zip.Dispose() }
-}
-
 $artifacts = foreach ($name in 'unfurl-flow-0.1.0-SNAPSHOT.jar', 'unfurl-foundry-0.1.0-SNAPSHOT.jar') {
     $path = "$work\catalog\$name"
-    @{ fileName = $name; sha256 = 'sha256:' + (Get-FileHash $path -Algorithm SHA256).Hash.ToLower(); claimYaml = Read-Claim $path }
+    $sha = 'sha256:' + (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+    '{"fileName":"' + $name + '","sha256":"' + $sha + '","artifactBase64":"' +
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) + '"}'
 }
+$body = '{"assemblyId":"' + $assembly + '","artifacts":[' + ($artifacts -join ',') + ']}'
 
-$admission = studio "/studio/tenants/$tenant/catalog/admissions" @{ assemblyId = $assembly; artifacts = @($artifacts) }
+$admission = Invoke-RestMethod -Method Post -Uri "$api/studio/tenants/$tenant/catalog/admissions" `
+    -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body))
 $admission.results | Select-Object fileName, status
 ```
 
-Each file should show `VERIFIED`.
+Each file should show `VERIFIED`. Studio keeps the manifest it read from each jar, so the claim it compiles after a
+restart is still the jar's.
 
 **Create the assembly and add components.** The catalog also contains two built-in demo entries, so
 this adds only the components you uploaded. Each change returns a new revision number that the next
@@ -596,7 +595,6 @@ compiled contract that includes Flow into this family fails, because the family 
 | Limit | Why | What to do |
 |---|---|---|
 | Studio's `needs/extract` results can't compile | It asks for `^1`, but the components are `0.1.0`, so compile returns `NO_MATCH` | Leave `needsId` out of the session, as this guide does. Compile then checks the selected components' dependencies, not a needs list |
-| The Foundry jar can't be uploaded as `artifactBase64` | The request is too large and returns `400 malformed json body` | Send `claimYaml` |
 | The command line can't create `dcp-runtime-bundle.zip` | Only Studio's compile produces it | Use the Studio route |
 | A package with the Keycloak container can't start | The emitter writes a placeholder Keycloak service; it doesn't yet set the Keycloak image or run the adapter's realm provisioning | Leave `identity-context` out of the needs for local runs, or bind an existing Keycloak with `deployment-policy-external-keycloak.yaml` |
 | Flow can't call a secured Foundry | Flow sends no JWT and puts its context in the request body, which Foundry's secured profile rejects | Use `compose-development.yaml` on a trusted machine |

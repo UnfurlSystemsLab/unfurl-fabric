@@ -64,14 +64,27 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 catalog. With it, Studio resolves the catalog from the tenant-isolated file registry and returns the immutable catalog
 version associated with that file id. A `catalogFileId` from another tenant is invalid.
 
-Catalog admissions accept uploaded component artifact drafts and update the tenant catalog after DCP claim verification.
-Each draft may carry `claimYaml`, containing either a pure DCP `Claim` YAML document or a catalog manifest with a
-top-level `claim` block. For `.jar` uploads, a draft may instead carry `artifactBase64`; Studio decodes the archive and
-reads `META-INF/unfurl-catalog.yaml` without loading classes or executing artifact code. Missing, malformed, or
-non-decodable embedded manifests are rejected with DCP-shaped diagnostics. Fabric parses the claim, runs `unfurl-dcp`
-claim validation, and rejects the artifact when validation returns any `ERROR` diagnostic. Admission responses preserve
-DCP diagnostics as structured records with `severity`, `code`, `path`, and `message` so Studio can render actionable
-claim errors next to the artifact. Warnings remain visible on otherwise verified claims.
+Catalog admissions accept uploaded component artifacts and update the tenant catalog after DCP claim verification. A
+claim is admitted only from the artifact that carries it (DCP HLD-C §3.10):
+
+- Each draft is a `.jar` with its bytes in `artifactBase64`. Studio decodes the archive and reads
+  `META-INF/unfurl-catalog.yaml` without loading classes or executing artifact code. A draft that sends `claimYaml`, or
+  a `.yaml`/`.yml` file, is refused with `CLAIM_DETACHED`: a claim document without the artifact proves nothing about
+  the component that will run.
+- Studio computes the artifact's SHA-256 from the decoded bytes. When the draft also sends `sha256`, it must match;
+  otherwise the draft is refused with `ARTIFACT_HASH_MISMATCH`.
+- The manifest must have both blocks (`claim` and `catalog` with lifecycle, artifact and binding). Missing, malformed or
+  non-decodable manifests are refused with DCP-shaped diagnostics; Studio never fills in catalog metadata for a claim.
+- Fabric parses the claim, runs `unfurl-dcp` claim validation, and refuses the artifact when validation returns any
+  `ERROR` diagnostic. Admission responses preserve DCP diagnostics as structured records with `severity`, `code`,
+  `path`, and `message` so Studio can render actionable claim errors next to the artifact. Warnings remain visible on
+  otherwise verified claims.
+- Request bodies are parsed with a string limit large enough for a product jar in `artifactBase64` (a decoded
+  artifact of up to 96 MiB); a larger body is refused as malformed rather than truncated.
+
+The admitted catalog entry keeps the exact manifest text read from the artifact (`catalogManifest`) next to the pinned
+claim hash and artifact SHA-256, and Studio state persists it, so the claim survives restarts and catalog snapshots
+unchanged. Entries scanned from jars in the asset root keep their manifest text the same way.
 
 When an admission verifies one or more artifacts, Studio also emits a hash-pinned `claimBundleArtifact`. The bundle is a
 ZIP containing the resolved DCP claim YAML for each verified artifact, an `admission-manifest.yaml` index, and
@@ -194,6 +207,14 @@ policy, and only then emits hash-pinned export artifacts. Successful compile
 responses echo `expectedRevision` and `receivedRevision` with the revision
 checked by the server; stale responses use `expectedRevision` for the current
 server revision and `receivedRevision` for the caller-supplied revision.
+
+Grounding uses only claims read from artifacts. Each draft component resolves to
+its admitted or scanned catalog entry; after a restart or a snapshot load the
+entry is rebuilt by parsing its persisted `catalogManifest` and is used only when
+the recomputed claim hash equals the pinned `claimHash`. A component with no
+manifest (a built-in or package visual asset, which is display-only) or whose
+manifest no longer matches its hash makes compile return `CATALOG_ENTRY_NOT_ADMITTED`
+naming the entry; Studio never builds a stand-in claim from visual metadata.
 
 Export artifacts are not synthetic URLs. The root contract, substrate profile,
 signed root contract, and support artifacts returned by compile are stored as

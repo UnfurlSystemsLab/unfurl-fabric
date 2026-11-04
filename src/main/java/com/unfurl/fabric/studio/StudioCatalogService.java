@@ -35,6 +35,7 @@ import com.unfurl.fabric.catalog.BindingDescriptor;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogManifestCodec;
 import com.unfurl.fabric.catalog.CatalogMetadata;
+import com.unfurl.fabric.catalog.CatalogScanException;
 import com.unfurl.fabric.catalog.CatalogScanReport;
 import com.unfurl.fabric.catalog.CatalogScanner;
 import com.unfurl.fabric.catalog.ClaimDescriptor;
@@ -355,16 +356,6 @@ public final class StudioCatalogService {
                         List.of(new StudioDcpDiagnostic("ERROR", "CLAIM_MALFORMED", "fileName", "fileName is required"))));
                 continue;
             }
-            if (!artifact.fileName().endsWith(".jar") && !artifact.fileName().endsWith(".yaml") && !artifact.fileName().endsWith(".yml")) {
-                results.add(new StudioClaimVerificationResult(artifact.fileName(), "REJECTED", "", "",
-                        List.of("unsupported artifact type"),
-                        List.of(new StudioDcpDiagnostic(
-                                "ERROR",
-                                "CLAIM_MALFORMED",
-                                "fileName",
-                                "unsupported artifact type"))));
-                continue;
-            }
             StudioClaimAdmissionValidator.AdmissionValidation validation = claimAdmissionValidator.validate(artifact);
             if (!validation.verified()) {
                 results.add(new StudioClaimVerificationResult(
@@ -379,9 +370,10 @@ public final class StudioCatalogService {
             String entryId = "uploaded:" + artifact.fileName().replace('\\', '/');
             String claimHash = "sha256:" + new com.unfurl.fabric.catalog.CatalogManifestCodec()
                     .computeClaimHash(validation.claim());
-            String artifactSha = artifactSha(artifact, validation);
-            CatalogEntry runtimeEntry = admittedCatalogEntry(entryId, validation, artifactSha);
-            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha);
+            String artifactSha = validation.artifactSha();
+            CatalogEntry runtimeEntry = catalogEntryFromManifest(validation.claimYaml(), artifactSha);
+            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha,
+                    validation.claimYaml());
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
             catalogEntriesByTenant
@@ -560,31 +552,6 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Provenance helper: computes the artifact hash Fabric should use for a Studio
-     * admission. JAR uploads are hashed by bytes; pure claim YAML uploads are hashed by the
-     * admitted YAML so claim-only development flows still have deterministic provenance.
-     */
-    private String artifactSha(
-            StudioComponentArtifactDraft artifact,
-            StudioClaimAdmissionValidator.AdmissionValidation validation
-    ) {
-        if (artifact.sha256() != null && !artifact.sha256().isBlank()) {
-            return artifact.sha256();
-        }
-        if (!artifact.artifactBase64().isBlank()) {
-            try {
-                return sha256(Base64.getDecoder().decode(artifact.artifactBase64()));
-            } catch (IllegalArgumentException ignored) {
-                // Explicit claim YAML is the admission source in this case; hash that below.
-            }
-        }
-        if (!validation.claimYaml().isBlank()) {
-            return sha256(validation.claimYaml().getBytes(StandardCharsets.UTF_8));
-        }
-        return sha256("artifact:" + artifact.fileName());
-    }
-
-    /**
      * Provenance helper: converts Studio/API hash pins into the bare lowercase SHA-256
      * form required by compiled contract selection records.
      */
@@ -600,73 +567,44 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: converts an admitted Studio upload back into the runtime catalog entry
-     * shape used by matcher/compile/deployment resolution.
+     * Factory: builds the runtime catalog entry for a component from the exact manifest text read from its artifact and
+     * the SHA-256 computed from the artifact's bytes. Used at admission and to rebuild an entry from persisted Studio
+     * state; there is no fallback, so an entry exists only for a complete manifest (DCP HLD-C §3.10).
      *
-     * <p>Pattern: parser adapter with a strict manifest path and a DCP-only fallback. JAR
-     * manifests keep authored artifact, lifecycle, binding, and component-shape metadata;
-     * pure claim YAML remains usable for local Studio authoring with explicit
-     * in-process-only binding semantics.
+     * @param manifestYaml the {@code META-INF/unfurl-catalog.yaml} text read from the artifact.
+     * @param artifactSha  the artifact hash, {@code sha256:<hex>} or bare hex.
+     * @return the catalog entry, with the claim hash computed from the manifest's claim.
+     * @throws CatalogScanException when the manifest is malformed or incomplete.
      */
-    private CatalogEntry admittedCatalogEntry(
-            String entryId,
-            StudioClaimAdmissionValidator.AdmissionValidation validation,
-            String artifactSha
-    ) {
+    private CatalogEntry catalogEntryFromManifest(String manifestYaml, String artifactSha) {
         CatalogManifestCodec codec = new CatalogManifestCodec();
-        try {
-            ParsedManifest parsed = codec.parse(validation.claimYaml().getBytes(StandardCharsets.UTF_8));
-            ArtifactDescriptor artifact = new ArtifactDescriptor(
-                    parsed.authoredArtifact().coordinates(),
-                    parsed.authoredArtifact().packaging(),
-                    parsed.authoredArtifact().source(),
-                    artifactDescriptorSha(artifactSha),
-                    parsed.authoredArtifact().signature());
-            return new CatalogEntry(
-                    artifact,
-                    new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
-                    new CatalogMetadata(parsed.lifecycle(), parsed.binding()),
-                    parsed.componentShapeProfile(),
-                    null);
-        } catch (RuntimeException ignored) {
-            Claim claim = validation.claim();
-            ArtifactDescriptor artifact = new ArtifactDescriptor(
-                    fallbackArtifactCoordinates(entryId, claim),
-                    "studio-claim",
-                    "studio-admission",
-                    artifactDescriptorSha(artifactSha),
-                    null);
-            return new CatalogEntry(
-                    artifact,
-                    new ClaimDescriptor(claim, codec.computeClaimHash(claim)),
-                    new CatalogMetadata(Lifecycle.active(), BindingDescriptor.inProcessOnly()),
-                    null,
-                    null);
-        }
-    }
-
-    /**
-     * Naming helper: chooses stable artifact coordinates for direct claim uploads that do
-     * not carry a catalog artifact block.
-     */
-    private String fallbackArtifactCoordinates(String entryId, Claim claim) {
-        if (claim != null && claim.identity() != null && claim.identity().uri() != null) {
-            return claim.identity().uri().toString();
-        }
-        return entryId == null || entryId.isBlank() ? "studio:uploaded-claim:1.0.0" : entryId;
+        ParsedManifest parsed = codec.parse(manifestYaml.getBytes(StandardCharsets.UTF_8));
+        ArtifactDescriptor artifact = new ArtifactDescriptor(
+                parsed.authoredArtifact().coordinates(),
+                parsed.authoredArtifact().packaging(),
+                parsed.authoredArtifact().source(),
+                artifactDescriptorSha(artifactSha),
+                parsed.authoredArtifact().signature());
+        return new CatalogEntry(
+                artifact,
+                new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
+                new CatalogMetadata(parsed.lifecycle(), parsed.binding()),
+                parsed.componentShapeProfile(),
+                null);
     }
 
     /**
      * Projector: turns a verified uploaded catalog entry into the Studio visual-catalog
      * shape. The catalog entry id stays upload-scoped, while the visual and dynamic
-     * metadata preserve the parsed manifest shape profile so persisted Studio state can
-     * later reconstruct deployment-resolution inputs without the original uploaded JAR.
+     * metadata preserve the parsed manifest shape profile, and the entry keeps the manifest text read from the jar so
+     * persisted Studio state rebuilds the same claim without the original uploaded JAR.
      */
     private StudioVisualCatalogEntry admittedVisualEntry(
             String entryId,
             CatalogEntry runtimeEntry,
             String claimHash,
-            String artifactSha
+            String artifactSha,
+            String catalogManifest
     ) {
         Claim claim = runtimeEntry.claimDescriptor().claim();
         List<String> capabilities = claim.offers() == null
@@ -690,7 +628,8 @@ public final class StudioCatalogService {
                 visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
                 dynamicComposition("COMPONENT", List.of(), rawNeeds, rawOptionalNeeds(claim), shapeProfile),
                 Map.of("visualManifestHash", sha256("visual:" + entryId), "assets", List.of()),
-                List.of());
+                List.of(),
+                catalogManifest);
     }
 
     /**
@@ -2504,8 +2443,10 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: reconstructs a DCP claim from a Studio visual catalog entry, including
-     * raw manifest dependencies when the visual item originated from a real catalog claim.
+     * Projector: builds the recursive-projection view node for one catalog entry, named under Studio's own
+     * {@code urn:unfurl:studio:} URI, with the entry's raw dependencies so the tree can draw its edges. It is a view
+     * for the navigator only (DCP HLD-C §3.10): it is never admitted, compiled, exported or reported as the
+     * component's claim; compile uses {@link #catalogEntryForVisual}.
      */
     private Claim claimForEntry(StudioVisualCatalogEntry entry) {
         Map<String, Object> dynamic = entry.dynamicComposition();
@@ -2521,8 +2462,8 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Builder: assembles a synthetic DCP claim for Studio aggregate/visual-only entries
-     * while keeping dependencies explicit for later candidate reconstruction.
+     * Builder: assembles one recursive-projection view node (aggregate, assembly or entry) in the DCP claim shape the
+     * projector reads. View nodes stay inside the projection read model and never stand in for a component's claim.
      */
     private Claim claim(
             URI claimUri,
@@ -3902,7 +3843,11 @@ public final class StudioCatalogService {
         List<CatalogEntry> selected = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         for (StudioVisualCatalogEntry visual : selectedVisuals) {
-            selected.add(catalogEntryForVisual(session.tenantId(), visual));
+            try {
+                selected.add(catalogEntryForVisual(session.tenantId(), visual));
+            } catch (CatalogEntryNotAdmittedException ex) {
+                return CandidateBuild.invalid(new InvalidDraft("CATALOG_ENTRY_NOT_ADMITTED", ex.getMessage()));
+            }
             warnings.addAll(visual.warnings());
         }
         CandidateValidity validity = new CandidateValidator().validate(selected, need);
@@ -3992,8 +3937,15 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Adapter: returns the runtime catalog entry backing a visual catalog item, reconstructing
-     * a DCP-only entry when the visual came from legacy visual assets.
+     * Repository lookup: returns the runtime catalog entry backing a draft component. The entry is the one admitted or
+     * scanned in this process, or, after a restart or snapshot load, the one rebuilt by parsing the manifest text the
+     * visual entry kept from the artifact, accepted only when its recomputed claim hash equals the pinned one. Studio
+     * never builds a stand-in claim from visual metadata (DCP HLD-C §3.10).
+     *
+     * @param tenantId the tenant whose catalog the draft uses.
+     * @param entry    the draft component's visual catalog entry.
+     * @return the catalog entry carrying the component's own claim.
+     * @throws CatalogEntryNotAdmittedException when the entry is display-only or its manifest does not match its hash.
      */
     private CatalogEntry catalogEntryForVisual(String tenantId, StudioVisualCatalogEntry entry) {
         String tenant = normalizeTenant(tenantId);
@@ -4003,23 +3955,37 @@ public final class StudioCatalogService {
         if (known != null) {
             return known;
         }
-        Claim claim = claimForEntry(entry);
-        ArtifactDescriptor artifact = new ArtifactDescriptor(
-                fallbackArtifactCoordinates(entry.catalogEntryId(), claim),
-                "studio-visual",
-                "studio-catalog",
-                artifactDescriptorSha(entry.artifactSha256()),
-                null);
-        CatalogEntry reconstructed = new CatalogEntry(
-                artifact,
-                new ClaimDescriptor(claim, artifactDescriptorSha(entry.claimHash())),
-                new CatalogMetadata(Lifecycle.active(), BindingDescriptor.inProcessOnly()),
-                shapeProfileFromVisual(entry),
-                null);
+        if (!entry.admitted()) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " is display-only: it has no claim read"
+                    + " from a component artifact; admit the component's jar to compose it");
+        }
+        CatalogEntry rebuilt;
+        try {
+            rebuilt = catalogEntryFromManifest(entry.catalogManifest(), entry.artifactSha256());
+        } catch (CatalogScanException ex) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " has an unreadable catalog manifest: "
+                    + ex.getMessage());
+        }
+        if (!artifactDescriptorSha(rebuilt.claimDescriptor().claimHash()).equals(artifactDescriptorSha(entry.claimHash()))) {
+            throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " has a catalog manifest whose claim no"
+                    + " longer matches its pinned hash " + entry.claimHash() + "; admit the component's jar again");
+        }
         catalogEntriesByTenant
                 .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
-                .put(entry.catalogEntryId(), reconstructed);
-        return reconstructed;
+                .put(entry.catalogEntryId(), rebuilt);
+        return rebuilt;
+    }
+
+    /**
+     * Raised when a draft component has no claim read from its artifact, so compile cannot ground it.
+     */
+    private static final class CatalogEntryNotAdmittedException extends RuntimeException {
+        /**
+         * @param message names the entry and how to admit it.
+         */
+        private CatalogEntryNotAdmittedException(String message) {
+            super(message);
+        }
     }
 
     /**
@@ -4646,7 +4612,28 @@ public final class StudioCatalogService {
                 visual(category, fallbackKind, capabilities, requiredCapabilities, optionalCapabilitiesFromClaim(claim)),
                 dynamicComposition,
                 Map.of(),
-                List.of());
+                List.of(),
+                scannedManifest(entry));
+    }
+
+    /**
+     * Reads the manifest text of a scanned jar, so the visual entry keeps the exact claim document the jar carries.
+     *
+     * @param entry a catalog entry produced by {@link CatalogScanner}, which records the jar path.
+     * @return the manifest text.
+     * @throws IllegalStateException when the jar path is unknown or the jar can no longer be read.
+     */
+    private static String scannedManifest(CatalogEntry entry) {
+        if (entry.localPath() == null) {
+            throw new IllegalStateException("scanned catalog entry " + entry.artifact().coordinates() + " has no jar path");
+        }
+        try {
+            return new String(CatalogScanner.readCatalogManifest(entry.localPath())
+                    .orElseThrow(() -> new IllegalStateException(entry.localPath() + " no longer has a catalog manifest")),
+                    StandardCharsets.UTF_8);
+        } catch (IOException ex) {
+            throw new IllegalStateException("unable to read the catalog manifest of " + entry.localPath(), ex);
+        }
     }
 
     /**
