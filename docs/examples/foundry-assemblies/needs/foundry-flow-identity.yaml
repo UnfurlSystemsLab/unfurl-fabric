@@ -1,0 +1,16 @@
+# The Foundry and Flow services plus the identity provider component.
+#
+# Asking for identity-context here is what turns authentication on. Every capability in
+# the needs is mandatory: compile fails if the catalog has no identity provider
+# (unfurl-adapter-keycloak), and every environment's runtime bindings must then bind it
+# to a Keycloak realm. Without it, as in foundry-flow.yaml, the composition runs without
+# identity. Its offer is identity-context 1.x, so it is asked for at ^1 while Flow and
+# Foundry are at ^0.1.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: workflow.execute
+    capabilityVersion: ^0.1
+  - capability: identity-context
+    capabilityVersion: ^1

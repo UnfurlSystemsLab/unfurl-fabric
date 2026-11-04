@@ -1029,6 +1029,24 @@ class StudioServerTest {
             assertThat(bindingResult.output()).containsEntry("status", "PASS");
             assertThat(runtimeBinding).isRegularFile();
             assertThat(Files.readString(runtimeBinding)).contains("runtime_binding_set");
+            // HLD-needs-driven-identity §6: identity follows the needs, not the environment. This composition's needs do not
+            // require identity-context, so a production binding needs no identity, and an identity object is refused rather
+            // than silently dropped.
+            Path productionBinding = dir.resolve("step-14-runtime-binding-production.yaml");
+            StudioToolCallResult productionResult = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", productionBinding.toString(),
+                    "environment", "production")));
+            assertThat(productionResult.output()).containsEntry("status", "PASS");
+            assertThat(productionBinding).isRegularFile();
+            Path strayBinding = dir.resolve("step-14-runtime-binding-stray-identity.yaml");
+            StudioToolCallResult strayIdentity = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", strayBinding.toString(),
+                    "identity", Map.of("issuer", "https://idp.example.com/realms/tenant-a"))));
+            assertThat(strayIdentity.output()).containsEntry("status", "GAP");
+            assertThat(String.valueOf(strayIdentity.output())).contains("no identity-context contract");
+            assertThat(strayBinding).doesNotExist();
 
             Path foundrySource = writeFoundryDeploymentSource(dir);
             Path foundryRoot = dir.resolve("foundry-root");

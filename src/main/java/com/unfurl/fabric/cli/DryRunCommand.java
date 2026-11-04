@@ -4,7 +4,6 @@ import com.unfurl.fabric.compiler.DecisionAudit;
 import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.MatchResult;
-import com.unfurl.fabric.trust.RejectedEntry;
 
 import java.io.PrintStream;
 import java.util.Map;
@@ -39,14 +38,7 @@ final class DryRunCommand {
             throw FabricCliException.usage("ambiguous dry-run; pass --select <candidate-id> or --auto-select-best");
         }
 
-        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
-        err.println("no match");
-        noMatch.missing().forEach(m -> err.println("missing " + m.capability() + " " + m.requestedRange()));
-        for (RejectedEntry rejection : noMatch.potentiallyRelevantRejections()) {
-            err.println("rejected " + rejection.entry().artifact().coordinates() + " "
-                    + rejection.reasons().stream().map(r -> r.detail()).collect(Collectors.joining("; ")));
-        }
-        throw FabricCliException.runtime("dry-run failed: no valid composition");
+        throw CliSupport.noMatchFailure((MatchResult.NoMatch) result, err, "dry-run");
     }
 
     private void preview(

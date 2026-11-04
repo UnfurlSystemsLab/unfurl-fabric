@@ -121,6 +121,12 @@
                 <scope>runtime</scope>
             </dependency>
             <dependency>
+                <groupId>com.unfurl.deploy</groupId>
+                <artifactId>emitter-remote</artifactId>
+                <version>${deploy-emitter.version}</version>
+                <scope>runtime</scope>
+            </dependency>
+            <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
                 <version>${jackson.version}</version>
@@ -246,6 +252,11 @@
         <dependency>
             <groupId>com.unfurl.deploy</groupId>
             <artifactId>emitter-k8s</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.unfurl.deploy</groupId>
+            <artifactId>emitter-remote</artifactId>
             <scope>runtime</scope>
         </dependency>
         <dependency>

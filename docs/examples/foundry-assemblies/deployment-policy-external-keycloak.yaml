@@ -1,0 +1,15 @@
+# Use a Keycloak you already run, instead of one Unfurl deploys.
+#
+# Fabric gives each component the first shape in this list that the component
+# supports. The Keycloak adapter supports MANAGED_EXTERNAL_ADAPTER, so it is bound to
+# your existing Keycloak. Flow and Foundry don't, so they stay containers.
+#
+# Emit the result with `fabric deploy --targets <container-target>,remote`.
+
+preferredShapes: [MANAGED_EXTERNAL_ADAPTER, CONTAINERIZED_SERVICE]
+disallowedShapes: []
+requireIsolationForCapabilityPatterns: []
+runtime:
+  springBoot: true
+  kubernetes: true
+  serviceMesh: true

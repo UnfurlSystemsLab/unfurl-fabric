@@ -17,6 +17,7 @@ import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.catalog.CatalogScanner;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.MatchResult;
+import com.unfurl.fabric.matcher.NoMatchExplanation;
 import com.unfurl.fabric.matcher.StructuralMatcher;
 import com.unfurl.fabric.needs.Need;
 import com.unfurl.fabric.needs.NeedsCodec;
@@ -138,13 +139,11 @@ public final class StudioDeploymentService {
                     "pass candidateId or autoSelectBest; valid ids: " + validIds(ambiguous),
                     List.of()));
         }
-        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
-        String details = noMatch.missing().stream()
-                .map(missing -> missing.capability() + " " + missing.requestedRange())
-                .collect(Collectors.joining(", "));
+        // Every capability in the needs is mandatory; the message carries each unmet need and conflict with its fix.
+        List<String> reasons = NoMatchExplanation.reasons((MatchResult.NoMatch) result);
         return new Selection(null, StudioDeploymentResolveResponse.invalid(
                 "NO_MATCH",
-                details.isBlank() ? "no valid composition" : "missing " + details,
+                "no valid composition: " + String.join("; ", reasons),
                 List.of()));
     }
 

@@ -3,7 +3,6 @@ package com.unfurl.fabric.cli;
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.MatchResult;
-import com.unfurl.fabric.trust.RejectedEntry;
 
 import java.io.PrintStream;
 import java.nio.file.Path;
@@ -42,14 +41,8 @@ final class CompileCommand {
             ambiguous.candidates().forEach(c -> err.println(CliSupport.candidateLine(c)));
             throw FabricCliException.usage("ambiguous match; pass --select <candidate-id> or --auto-select-best");
         }
-        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
-        err.println("no match");
-        noMatch.missing().forEach(m -> err.println("missing " + m.capability() + " " + m.requestedRange()));
-        for (RejectedEntry rejection : noMatch.potentiallyRelevantRejections()) {
-            err.println("rejected " + rejection.entry().artifact().coordinates() + " "
-                    + rejection.reasons().stream().map(r -> r.detail()).collect(Collectors.joining("; ")));
-        }
-        throw FabricCliException.runtime("compile failed: no valid composition");
+        // Every capability in the needs is mandatory: report each unmet one and each conflict, with its fix.
+        throw CliSupport.noMatchFailure((MatchResult.NoMatch) result, err, "compile");
     }
 
     private static void write(

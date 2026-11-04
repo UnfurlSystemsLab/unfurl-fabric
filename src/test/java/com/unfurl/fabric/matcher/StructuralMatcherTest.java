@@ -87,6 +87,94 @@ class StructuralMatcherTest {
         MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
         assertThat(noMatch.missing()).extracting(UnmetCapabilityRequirement::capability)
                 .containsExactly("storage.put");
+        assertThat(noMatch.missing().get(0).reason()).isEqualTo(UnmetCapabilityRequirement.Reason.REJECTED_BY_TRUST_POLICY);
+        assertThat(noMatch.missing().get(0).detail())
+                .contains("the needs require storage.put ^1", rejectedProvider.artifact().coordinates(), "trust policy");
         assertThat(noMatch.potentiallyRelevantRejections()).containsExactly(rejection);
+    }
+
+    /** Every capability in the needs is mandatory: one that nothing offers fails the match and names the fix. */
+    @Test
+    void capabilityNotInTheCatalogIsAnUnmetNeedWithItsFix() {
+        CatalogEntry storage = FabricTestFixtures.entry("storage-s3", "storage.put");
+
+        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) matcher.match(
+                List.of(storage),
+                Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("storage.put", "^1"),
+                        CapabilityRequirement.requiredOf("identity-context", "^1")),
+                List.of());
+
+        assertThat(noMatch.missing()).singleElement().satisfies(missing -> {
+            assertThat(missing.capability()).isEqualTo("identity-context");
+            assertThat(missing.reason()).isEqualTo(UnmetCapabilityRequirement.Reason.NOT_IN_CATALOG);
+            assertThat(missing.detail()).isEqualTo("the needs require identity-context ^1, but no catalog entry offers "
+                    + "identity-context; add a component that offers it to the catalog, or remove it from the needs");
+        });
+        assertThat(NoMatchExplanation.reasons(noMatch))
+                .containsExactly(NoMatchExplanation.UNMET_PREFIX + noMatch.missing().get(0).detail());
+    }
+
+    /** A capability offered only at other versions reports the versions that exist and who offers them. */
+    @Test
+    void capabilityAtAnotherVersionNamesTheOfferedVersions() {
+        CatalogEntry storage = FabricTestFixtures.entry("storage-s3", "storage.put");
+
+        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) matcher.match(
+                List.of(storage),
+                Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("storage.put", "^7")),
+                List.of());
+
+        UnmetCapabilityRequirement missing = noMatch.missing().get(0);
+        assertThat(missing.reason()).isEqualTo(UnmetCapabilityRequirement.Reason.VERSION_NOT_OFFERED);
+        assertThat(missing.detail()).contains("the needs require storage.put ^7", "the catalog offers only storage.put 1.0.0 ("
+                + storage.artifact().coordinates() + ")", "change the version range in the needs");
+    }
+
+    /** A capability at a matching version but without the required offer details says so, rather than "not found". */
+    @Test
+    void capabilityWithoutTheRequiredDetailsSaysWhichDetails() {
+        CatalogEntry simpleAgent = FabricTestFixtures.entryWithOfferDetails(
+                "foundry-simple", "agent.run", Map.of("execution_modes", List.of("simple")));
+
+        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) matcher.match(
+                List.of(simpleAgent),
+                Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf(
+                        "agent.run", "^1", Map.of("execution_modes", List.of("harness")))),
+                List.of());
+
+        UnmetCapabilityRequirement missing = noMatch.missing().get(0);
+        assertThat(missing.reason()).isEqualTo(UnmetCapabilityRequirement.Reason.OFFER_DETAILS_UNSATISFIED);
+        assertThat(missing.detail()).contains("with offer details", "harness", "does not offer those details");
+    }
+
+    /**
+     * A selected component's own claim need that nothing selected offers fails the match with a conflict naming the
+     * component, the dependency and the fix (Fabric selects providers only for the needs, so the needs must ask for it).
+     * Before, the CLI printed only "no match".
+     */
+    @Test
+    void unmetClaimDependencyNamesTheComponentAndTheFix() {
+        CatalogEntry foundry = FabricTestFixtures.entry(
+                "foundry", "agent.run", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                java.util.Set.of(com.unfurl.substrate.api.BindingMode.IN_PROCESS),
+                new com.unfurl.dcp.claim.Dependencies(List.of("workflow.execute@v1?transport=dcp")), List.of());
+
+        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) matcher.match(
+                List.of(foundry),
+                Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("agent.run", "^1")),
+                List.of());
+
+        assertThat(noMatch.missing()).isEmpty();
+        assertThat(noMatch.conflicts()).singleElement().isInstanceOfSatisfying(Conflict.DependencyConflict.class, conflict -> {
+            assertThat(conflict.component()).isEqualTo(foundry.artifact().coordinates());
+            assertThat(conflict.capability()).isEqualTo("workflow.execute");
+            assertThat(conflict.detail()).isEqualTo(foundry.artifact().coordinates()
+                    + " needs workflow.execute@v1?transport=dcp, but no selected component offers workflow.execute; add "
+                    + "workflow.execute to the needs' requiredCapabilities so a provider is selected");
+        });
+        assertThat(NoMatchExplanation.reasons(noMatch)).singleElement().asString()
+                .startsWith(NoMatchExplanation.CONFLICT_PREFIX);
     }
 }

@@ -48,6 +48,24 @@ class CandidateValidatorTest {
         assertThat(validity.conflicts()).anyMatch(Conflict.ArtifactConflict.class::isInstance);
     }
 
+    /**
+     * A needed capability that no selected component offers at all (a Studio draft without the identity provider, for
+     * example) is reported as missing with its fix, not as a version conflict against a version that does not exist.
+     */
+    @Test
+    void neededCapabilityThatNothingSelectedOffersIsMissing() {
+        CatalogEntry entry = FabricTestFixtures.entry("storage-s3", "storage.put");
+        Need need = Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("storage.put", "^1"),
+                CapabilityRequirement.requiredOf("identity-context", "^1"));
+
+        CandidateValidity validity = validator.validate(List.of(entry), need);
+
+        assertThat(validity.isValid()).isFalse();
+        assertThat(validity.conflicts()).singleElement().isInstanceOfSatisfying(Conflict.MissingCapabilityConflict.class,
+                conflict -> assertThat(conflict.detail()).isEqualTo("the needs require identity-context ^1, but no selected "
+                        + "component offers identity-context; add a component that offers it, or remove it from the needs"));
+    }
+
     @Test
     void requiredOfferDetailsAreValidityGate() {
         CatalogEntry simpleAgent = FabricTestFixtures.entryWithOfferDetails(

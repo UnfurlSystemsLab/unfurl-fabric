@@ -9,7 +9,8 @@ package com.unfurl.fabric.matcher;
  * a self-describing {@code detail}.
  */
 public sealed interface Conflict
-        permits Conflict.VersionConflict,
+        permits Conflict.MissingCapabilityConflict,
+                Conflict.VersionConflict,
                 Conflict.OfferDetailConflict,
                 Conflict.ArtifactConflict,
                 Conflict.RefusalConflict,
@@ -20,11 +21,28 @@ public sealed interface Conflict
     String detail();
 
     /**
-     * No offer of a required capability satisfied the requested version range.
+     * A capability the needs require is not offered by any selected component at any version. Distinct from
+     * {@link VersionConflict}, where the capability is offered but at a version outside the requested range.
+     *
+     * @param capability     the required capability.
+     * @param requestedRange the requested version range.
+     * @param detail         human-readable explanation.
+     */
+    record MissingCapabilityConflict(String capability, String requestedRange, String detail) implements Conflict {
+        /** Convenience constructor deriving the detail message. */
+        public MissingCapabilityConflict(String capability, String requestedRange) {
+            this(capability, requestedRange,
+                    "the needs require " + capability + " " + requestedRange + ", but no selected component offers "
+                            + capability + "; add a component that offers it, or remove it from the needs");
+        }
+    }
+
+    /**
+     * A selected component offers a required capability, but at a version outside the requested range.
      *
      * @param capability       the required capability.
      * @param requestedRange   the requested version range.
-     * @param availableVersion the version actually seen (or {@code <none>}).
+     * @param availableVersion the version the selected component offers.
      * @param detail           human-readable explanation.
      */
     record VersionConflict(String capability, String requestedRange, String availableVersion, String detail)
@@ -32,8 +50,9 @@ public sealed interface Conflict
         /** Convenience constructor deriving the detail message. */
         public VersionConflict(String capability, String requestedRange, String availableVersion) {
             this(capability, requestedRange, availableVersion,
-                    "no offer of capability " + capability + " satisfies range " + requestedRange
-                            + " (saw version " + availableVersion + ")");
+                    "the needs require " + capability + " " + requestedRange + ", but the selected component offers "
+                            + capability + " " + availableVersion
+                            + "; change the version range in the needs, or select a component with a matching version");
         }
     }
 
@@ -112,15 +131,22 @@ public sealed interface Conflict
     }
 
     /**
-     * A required dependency could not be resolved within the selected set.
+     * A selected component's claim needs a capability that no selected component offers. Fabric selects components
+     * only for the capabilities the needs require; it does not add a component to satisfy another component's claim, so
+     * the fix is to require the capability in the needs.
      *
-     * @param dependency the unresolved dependency string.
+     * @param component  coordinates of the component whose claim declares the dependency.
+     * @param dependency the unresolved dependency URI, as declared.
+     * @param capability the dependency's capability name.
      * @param detail     human-readable explanation.
      */
-    record DependencyConflict(String dependency, String detail) implements Conflict {
+    record DependencyConflict(String component, String dependency, String capability, String detail)
+            implements Conflict {
         /** Convenience constructor deriving the detail message. */
-        public DependencyConflict(String dependency) {
-            this(dependency, "required dependency unresolved: " + dependency);
+        public DependencyConflict(String component, String dependency, String capability) {
+            this(component, dependency, capability,
+                    component + " needs " + dependency + ", but no selected component offers " + capability
+                            + "; add " + capability + " to the needs' requiredCapabilities so a provider is selected");
         }
     }
 }

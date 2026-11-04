@@ -74,7 +74,7 @@ A catalog is a folder of jars. Each jar describes itself in `META-INF/unfurl-cat
 can read it without running it.
 
 ```powershell
-Copy-Item unfurl-foundry\target\unfurl-foundry-0.1.0-SNAPSHOT.jar, unfurl-flow\target\unfurl-flow-0.1.0-SNAPSHOT.jar "$work\catalog"
+Copy-Item unfurl-foundry\target\unfurl-foundry-0.1.0-SNAPSHOT.jar, unfurl-flow\target\unfurl-flow-0.1.0-SNAPSHOT.jar, unfurl-adapter-keycloak\target\unfurl-adapter-keycloak-0.1.0-SNAPSHOT.jar "$work\catalog"
 Get-ChildItem unfurl-foundry-substrate\*\target\*-0.1.0-SNAPSHOT.jar |
     Where-Object Name -NotLike 'foundry-substrate-testing*' |
     Copy-Item -Destination "$work\catalog"
@@ -83,12 +83,13 @@ fabric scan --catalog "$work\catalog"
 fabric list-capabilities --catalog "$work\catalog"
 ```
 
-`scan` should print `entries=16` and `skipped=0`. These are the components you'll choose from:
+`scan` should print `entries=17` and `skipped=0`. These are the components you'll choose from:
 
 | Component | Capabilities | What it is |
 |---|---|---|
 | `unfurl-foundry` | `agent.run`, `composition.run`, `tool.call`, `rag.search`, `provider.call`, `skill.invoke` | The Foundry service |
 | `unfurl-flow` | `workflow.execute`, `workflow.trigger`, `workflow.observe` | The Flow service |
+| `unfurl-adapter-keycloak` | `identity-context` | Open-source Keycloak as the identity provider, either a container Unfurl deploys (the default) or a Keycloak you already run. Other providers, such as Entra ID or Okta, federate into Keycloak. Include it when you want authentication |
 | `foundry-substrate-engine` | `agent.execute` | Runs an agent inside your own app |
 | `foundry-substrate-rag` | `rag.search`, `rag.embed` | Retrieval |
 | `foundry-substrate-tools` | `tool.invoke`, `tool.register` | Tool calling |
@@ -125,10 +126,17 @@ Pick a needs file:
 | Foundry + Flow | `$examples\needs\foundry-flow.yaml` | Foundry, Flow | Service |
 | Foundry + Flow + adapter | `$examples\needs\foundry-flow-spring-ai.yaml` | Foundry, Flow, Spring AI adapter | Service |
 | Foundry + Flow + separate RAG | `$examples\needs\foundry-flow-separate-rag.yaml` | Foundry, Flow, RAG, Spring AI adapter | Service |
+| Foundry + Flow + identity provider | `$examples\needs\foundry-flow-identity.yaml` | Foundry, Flow, identity provider | Service, with authentication through Keycloak |
 | Everything | `$fixtures\needs-all-shapes.yaml` | Two valid choices, see below | Service and embedded |
 
 To make your own, copy one of these files. Use `^0.1` as the version, because every component is at
-`0.1`.
+`0.1`. The exception is `identity-context`, which is at `1.0`, so ask for it with `^1`.
+
+**Identity comes from the needs.** Every capability in a needs file is mandatory. A needs file that
+requires `identity-context` gets the identity provider: `compile` fails if no catalog entry offers it,
+and the runtime bindings need its settings in every environment, `local` included. A needs file
+without it runs with no authentication in any environment, which suits a lightweight deployment on a
+trusted network, not one exposed to users.
 
 Preview the result before compiling:
 
@@ -143,7 +151,18 @@ The first line of the output tells you what happens next:
 |---|---|---|
 | `EXACT` | One valid set of components | Continue |
 | `AMBIGUOUS` | Several valid sets, listed best first | Add `--auto-select-best` or `--select <candidate-id>` to `compile` |
-| `NO_MATCH` | Nothing valid | Add the missing dependencies to the needs file |
+| `NO_MATCH` | Nothing valid | Read the lines that follow: each names one cause and what to change |
+
+After `NO_MATCH`, each `unmet need:` line is a capability in the needs that the catalog can't
+satisfy, and each `conflict:` line is a problem with the components that were tried. For example,
+asking for identity with no Keycloak jar in the catalog gives:
+
+```text
+NO_MATCH
+unmet need: the needs require identity-context ^1, but no catalog entry offers identity-context; add a component that offers it to the catalog, or remove it from the needs
+```
+
+`compile` prints the same lines and exits with an error.
 
 `rag.search` is offered by both Foundry and `foundry-substrate-rag`, which is why **Everything** is
 ambiguous. To force the separate RAG component, pin it under `artifactConstraints`, as
@@ -216,6 +235,21 @@ What you get depends on the combination:
 
 `target-local-images.yaml` sets real Docker image names. Without it, the `local` preset writes catalog
 coordinates into `image:`, and Docker can't use them.
+
+**With the identity provider,** Keycloak is a container by default, so `emit` adds it to
+`docker-compose.yaml` next to Flow and Foundry. That service isn't runnable yet: the emitter doesn't
+yet set the Keycloak image or provision its realm (see [Current limits](#current-limits)).
+
+To use a Keycloak you already run, compile with `deployment-policy-external-keycloak.yaml`. Flow and
+Foundry stay containers, and Keycloak becomes an external system that Compose can't place, so use
+`deploy` with two targets. It writes the Compose files to `local-compose\` and Keycloak's binding
+configuration and reachability probe to `remote\`:
+
+```powershell
+fabric compile --catalog "$work\catalog" --needs "$examples\needs\foundry-flow-identity.yaml" --deployment-policy "$examples\deployment-policy-external-keycloak.yaml" --out "$out\compiled.yaml"
+fabric sign --contract "$out\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$out\signed.yaml"
+fabric deploy --contract "$out\signed.yaml" --profile "$out\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" --targets "$examples\target-local-images.yaml,remote" --out "$out\deploy"
+```
 
 These files are good for review, but they aren't a complete package. Flow needs a runtime bundle to
 start, and today only Studio creates that bundle.
@@ -391,7 +425,9 @@ Publishing stores a finished combination as a versioned, signed release. Anyone 
 the original source or catalog, and each environment gets its own signed bindings.
 
 Start with `agent-platform.definition.yaml` and replace its identity and publisher with your own. Each
-offer in it must exist at that exact version in the compiled contract.
+offer in it must exist at that exact version in the compiled contract. The needs file asks for
+identity, so every environment's bindings need the identity settings. Locally they point at a
+Keycloak on `localhost`, the one place plain `http` is accepted.
 
 ```powershell
 $uri = 'urn:example:assembly:agent-platform'
@@ -399,7 +435,7 @@ $a = "$work\publish"
 $source = "$a\workspace\assemblies\flow-foundry\agent-platform"
 $keys = @('--key', "$work\keys\private.pem", '--public-key', "$work\keys\public.pem", '--trust-keys', "$work\keys\trust")
 
-fabric assembly-init --workspace "$a\workspace" --family flow-foundry --name agent-platform --definition "$examples\agent-platform.definition.yaml" --needs "$examples\needs\foundry-flow.yaml" --profile default
+fabric assembly-init --workspace "$a\workspace" --family flow-foundry --name agent-platform --definition "$examples\agent-platform.definition.yaml" --needs "$examples\needs\foundry-flow-identity.yaml" --profile default
 
 fabric compile --catalog "$work\catalog" --needs "$source\profiles\default.yaml" --out "$a\build\compiled.yaml"
 fabric sign --contract "$a\build\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$a\build\signed.yaml"
@@ -407,13 +443,48 @@ fabric sign --contract "$a\build\compiled.yaml" --key "$work\keys\private.pem" -
 fabric assembly-publish --source $source --profile default --version 1.0.0 --signed-contract "$a\build\signed.yaml" --substrate-profile "$a\build\compiled.substrate-profile.yaml" --catalog "$work\catalog" --repository "$a\releases" @keys
 fabric assembly-verify --repository "$a\releases" --uri $uri --version 1.0.0 --trust-keys "$work\keys\trust"
 
-fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --tenant demo --environment local --out "$a\build\bindings.yaml"
+$identityLocal = @(
+    '--identity-issuer', 'http://localhost:8080/realms/demo'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
+    '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
+    '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
+    '--identity-client-credentials-ref', 'secret://demo/identity/flow-client'
+)
+fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --tenant demo --environment local --out "$a\build\bindings.yaml" @identityLocal
 fabric assembly-bind --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment local --revision r1 --bindings "$a\build\bindings.yaml" @keys
 fabric assembly-verify-binding --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment local --revision r1 --trust-keys "$work\keys\trust"
 ```
 
 Each publish, bind and verify step should end with `verified=true`. That confirms the files and
 signatures. It doesn't check that endpoints are reachable or that secrets exist.
+
+**Bind another environment.** Each environment gets its own bindings, with the identity settings of
+that environment's realm. Fabric never guesses them, so leaving any out is an error. The references
+are names your deployment resolves; they never contain the keys or secrets themselves.
+
+```powershell
+$identity = @(
+    '--identity-issuer', 'https://idp.example.com/realms/demo'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
+    '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
+    '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
+    '--identity-client-credentials-ref', 'secret://demo/identity/flow-client'
+)
+fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --tenant demo --environment production --out "$a\build\bindings-production.yaml" @identity
+fabric assembly-bind --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment production --revision r1 --bindings "$a\build\bindings-production.yaml" @keys
+fabric assembly-verify-binding --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment production --revision r1 --trust-keys "$work\keys\trust"
+```
+
+| Setting | Meaning |
+|---|---|
+| `--identity-issuer` | Your identity provider's issuer. It must be `https`, except on `localhost`. |
+| `--identity-audiences` | `claimUri=audience` pairs, separated by commas: exactly one for each component whose claim needs `identity-context`, and none for anything else. With Flow and Foundry that is Foundry alone, `urn:unfurl:foundry`. |
+| `--identity-tenant-claim`, `--identity-roles-claim`, `--identity-permissions-claim` | The token claims that hold the tenant, roles and permissions. |
+| `--identity-token-endpoint-ref` | Reference to the token endpoint that Flow uses to exchange tokens. |
+| `--identity-verification-keys-ref` | Reference to the identity provider's public signing keys, which Foundry checks tokens against. |
+| `--identity-client-credentials-ref` | Secret reference to Flow's client credentials at the identity provider. |
 
 Releases can't be changed. If the source or output changes, publish a new version. If only the
 bindings change, use a new revision.
@@ -423,6 +494,8 @@ bindings change, use a new revision.
 | `flow-foundry` | `workflow.execute` and `agent.run` | Works |
 | `flow-only` | `workflow.execute`, no `agent.run` | Works |
 | `foundry-only` | `agent.run`, no `workflow.execute` | Blocked with real Foundry |
+
+No family requires identity. A release has it when its profile's needs ask for `identity-context`.
 
 ## Current limits
 
@@ -434,13 +507,14 @@ bindings change, use a new revision.
 | Studio's `needs/extract` results can't compile | It asks for `^1`, but the components are `0.1.0`, so compile returns `NO_MATCH` | Leave `needsId` out of the session, as this guide does. Compile then checks the selected components' dependencies, not a needs list |
 | The Foundry jar can't be uploaded as `artifactBase64` | The request is too large and returns `400 malformed json body` | Send `claimYaml` |
 | The command line can't create `dcp-runtime-bundle.zip` | Only Studio's compile produces it | Use the Studio route |
+| A package with the Keycloak container can't start | The emitter writes a placeholder Keycloak service; it doesn't yet set the Keycloak image or run the adapter's realm provisioning | Leave `identity-context` out of the needs for local runs, or bind an existing Keycloak with `deployment-policy-external-keycloak.yaml` |
 | Flow can't call a secured Foundry | Flow sends no JWT and puts its context in the request body, which Foundry's secured profile rejects | Use `compose-development.yaml` on a trusted machine |
 
 **These are easy to trip over:**
 
-- `NO_MATCH` from `plan` or `compile` often gives no reason. Check that the needs file lists every
-  dependency. The sample claims and needs fixtures say dependencies are pulled in automatically, but
-  they aren't today.
+- Fabric doesn't add a component because another component's claim needs it. The sample claims and
+  needs fixtures say dependencies are pulled in automatically, but they aren't. `NO_MATCH` then shows
+  a `conflict:` line naming the component and what it needs; add that capability to the needs file.
 - `fabric scan --out` crashes while writing the index. Run `scan` without `--out`.
 - `assembly-init` says only `invalid composite claim` when a claim has a problem. Compare yours with
   `agent-platform.definition.yaml`, which has every required section.
@@ -456,7 +530,9 @@ bindings change, use a new revision.
   machine.
 - Generated bindings contain development defaults. Review them and supply real endpoints and secret
   references.
-- Provider, identity, audit and secret bindings aren't covered by this guide.
+- Provider, audit and secret bindings aren't covered by this guide. The identity binding is covered
+  only as far as Fabric goes: Flow doesn't yet exchange tokens, and the emitter doesn't yet mount the
+  verification keys into Foundry.
 
 ## Learn more
 

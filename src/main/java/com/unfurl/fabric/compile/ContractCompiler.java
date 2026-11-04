@@ -23,6 +23,7 @@ import com.unfurl.fabric.compiler.ContractCompileException;
 import com.unfurl.fabric.compiler.DecisionAudit;
 import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.matcher.CandidateScore;
+import com.unfurl.fabric.matcher.CandidateValidator;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.PlanningWarning;
 import com.unfurl.fabric.needs.Need;
@@ -53,6 +54,13 @@ import java.util.stream.Collectors;
  * child ids, and the compile timestamp), so identical inputs at the same instant yield identical output.
  */
 public final class ContractCompiler {
+    /**
+     * Child-contract metadata extension: the sorted claim URIs of the other selected components whose claims depend on the
+     * contract's capability (HLD-unfurl-fabric Core Flow step 7). Always present, possibly empty, so its absence marks a
+     * contract compiled before it existed.
+     */
+    public static final String EXT_NEEDED_BY = "neededBy";
+
     /** Time source for {@code compiledAt} and content-addressed ids; injectable for tests. */
     private final Clock clock;
 
@@ -169,10 +177,36 @@ public final class ContractCompiler {
                         "selected entry has no offers to bind: " + entry.artifact().coordinates());
             }
             for (Offer offer : offers) {
-                contracts.add(childContract(entry, offer, hostOwnerMeta, compiledAt));
+                contracts.add(childContract(entry, offer, neededBy(entries, entry, offer.capability()), hostOwnerMeta,
+                        compiledAt));
             }
         }
         return List.copyOf(contracts);
+    }
+
+    /**
+     * Dependency index: the claim URIs of the other selected entries whose claim dependencies name {@code capability} (by the
+     * dependency URI's capability name, whatever its owner marker), sorted and distinct so the contract stays deterministic.
+     *
+     * @param entries    deterministic selected entries.
+     * @param provider   the entry offering the capability, excluded from its own consumers.
+     * @param capability the offered capability.
+     * @return the consumers' claim URIs; empty when no other selected component depends on it.
+     */
+    private static List<String> neededBy(List<CatalogEntry> entries, CatalogEntry provider, String capability) {
+        java.util.TreeSet<String> consumers = new java.util.TreeSet<>();
+        for (CatalogEntry entry : entries) {
+            var dependencies = entry.claimDescriptor().claim().dependencies();
+            if (entry == provider || dependencies == null) {
+                continue;
+            }
+            boolean depends = dependencies.needs().stream()
+                    .anyMatch(dep -> dep != null && capability.equals(CandidateValidator.capabilityNameFromDependencyUri(dep)));
+            if (depends) {
+                consumers.add(entry.claimDescriptor().claim().identity().uri().toString());
+            }
+        }
+        return List.copyOf(consumers);
     }
 
     /**
@@ -180,6 +214,7 @@ public final class ContractCompiler {
      *
      * @param entry         selected catalog entry.
      * @param offer         selected entry offer.
+     * @param neededBy      claim URIs of the other selected components that depend on the offer (see {@link #EXT_NEEDED_BY}).
      * @param hostOwnerMeta consumer/host identity metadata.
      * @param compiledAt    compile timestamp used in id/provenance.
      * @return child composition contract for the offer.
@@ -187,6 +222,7 @@ public final class ContractCompiler {
     private static CompositionContract childContract(
             CatalogEntry entry,
             Offer offer,
+            List<String> neededBy,
             HostOwnerMeta hostOwnerMeta,
             Instant compiledAt
     ) {
@@ -199,6 +235,7 @@ public final class ContractCompiler {
         extensions.put("artifactCoordinates", entry.artifact().coordinates());
         extensions.put("artifactSha256", entry.artifact().sha256());
         extensions.put("claimHash", entry.claimDescriptor().claimHash());
+        extensions.put(EXT_NEEDED_BY, neededBy);
 
         return new CompositionContract(
                 childContractId(entry, offer, compiledAt),

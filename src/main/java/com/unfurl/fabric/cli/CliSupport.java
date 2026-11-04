@@ -30,6 +30,7 @@ import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.CompiledContractCodec;
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.MatchResult;
+import com.unfurl.fabric.matcher.NoMatchExplanation;
 import com.unfurl.fabric.matcher.StructuralMatcher;
 import com.unfurl.fabric.needs.Need;
 import com.unfurl.fabric.needs.NeedsCodec;
@@ -177,6 +178,25 @@ final class CliSupport {
                 + " entries=" + candidate.entries().stream()
                 .map(e -> e.artifact().coordinates())
                 .collect(Collectors.joining(","));
+    }
+
+    /**
+     * Failure reporter for a match with no valid composition: prints {@code no match} and then every reason from
+     * {@link NoMatchExplanation} (each unmet need with its fix, then each distinct conflict) to {@code err}, and returns
+     * the runtime failure the command throws. Shared by compile, dry-run and resolve-deployment so they explain the
+     * failure the same way.
+     *
+     * @param noMatch   the failed match.
+     * @param err       the command's error stream.
+     * @param operation the failing operation, for the final message (for example {@code compile}).
+     * @return the exception to throw; its message points at the reasons rather than repeating them.
+     */
+    static FabricCliException noMatchFailure(MatchResult.NoMatch noMatch, java.io.PrintStream err, String operation) {
+        List<String> reasons = NoMatchExplanation.reasons(noMatch);
+        err.println("no match");
+        reasons.forEach(err::println);
+        String count = reasons.size() == 1 ? "the reason above" : "the " + reasons.size() + " reasons above";
+        return FabricCliException.runtime(operation + " failed: no valid composition; see " + count);
     }
 
     static String entryCapabilities(CatalogEntry entry) {

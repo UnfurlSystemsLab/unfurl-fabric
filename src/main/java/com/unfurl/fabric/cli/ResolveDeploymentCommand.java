@@ -55,9 +55,7 @@ final class ResolveDeploymentCommand {
             throw FabricCliException.usage(
                     "ambiguous deployment resolution; pass --select <candidate-id> or --auto-select-best");
         }
-        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
-        noMatch.missing().forEach(m -> err.println("missing " + m.capability() + " " + m.requestedRange()));
-        throw FabricCliException.runtime("deployment resolution failed: no valid composition");
+        throw CliSupport.noMatchFailure((MatchResult.NoMatch) result, err, "deployment resolution");
     }
 
     private void printReport(PrintStream out, DeploymentResolutionReport report) {

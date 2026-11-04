@@ -18,6 +18,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FabricCliAssemblyStorageTest {
     private static final String URI = "urn:unfurl:assembly:test-composite";
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory());
+    /** Complete identity inputs, required whenever the needs selected the identity provider; the audience names the fixture's Foundry provider. */
+    private static final List<String> IDENTITY_FLAGS = List.of(
+            "--identity-issuer", "https://idp.example.com/realms/acme",
+            "--identity-audiences", "urn:unfurl:test:agent.run=foundry",
+            "--identity-tenant-claim", "tenant", "--identity-roles-claim", "roles", "--identity-permissions-claim", "permissions",
+            "--identity-token-endpoint-ref", "config://acme/identity/token-endpoint",
+            "--identity-verification-keys-ref", "config://acme/identity/verification-keys",
+            "--identity-client-credentials-ref", "secret://acme/identity/flow-client");
 
     /** Verify all three families survive publication/reload; randomized signing retries retain exact original release bytes. */
     @ParameterizedTest @ValueSource(strings = {"flow-only", "foundry-only", "flow-foundry"})
@@ -79,8 +87,11 @@ class FabricCliAssemblyStorageTest {
         assertOk(publish(fixture));
         for (String env : List.of("dev", "prod")) {
             Path bindings = dir.resolve(env + ".yaml");
-            assertOk(CliTestFixtures.run("runtime-bindings", "--signed-contract", fixture.signed().toString(), "--out", bindings.toString(),
-                    "--tenant", "acme", "--environment", env));
+            // The fixture's needs require identity-context, so both environments need the identity inputs.
+            List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
+                    "--out", bindings.toString(), "--tenant", "acme", "--environment", env));
+            argv.addAll(IDENTITY_FLAGS);
+            assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
             assertOk(bind(fixture, bindings, env));
             assertOk(bind(fixture, bindings, env));
             assertOk(CliTestFixtures.run("assembly-verify-binding", "--repository", fixture.repository().toString(),
@@ -97,6 +108,74 @@ class FabricCliAssemblyStorageTest {
         YAML.writeValue(unsafe.toFile(), wrapper);
         assertThat(bind(fixture, unsafe, "dev").exitCode()).isNotZero();
         assertOk(verify(fixture));
+    }
+
+    /**
+     * Identity follows the needs, not the family (HLD-needs-driven-identity §6): a Foundry-bearing release whose needs omit
+     * identity-context publishes, and binds to production with no identity inputs, as a lightweight deployment.
+     */
+    @ParameterizedTest @ValueSource(strings = {"foundry-only", "flow-foundry"})
+    void foundryFamiliesWithoutIdentityInTheirNeedsPublishAndBind(String family, @TempDir Path dir) throws Exception {
+        Fixture fixture = fixture(dir, family, false);
+        assertOk(publish(fixture));
+        Path bindings = dir.resolve("prod.yaml");
+        assertOk(CliTestFixtures.run("runtime-bindings", "--signed-contract", fixture.signed().toString(),
+                "--out", bindings.toString(), "--tenant", "acme", "--environment", "prod"));
+        assertOk(bind(fixture, bindings, "prod"));
+    }
+
+    /**
+     * Admission re-checks the identity binding, so removing a field from a generated identity binding by hand cannot slip an
+     * incomplete identity binding into a deployment, in any environment.
+     */
+    @Test void bindRefusesAnIncompleteIdentityBinding(@TempDir Path dir) throws Exception {
+        Fixture fixture = fixture(dir, "flow-foundry", true);
+        assertOk(publish(fixture));
+        Path bindings = dir.resolve("dev.yaml");
+        List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
+                "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
+        argv.addAll(IDENTITY_FLAGS);
+        assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
+        ObjectNode wrapper = (ObjectNode) YAML.readTree(Files.readAllBytes(bindings));
+        for (var binding : wrapper.path("runtime_binding_set").path("runtime_bindings")) {
+            if ("identity-context".equals(binding.at("/configuration/values/capability").asText())) {
+                ((ObjectNode) binding.path("configuration").path("values")).remove("issuer");
+            }
+        }
+        Path edited = dir.resolve("edited.yaml"); YAML.writeValue(edited.toFile(), wrapper);
+
+        CliTestFixtures.CliRun run = bind(fixture, edited, "dev");
+
+        assertThat(run.exitCode()).isNotZero();
+        assertThat(run.stderr()).contains("is incomplete", "configuration.values.issuer: required");
+    }
+
+    /**
+     * Regression: admission checks audience coverage against the protected services recorded in the signed release, so a
+     * hand-edited binding whose only audience is the identity provider's, with none for Foundry, is refused.
+     */
+    @Test void bindRefusesAnIdentityBindingWithoutTheProtectedServiceAudience(@TempDir Path dir) throws Exception {
+        Fixture fixture = fixture(dir, "flow-foundry", true);
+        assertOk(publish(fixture));
+        Path bindings = dir.resolve("dev.yaml");
+        List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
+                "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
+        argv.addAll(IDENTITY_FLAGS);
+        assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
+        ObjectNode wrapper = (ObjectNode) YAML.readTree(Files.readAllBytes(bindings));
+        for (var binding : wrapper.path("runtime_binding_set").path("runtime_bindings")) {
+            if ("identity-context".equals(binding.at("/configuration/values/capability").asText())) {
+                ((ObjectNode) binding.path("configuration").path("values")).putObject("audiences")
+                        .put(CliTestFixtures.IDENTITY_PROVIDER_URI, "keycloak");
+            }
+        }
+        Path edited = dir.resolve("edited.yaml"); YAML.writeValue(edited.toFile(), wrapper);
+
+        CliTestFixtures.CliRun run = bind(fixture, edited, "dev");
+
+        assertThat(run.exitCode()).isNotZero();
+        assertThat(run.stderr()).contains("is incomplete", "no audience for urn:unfurl:test:agent.run",
+                CliTestFixtures.IDENTITY_PROVIDER_URI + " does not need identity-context");
     }
 
     /** Ensure wrong keys, unknown profile constraints, substrate drift and unsafe release locators cannot create a release. */
@@ -117,12 +196,32 @@ class FabricCliAssemblyStorageTest {
                 "--version", "../../outside", "--trust-keys", fixture.trust().toString()).exitCode()).isNotZero();
     }
 
-    /** Setup real compiler inputs, then initialize a publisher source using an existing catalog manifest and needs document. */
+    /**
+     * Setup real compiler inputs, then initialize a publisher source using an existing catalog manifest and needs document. The
+     * Foundry-bearing families ask for identity by default so the identity path is exercised; nothing forces it.
+     */
     private Fixture fixture(Path dir, String family) throws Exception {
+        return fixture(dir, family, !family.equals("flow-only"));
+    }
+
+    /**
+     * Setup variant: optionally adds identity-context to the needs, which selects the identity provider component
+     * (HLD-needs-driven-identity §4). The runtime component stays first so the source definition is built from it.
+     */
+    private Fixture fixture(Path dir, String family, boolean withIdentity) throws Exception {
         Path catalog = dir.resolve("catalog");
-        List<String> capabilities = family.equals("flow-only") ? List.of("workflow.execute")
+        List<String> runtimes = family.equals("flow-only") ? List.of("workflow.execute")
                 : family.equals("foundry-only") ? List.of("agent.run") : List.of("workflow.execute", "agent.run");
-        for (String capability : capabilities) CliTestFixtures.writeCatalogJar(catalog, capability + ".jar", capability, capability);
+        for (String capability : runtimes) {
+            // The Foundry stand-in depends on identity-context like the real claim, so it is the protected service.
+            if (capability.equals("agent.run")) CliTestFixtures.writeFoundryJar(catalog, capability + ".jar");
+            else CliTestFixtures.writeCatalogJar(catalog, capability + ".jar", capability, capability);
+        }
+        List<String> capabilities = new ArrayList<>(runtimes);
+        if (withIdentity) {
+            CliTestFixtures.writeIdentityProviderJar(catalog);
+            capabilities.add("identity-context");
+        }
         Path needs = dir.resolve("needs.yaml");
         StringBuilder text = new StringBuilder("requiredCapabilities:\n");
         for (String capability : capabilities) text.append("  - capability: ").append(capability).append("\n    capabilityVersion: ^1\n");

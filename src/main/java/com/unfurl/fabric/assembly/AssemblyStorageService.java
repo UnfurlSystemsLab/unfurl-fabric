@@ -9,6 +9,7 @@ import com.unfurl.fabric.artifact.ArtifactDescriptor;
 import com.unfurl.fabric.catalog.*;
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.matcher.CandidateValidator;
+import com.unfurl.fabric.runtime.IdentityBindingRule;
 import com.unfurl.fabric.signing.*;
 import com.unfurl.substrate.api.SubstrateProfileCodec;
 import java.io.*;
@@ -229,6 +230,8 @@ public final class AssemblyStorageService {
             case "foundry-only" -> foundry && !flow;
             default -> flow && foundry;
         }, "compiled runtime capabilities do not match family");
+        // No family forces identity: a release has the identity provider exactly when its profile's needs require
+        // identity-context, and then validateBindings requires a complete identity binding (HLD-needs-driven-identity §6).
     }
 
     /** Validate every runtime binding against the released closure, including exact edge coverage, environment and no-inline-secret firewall. */
@@ -256,6 +259,17 @@ public final class AssemblyStorageService {
         require(root != null && signed.contract().contract().contractId().equals(root.contractId()), "binding root contract mismatch");
         require(edges.equals(contracts.keySet()), "binding set must cover exactly the released contracts");
         require(new RuntimeBindingValidator().validateTree(root, bindings, contracts).valid(), "DCP runtime binding validation failed");
+        // Identity in the needs is mandatory, so an identity binding admitted here must be complete, whatever the environment,
+        // with an audience for exactly the protected services the signed identity contract records.
+        IdentityBindingRule identityRule = new IdentityBindingRule();
+        for (RuntimeBinding binding : bindings.values()) {
+            CompositionContract contract = contracts.get(binding.contractId());
+            if (IdentityBindingRule.isIdentity(contract)) {
+                List<String> violations = identityRule.violations(binding, contract);
+                require(violations.isEmpty(), "identity binding " + binding.bindingId() + " is incomplete: "
+                        + String.join("; ", violations));
+            }
+        }
         Set<URI> reachable = new HashSet<>();
         walkBindings(root.bindingId(), bindings, reachable);
         require(reachable.equals(bindings.keySet()), "orphan runtime bindings");

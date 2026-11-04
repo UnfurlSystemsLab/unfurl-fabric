@@ -2,6 +2,7 @@ package com.unfurl.fabric.cli;
 
 import com.unfurl.fabric.matcher.CompositionCandidate;
 import com.unfurl.fabric.matcher.MatchResult;
+import com.unfurl.fabric.matcher.NoMatchExplanation;
 
 import java.io.PrintStream;
 
@@ -18,8 +19,9 @@ final class PlanCommand {
                 out.println(CliSupport.candidateLine(candidate));
             }
         } else if (result instanceof MatchResult.NoMatch noMatch) {
+            // plan reports rather than fails, so the reasons go to stdout under the NO_MATCH header.
             out.println("NO_MATCH");
-            noMatch.missing().forEach(m -> out.println("missing " + m.capability() + " " + m.requestedRange()));
+            NoMatchExplanation.reasons(noMatch).forEach(out::println);
         }
         return 0;
     }

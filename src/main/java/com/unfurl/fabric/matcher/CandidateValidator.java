@@ -61,7 +61,8 @@ public final class CandidateValidator {
      *
      * @param entries   the entries.
      * @param need      the need.
-     * @param conflicts sink for {@link Conflict.VersionConflict}s.
+     * @param conflicts sink for {@link Conflict.MissingCapabilityConflict}s, {@link Conflict.OfferDetailConflict}s and
+     *                  {@link Conflict.VersionConflict}s, whichever names the actual cause.
      * @return true iff all required capabilities are satisfied.
      */
     private boolean checkRequiredCapabilities(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
@@ -73,6 +74,9 @@ public final class CandidateValidator {
                             req.capability(),
                             req.capabilityVersion().range(),
                             req.requiredOfferDetails()));
+                } else if (firstSeenVersion(entries, req.capability()) == null) {
+                    conflicts.add(new Conflict.MissingCapabilityConflict(
+                            req.capability(), req.capabilityVersion().range()));
                 } else {
                     conflicts.add(new Conflict.VersionConflict(
                             req.capability(),
@@ -152,7 +156,7 @@ public final class CandidateValidator {
                 if (isExternallyOwnedDependency(dep)) {
                     continue;
                 }
-                conflicts.add(new Conflict.DependencyConflict(dep));
+                conflicts.add(new Conflict.DependencyConflict(e.artifact().coordinates(), dep, capabilityName));
                 allResolved = false;
             }
         }
@@ -161,7 +165,11 @@ public final class CandidateValidator {
 
     /**
      * Gate: required concerns (from needs, or implied by peer dependencies on a refused concern) are
-     * owned by some selected component.
+     * owned by some selected component. A peer dependency implies a refused concern only when its
+     * capability name (see {@link #capabilityNameFromDependencyUri}) equals the concern exactly and it is
+     * not externally owned (HLD-unfurl-fabric, Core Flow step 3). Substring matching would let an
+     * unrelated dependency such as {@code oidc.identity-provider@v1} demand an owner for a refused
+     * {@code identity} concern.
      *
      * @param entries   the entries.
      * @param need      the need (source of explicit refusal expectations).
@@ -177,14 +185,15 @@ public final class CandidateValidator {
                 // by another selected component. Today DCP's Refusal record has no `required`
                 // field; treat all refusals as composition-relevant only when (a) needs ask
                 // for them or (b) another selected component depends on them via 'needs'.
-                // Concrete signal: if the refusal's concern is mentioned in another component's
-                // claim dependencies, treat it as required to fill.
+                // Concrete signal: if another component's peer dependency names the refused
+                // concern as its capability, treat it as required to fill.
                 for (CatalogEntry peer : entries) {
                     if (peer == e || peer.claimDescriptor().claim().dependencies() == null) {
                         continue;
                     }
                     for (String dep : peer.claimDescriptor().claim().dependencies().needs()) {
-                        if (dep != null && dep.contains(r.concern())) {
+                        if (dep != null && !dep.isBlank() && !isExternallyOwnedDependency(dep)
+                                && r.concern().equals(capabilityNameFromDependencyUri(dep))) {
                             requiredConcerns.add(r.concern());
                         }
                     }
@@ -272,7 +281,7 @@ public final class CandidateValidator {
      *
      * @param entries    the entries.
      * @param capability the capability name.
-     * @return the first seen version, or {@code <none>}.
+     * @return the first seen version, or null when no entry offers the capability at all.
      */
     private static String firstSeenVersion(List<CatalogEntry> entries, String capability) {
         for (CatalogEntry e : entries) {
@@ -282,7 +291,7 @@ public final class CandidateValidator {
                 }
             }
         }
-        return "<none>";
+        return null;
     }
 
     /**

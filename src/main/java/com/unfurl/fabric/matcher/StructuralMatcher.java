@@ -89,7 +89,8 @@ public final class StructuralMatcher {
         Map<String, List<CatalogEntry>> providersByCapability =
                 indexProvidersByCapability(allowedEntries, need);
 
-        List<UnmetCapabilityRequirement> missing = findUnmetRequiredCapabilities(need, providersByCapability);
+        List<UnmetCapabilityRequirement> missing =
+                findUnmetRequiredCapabilities(need, providersByCapability, allowedEntries, rejectedEntries);
         if (!missing.isEmpty()) {
             List<RejectedEntry> relevant = filterRejectionsRelevantTo(missing, rejectedEntries);
             return new MatchResult.NoMatch(missing, List.of(), relevant);
@@ -121,10 +122,9 @@ public final class StructuralMatcher {
         }
 
         if (candidates.isEmpty()) {
-            List<RejectedEntry> relevant = filterRejectionsRelevantTo(
-                    findUnmetRequiredCapabilities(need, providersByCapability),
-                    rejectedEntries);
-            return new MatchResult.NoMatch(List.of(), aggregatedConflicts, relevant);
+            // Every required capability has a provider here (the unmet case returned above), so the cause is in the
+            // conflicts; no trust rejection is relevant to an unmet capability.
+            return new MatchResult.NoMatch(List.of(), distinct(aggregatedConflicts), List.of());
         }
 
         candidates.sort(
@@ -176,28 +176,103 @@ public final class StructuralMatcher {
     }
 
     /**
-     * Required capabilities with zero providers in the index.
+     * Conflicts de-duplicated by detail, in first-seen order: every candidate shape repeats the conflicts of the
+     * components it shares with other shapes, and the operator needs each cause once.
      *
-     * @param need      the need.
+     * @param conflicts the aggregated conflicts.
+     * @return the distinct conflicts.
+     */
+    private static List<Conflict> distinct(List<Conflict> conflicts) {
+        Map<String, Conflict> byDetail = new LinkedHashMap<>();
+        conflicts.forEach(conflict -> byDetail.putIfAbsent(conflict.detail(), conflict));
+        return List.copyOf(byDetail.values());
+    }
+
+    /**
+     * Required capabilities with zero providers in the index, each with the most specific reason and a message
+     * naming the fix. Every capability the needs require is mandatory, so each of these fails the match.
+     *
+     * @param need     the need.
      * @param providers the capability→providers index.
+     * @param allowed  the trust-allowed entries, to tell a missing capability from an unmatched version or details.
+     * @param rejected the trust-rejected entries, to report a capability that only rejected entries offer.
      * @return the unmet requirements (empty if all covered).
      */
     private static List<UnmetCapabilityRequirement> findUnmetRequiredCapabilities(
-            Need need, Map<String, List<CatalogEntry>> providers) {
+            Need need, Map<String, List<CatalogEntry>> providers,
+            List<CatalogEntry> allowed, List<RejectedEntry> rejected) {
         List<UnmetCapabilityRequirement> unmet = new ArrayList<>();
         for (CapabilityRequirement req : need.requiredCapabilities()) {
-            if (providers.getOrDefault(req.capability(), List.of()).isEmpty()) {
-                String detailSuffix = req.requiredOfferDetails().isEmpty()
-                        ? ""
-                        : " with offer details " + req.requiredOfferDetails();
-                unmet.add(new UnmetCapabilityRequirement(
-                        req.capability(), req.capabilityVersion().range(),
-                        "no allowed catalog entry provides " + req.capability()
-                                + " matching " + req.capabilityVersion().range()
-                                + detailSuffix));
+            if (!providers.getOrDefault(req.capability(), List.of()).isEmpty()) {
+                continue;
             }
+            String capability = req.capability();
+            String range = req.capabilityVersion().range();
+            String required = "the needs require " + capability + " " + range;
+            List<String> versionMatches = offersOf(allowed, capability, offer -> CapabilityOfferMatcher.matchesNameAndVersion(offer, req));
+            List<String> anyVersion = offersOf(allowed, capability, offer -> true);
+            List<String> rejectedOffers = rejected.stream()
+                    .filter(r -> offersCapability(r.entry(), capability))
+                    .map(r -> r.entry().artifact().coordinates() + " ("
+                            + r.reasons().stream().map(reason -> reason.detail()).collect(Collectors.joining("; ")) + ")")
+                    .toList();
+            String rejectedNote = rejectedOffers.isEmpty() ? ""
+                    : "; the trust policy rejected " + String.join(", ", rejectedOffers);
+            UnmetCapabilityRequirement.Reason reason;
+            String detail;
+            if (!versionMatches.isEmpty()) {
+                reason = UnmetCapabilityRequirement.Reason.OFFER_DETAILS_UNSATISFIED;
+                detail = required + " with offer details " + req.requiredOfferDetails() + ", but "
+                        + String.join(", ", versionMatches) + " does not offer those details" + rejectedNote;
+            } else if (!anyVersion.isEmpty()) {
+                reason = UnmetCapabilityRequirement.Reason.VERSION_NOT_OFFERED;
+                detail = required + ", but the catalog offers only " + String.join(", ", anyVersion)
+                        + "; change the version range in the needs, or add a component that offers a matching version"
+                        + rejectedNote;
+            } else if (!rejectedOffers.isEmpty()) {
+                reason = UnmetCapabilityRequirement.Reason.REJECTED_BY_TRUST_POLICY;
+                detail = required + ", but only components the trust policy rejected offer it: "
+                        + String.join(", ", rejectedOffers) + "; change the trust policy, or add an allowed component";
+            } else {
+                reason = UnmetCapabilityRequirement.Reason.NOT_IN_CATALOG;
+                detail = required + ", but no catalog entry offers " + capability
+                        + "; add a component that offers it to the catalog, or remove it from the needs";
+            }
+            unmet.add(new UnmetCapabilityRequirement(capability, range, reason, detail));
         }
         return unmet;
+    }
+
+    /**
+     * Allowed offers of a capability that pass a filter, rendered as {@code capability version (coordinates)}.
+     *
+     * @param entries    the entries to search.
+     * @param capability the capability name.
+     * @param filter     which offers to include.
+     * @return the rendered offers, in catalog order.
+     */
+    private static List<String> offersOf(List<CatalogEntry> entries, String capability,
+                                         java.util.function.Predicate<Offer> filter) {
+        List<String> offers = new ArrayList<>();
+        for (CatalogEntry entry : entries) {
+            for (Offer offer : entry.claimDescriptor().claim().offers()) {
+                if (capability.equals(offer.capability()) && filter.test(offer)) {
+                    offers.add(capability + " " + offer.version() + " (" + entry.artifact().coordinates() + ")");
+                }
+            }
+        }
+        return offers;
+    }
+
+    /**
+     * Whether an entry offers a capability by name, at any version.
+     *
+     * @param entry      the entry.
+     * @param capability the capability name.
+     * @return true when one of its offers has that capability.
+     */
+    private static boolean offersCapability(CatalogEntry entry, String capability) {
+        return entry.claimDescriptor().claim().offers().stream().anyMatch(offer -> capability.equals(offer.capability()));
     }
 
     /**

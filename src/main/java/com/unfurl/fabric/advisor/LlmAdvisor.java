@@ -78,7 +78,8 @@ public final class LlmAdvisor implements AiAdvisor {
         prompt.append("Suggest substitutes for unmet fabric needs. Do not override validity gates.\n");
         prompt.append("Catalog entries=").append(context.catalog().entries().size()).append("\n");
         noMatch.missing().forEach(missing -> prompt.append("missing ")
-                .append(missing.capability()).append(" ").append(missing.requestedRange()).append("\n"));
+                .append(missing.capability()).append(" ").append(missing.requestedRange())
+                .append(" (").append(missing.reason()).append(": ").append(missing.detail()).append(")\n"));
         noMatch.potentiallyRelevantRejections().forEach(rejection -> prompt.append("rejected ")
                 .append(rejection.entry().artifact().coordinates()).append("\n"));
         return prompt.toString();
