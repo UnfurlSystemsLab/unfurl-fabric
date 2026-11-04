@@ -44,6 +44,14 @@ Use the actual `substrateProfile` path printed by `compile` (or pass `--substrat
 binding admission, review generated bindings and supply the real endpoint/config/secret references. The generator's
 defaults are development conventions, not evidence of a connected production environment.
 
+A profile gets authentication and authorization by requiring `identity-context` in its needs, which selects the
+identity provider component (`unfurl-adapter-keycloak`). Every capability in the needs is mandatory, so `compile` fails
+with the reason if none is offered. `runtime-bindings` then needs `--identity-issuer`,
+`--identity-audiences claimUri=audience,...`, `--identity-tenant-claim`, `--identity-roles-claim`,
+`--identity-permissions-claim`, `--identity-token-endpoint-ref`, `--identity-verification-keys-ref` and
+`--identity-client-credentials-ref` in every environment, and fails without them (HLD-needs-driven-identity §6). A
+profile without `identity-context` runs without identity in any environment.
+
 ## Stored outputs
 
 ```text

@@ -259,7 +259,8 @@ public final class StudioToolGateway {
                     text(arguments, "bindingIdPrefix", defaults.bindingIdPrefix()),
                     text(arguments, "flowBaseUrl", defaults.flowBaseUrl()),
                     text(arguments, "foundryBaseUrl", defaults.foundryBaseUrl()),
-                    (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()));
+                    (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()),
+                    identityOptions(asMap(value(arguments, "identity"))));
             byte[] yaml = new RuntimeBindingSetGenerator().generate(contract, options);
             Path target = resolveOutputPath(outputPath);
             Files.createDirectories(target.getParent());
@@ -273,8 +274,30 @@ public final class StudioToolGateway {
         } catch (Exception ex) {
             return gap(toolName, "unable to generate runtime binding: " + ex.getMessage(), Map.of(),
                     List.of("Confirm Step 12 signed support artifact exists and signing was enabled.",
-                            "Confirm Flow and Foundry base URLs for the target environment."));
+                            "Confirm Flow and Foundry base URLs for the target environment.",
+                            "If the needs require identity-context, supply identity in every environment: issuer, audiences, "
+                                    + "tenantClaim, rolesClaim, permissionsClaim, tokenEndpointRef, verificationKeysRef and "
+                                    + "clientCredentialsRef. Otherwise leave identity out."));
         }
+    }
+
+    /**
+     * Argument adapter: maps the step's {@code identity} object (HLD-needs-driven-identity §6) to the generator's identity
+     * options field for field, with no defaults. {@code audiences} is a JSON object from service claim URI to audience.
+     */
+    private RuntimeBindingSetGenerator.IdentityOptions identityOptions(Map<String, Object> identity) {
+        Map<String, String> audiences = new LinkedHashMap<>();
+        asMap(identity.get("audiences")).forEach((service, audience) ->
+                audiences.put(service, audience == null ? null : String.valueOf(audience)));
+        return new RuntimeBindingSetGenerator.IdentityOptions(
+                text(identity, "issuer", null),
+                audiences,
+                text(identity, "tenantClaim", null),
+                text(identity, "rolesClaim", null),
+                text(identity, "permissionsClaim", null),
+                text(identity, "tokenEndpointRef", null),
+                text(identity, "verificationKeysRef", null),
+                text(identity, "clientCredentialsRef", null));
     }
 
     /**

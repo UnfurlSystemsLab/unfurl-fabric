@@ -24,9 +24,9 @@ import com.unfurl.dcp.runtimebinding.RuntimeBindingValidator;
 import com.unfurl.dcp.runtimebinding.RuntimePolicy;
 import com.unfurl.dcp.runtimebinding.SecretRef;
 import com.unfurl.dcp.runtimebinding.TargetEnvironment;
-import com.unfurl.dcp.validation.Diagnostic;
 import com.unfurl.dcp.validation.SchemaValidationReport;
 import com.unfurl.dcp.validation.Severity;
+import com.unfurl.deployment.plan.BindingPlan;
 import com.unfurl.fabric.signing.SignedFabricContract;
 
 import java.io.IOException;
@@ -38,11 +38,13 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Builder/Composite Assembler: derives a DCP runtime-binding tree from Fabric's signed contract
@@ -88,11 +90,12 @@ public final class RuntimeBindingSetGenerator {
         List<CompositionContract> childContracts = signed.contract().childContracts().stream()
                 .sorted(Comparator.comparing(contract -> contract.contractId().toString()))
                 .toList();
+        requireIdentityInputs(childContracts, safe);
         RuntimeBinding root = rootBinding(rootContract, childContracts, safe);
         List<RuntimeBinding> bindings = new ArrayList<>();
         bindings.add(root);
         for (CompositionContract child : childContracts) {
-            bindings.add(childBinding(child, safe));
+            bindings.add(childBinding(child, signed.contract().bindingPlan(), safe));
         }
         validate(root, bindings, rootContract, childContracts);
         Map<String, Object> wrapper = new LinkedHashMap<>();
@@ -127,10 +130,12 @@ public final class RuntimeBindingSetGenerator {
         extensions.put("providerCapability", rootContract.binding().providerCapability());
         extensions.put(RuntimeBindingMetadata.EXT_CONTAINS, contains);
         return binding(
-                URI.create(options.bindingIdPrefix() + ":" + options.tenant() + ":dev"),
+                URI.create(options.bindingIdPrefix() + ":" + options.tenant() + ":" + slug(options.environment())),
                 rootContract,
                 DeploymentKind.IN_PROCESS,
                 null,
+                conventionalEndpointRef(rootContract, options),
+                conventionalCredentialsRef(rootContract, options),
                 new Configuration(Map.of(
                         "signed_contract_ref", "config://" + options.tenant() + "/contracts/signed-contract",
                         "substrate_profile_ref", "config://" + options.tenant() + "/substrate-profile",
@@ -142,35 +147,140 @@ public final class RuntimeBindingSetGenerator {
     }
 
     /**
-     * Leaf assembler: creates a runtime binding for one child DCP contract.
+     * Leaf assembler: creates a runtime binding for one child DCP contract. Identity-provider contracts are delegated to
+     * {@link #identityBinding}, because the customer IdP is an external system with operator-supplied settings rather than a
+     * Flow or Foundry endpoint.
      */
-    private RuntimeBinding childBinding(CompositionContract contract, Options options) {
+    private RuntimeBinding childBinding(CompositionContract contract, BindingPlan plan, Options options) {
+        if (IdentityBindingRule.isIdentity(contract)) {
+            return identityBinding(contract, plan, options);
+        }
         String capability = contract.binding().providerCapability();
-        Map<String, Object> extensions = new LinkedHashMap<>();
-        extensions.put("dcpType", "RUNTIME_BINDING_CHILD");
-        extensions.put("level", "RUNTIME_CAPABILITY");
-        extensions.put("sourceContractId", contract.contractId().toString());
-        extensions.put("providerCapability", capability);
+        URI baseUrl = endpointFor(capability, options);
         return binding(
                 childBindingId(contract, options),
                 contract,
-                deploymentKind(contract),
-                endpointFor(capability, options),
+                deploymentKind(contract, plan),
+                baseUrl,
+                null,
+                conventionalCredentialsRef(contract, options),
                 new Configuration(Map.of(
                         "capability", capability,
                         "endpoint_ref", "config://" + options.tenant() + "/dcp/" + slug(capability) + "/endpoint")),
-                new RuntimeBindingMetadata(extensions),
+                childMetadata(contract),
                 options);
     }
 
     /**
-     * Binding factory: maps a DCP contract and environment options into a schema runtime binding.
+     * Leaf assembler for the identity-provider binding (HLD-needs-driven-identity §5, §6). It carries the operator's issuer,
+     * audiences and claim names as values, the token endpoint and verification keys as typed config references, the token
+     * endpoint as the provider endpoint reference, and the host's client credentials as the credentials reference. The inputs
+     * are complete here, because {@link #requireIdentityInputs} refuses the run otherwise. It never has a base URL: the
+     * identity provider is reached only through references.
+     */
+    private RuntimeBinding identityBinding(CompositionContract contract, BindingPlan plan, Options options) {
+        IdentityOptions identity = options.identity();
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("capability", contract.binding().providerCapability());
+        values.put("issuer", identity.issuer());
+        values.put("audiences", identity.audiences());
+        Map<String, Object> claims = new LinkedHashMap<>();
+        claims.put("tenant", identity.tenantClaim());
+        claims.put("roles", identity.rolesClaim());
+        claims.put("permissions", identity.permissionsClaim());
+        values.put("claims", claims);
+        ConfigRef endpointRef = new ConfigRef(identity.tokenEndpointRef());
+        Map<String, ConfigRef> refs = new LinkedHashMap<>();
+        refs.put("token_endpoint", endpointRef);
+        refs.put("verification_keys", new ConfigRef(identity.verificationKeysRef()));
+        return binding(
+                childBindingId(contract, options),
+                contract,
+                deploymentKind(contract, plan),
+                null,
+                endpointRef,
+                new SecretRef(identity.clientCredentialsRef()),
+                new Configuration(values, refs),
+                childMetadata(contract),
+                options);
+    }
+
+    /**
+     * Precondition guard (HLD-needs-driven-identity §6): fails before any binding is built when the identity inputs and the
+     * composition disagree. The environment plays no part. A composition with an {@code identity-context} contract has
+     * identity because its needs required it, and every capability in the needs is mandatory, so every identity input is
+     * required. A composition without one has no identity, so inputs are refused rather than silently dropped. The audiences
+     * must cover exactly the protected services the compiler recorded on the identity contract
+     * ({@link IdentityBindingRule#protectedServices}), and the issuer must pass {@link IdentityBindingRule#secureIssuer}.
+     * Every problem is reported in one message.
+     */
+    private void requireIdentityInputs(List<CompositionContract> childContracts, Options options) {
+        IdentityOptions identity = options.identity();
+        List<CompositionContract> identityContracts = childContracts.stream().filter(IdentityBindingRule::isIdentity).toList();
+        if (identityContracts.isEmpty()) {
+            if (!identity.absent()) {
+                throw new IllegalStateException("identity inputs were supplied, but the composition has no "
+                        + IdentityBindingRule.CAPABILITY + " contract; add " + IdentityBindingRule.CAPABILITY
+                        + " to the needs so the identity provider component is selected, or leave the identity inputs out");
+            }
+            return;
+        }
+        List<String> problems = new ArrayList<>();
+        List<String> missing = identity.missing();
+        if (!missing.isEmpty()) {
+            problems.add("missing identity inputs: " + String.join(", ", missing));
+        }
+        if (identity.issuer() != null && !IdentityBindingRule.secureIssuer(identity.issuer())) {
+            problems.add("identity issuer '" + identity.issuer()
+                    + "' must be an absolute https URI (http is allowed only on localhost)");
+        }
+        for (CompositionContract contract : identityContracts) {
+            var protectedServices = IdentityBindingRule.protectedServices(contract);
+            if (protectedServices.isEmpty()) {
+                problems.add("the signed contract does not record which services need " + IdentityBindingRule.CAPABILITY
+                        + "; compile the composition again");
+            } else {
+                IdentityBindingRule.coverageProblems(identity.audiences().keySet(), protectedServices.get())
+                        .forEach(problem -> problems.add("audiences: " + problem));
+            }
+        }
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException("the composition's needs require " + IdentityBindingRule.CAPABILITY
+                    + ", so its identity binding is mandatory; " + String.join("; ", problems));
+        }
+    }
+
+    /** Metadata factory: the child-binding extension block shared by every leaf binding. */
+    private RuntimeBindingMetadata childMetadata(CompositionContract contract) {
+        Map<String, Object> extensions = new LinkedHashMap<>();
+        extensions.put("dcpType", "RUNTIME_BINDING_CHILD");
+        extensions.put("level", "RUNTIME_CAPABILITY");
+        extensions.put("sourceContractId", contract.contractId().toString());
+        extensions.put("providerCapability", contract.binding().providerCapability());
+        return new RuntimeBindingMetadata(extensions);
+    }
+
+    /** Convention: the tenant-scoped endpoint reference for a contract whose provider has no base URL. */
+    private ConfigRef conventionalEndpointRef(CompositionContract contract, Options options) {
+        return new ConfigRef("config://" + options.tenant() + "/dcp/" + slug(contract.binding().providerCapability()) + "/endpoint");
+    }
+
+    /** Convention: the tenant-scoped provider-access secret reference, resolved by the deployment environment. */
+    private SecretRef conventionalCredentialsRef(CompositionContract contract, Options options) {
+        return new SecretRef("secret://" + options.tenant() + "/provider-access/" + instanceName(contract));
+    }
+
+    /**
+     * Binding factory: maps a DCP contract and environment options into a schema runtime binding. The provider endpoint is
+     * either a base URL or an endpoint reference; credentials are always a reference.
      */
     private RuntimeBinding binding(
             URI bindingId,
             CompositionContract contract,
             DeploymentKind deploymentKind,
             URI baseUrl,
+            ConfigRef endpointRef,
+            SecretRef credentialsRef,
             Configuration configuration,
             RuntimeBindingMetadata metadata,
             Options options
@@ -186,9 +296,8 @@ public final class RuntimeBindingSetGenerator {
                         instanceName(contract),
                         deploymentKind,
                         baseUrl,
-                        baseUrl == null ? new ConfigRef("config://" + options.tenant() + "/dcp/"
-                                + slug(contract.binding().providerCapability()) + "/endpoint") : null,
-                        new SecretRef("secret://" + options.tenant() + "/provider-access/" + instanceName(contract))),
+                        baseUrl == null ? endpointRef : null,
+                        credentialsRef),
                 new ConsumerInstance(
                         contract.parties().consumer().claimUri(),
                         contract.parties().consumer().claimVersion(),
@@ -204,7 +313,8 @@ public final class RuntimeBindingSetGenerator {
     }
 
     /**
-     * Validation adapter: applies DCP runtime-binding tree validation before any YAML is emitted.
+     * Validation adapter: applies DCP runtime-binding tree validation, then {@link IdentityBindingRule} to each identity
+     * binding, before any YAML is emitted.
      */
     private void validate(
             RuntimeBinding root,
@@ -218,15 +328,19 @@ public final class RuntimeBindingSetGenerator {
         contractsById.put(rootContract.contractId(), rootContract);
         childContracts.forEach(contract -> contractsById.put(contract.contractId(), contract));
         SchemaValidationReport report = new RuntimeBindingValidator().validateTree(root, bindingsById, contractsById);
-        List<Diagnostic> errors = report.diagnostics().stream()
+        List<String> errors = new ArrayList<>(report.diagnostics().stream()
                 .filter(diagnostic -> diagnostic.severity() == Severity.ERROR)
-                .toList();
+                .map(diagnostic -> diagnostic.fieldPath() + ": " + diagnostic.message())
+                .toList());
+        IdentityBindingRule identityRule = new IdentityBindingRule();
+        for (RuntimeBinding binding : bindings) {
+            CompositionContract contract = contractsById.get(binding.contractId());
+            if (IdentityBindingRule.isIdentity(contract)) {
+                identityRule.violations(binding, contract).forEach(violation -> errors.add(binding.bindingId() + " " + violation));
+            }
+        }
         if (!errors.isEmpty()) {
-            String detail = errors.stream()
-                    .map(diagnostic -> diagnostic.fieldPath() + ": " + diagnostic.message())
-                    .reduce((left, right) -> left + "; " + right)
-                    .orElse("runtime binding validation failed");
-            throw new IllegalStateException(detail);
+            throw new IllegalStateException(String.join("; ", errors));
         }
     }
 
@@ -242,18 +356,43 @@ public final class RuntimeBindingSetGenerator {
     }
 
     /**
-     * Deployment-kind strategy: converts the frozen contract transport binding mode into the DCP
-     * runtime binding deployment enum.
+     * Deployment-kind strategy: converts the binding mode of the shape Fabric selected for the contract's provider into the
+     * DCP runtime-binding deployment enum. The binding plan is authoritative because a component that supports several shapes
+     * (for example the Keycloak adapter: container or external) keeps only its catalog default in the contract transport. The
+     * transport mode is used only when the signed closure carries no plan entry for the provider.
      */
-    private DeploymentKind deploymentKind(CompositionContract contract) {
-        Object mode = contract.transport() == null ? null : contract.transport().details().get("bindingMode");
+    private DeploymentKind deploymentKind(CompositionContract contract, BindingPlan plan) {
+        Object mode = planBindingMode(contract, plan);
+        if (mode == null) {
+            mode = contract.transport() == null ? null : contract.transport().details().get("bindingMode");
+        }
         String text = mode == null ? "" : mode.toString().toUpperCase(Locale.ROOT);
         return switch (text) {
             case "CONTAINER" -> DeploymentKind.CONTAINER;
             case "REMOTE_HTTP" -> DeploymentKind.REMOTE_SERVICE;
             case "SIDECAR" -> DeploymentKind.SIDECAR;
+            // A managed adapter fronts a customer-operated external system (for example the identity provider).
+            case "MANAGED_ADAPTER" -> DeploymentKind.EXTERNAL_SAAS;
             default -> DeploymentKind.IN_PROCESS;
         };
+    }
+
+    /**
+     * Plan lookup: the binding mode of the plan entry for this contract's provider artifact and capability, or null when the
+     * plan is absent or has no such entry.
+     */
+    private Object planBindingMode(CompositionContract contract, BindingPlan plan) {
+        if (plan == null || contract.metadata() == null || contract.metadata().extensions() == null) {
+            return null;
+        }
+        Object coordinates = contract.metadata().extensions().get("artifactCoordinates");
+        String capability = contract.binding().providerCapability();
+        return plan.entries().stream()
+                .filter(entry -> entry.artifactCoordinates() != null && entry.artifactCoordinates().equals(coordinates)
+                        && capability.equals(entry.capability()))
+                .map(entry -> entry.bindingMode().name())
+                .findFirst()
+                .orElse(null);
     }
 
     /**
@@ -302,12 +441,15 @@ public final class RuntimeBindingSetGenerator {
     }
 
     /**
-     * Mapper factory: writes public DCP YAML using snake_case and no document marker.
+     * Mapper factory: writes public DCP YAML using snake_case and no document marker. Quotes are minimized, but number-like
+     * strings stay quoted so untyped configuration values (an audience such as {@code "1234"}) are read back as strings by
+     * Flow, Foundry and {@code assembly-bind}'s DCP validation.
      */
     private static ObjectMapper yamlMapper() {
         YAMLFactory factory = new YAMLFactory()
                 .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
-                .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES);
+                .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
+                .enable(YAMLGenerator.Feature.ALWAYS_QUOTE_NUMBERS_AS_STRINGS);
         ObjectMapper mapper = new ObjectMapper(factory);
         mapper.registerModule(new Jdk8Module());
         mapper.registerModule(new JavaTimeModule());
@@ -317,6 +459,75 @@ public final class RuntimeBindingSetGenerator {
         mapper.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);
         mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         return mapper;
+    }
+
+    /**
+     * Value Object: the operator-supplied settings of the identity-provider binding (HLD-needs-driven-identity §5, §6).
+     * Fabric never defaults or derives any of them. Every field is required when the composition has an
+     * {@code identity-context} contract, and none may be given when it has not. Audiences map each protected service's
+     * claim URI to its token audience and are kept sorted by key so generated YAML is deterministic.
+     */
+    public record IdentityOptions(
+            String issuer,
+            Map<String, String> audiences,
+            String tenantClaim,
+            String rolesClaim,
+            String permissionsClaim,
+            String tokenEndpointRef,
+            String verificationKeysRef,
+            String clientCredentialsRef
+    ) {
+        /** Canonicalizes: trims text, drops blank audience entries, and freezes audiences in key order. */
+        public IdentityOptions {
+            issuer = trimmed(issuer);
+            tenantClaim = trimmed(tenantClaim);
+            rolesClaim = trimmed(rolesClaim);
+            permissionsClaim = trimmed(permissionsClaim);
+            tokenEndpointRef = trimmed(tokenEndpointRef);
+            verificationKeysRef = trimmed(verificationKeysRef);
+            clientCredentialsRef = trimmed(clientCredentialsRef);
+            Map<String, String> sorted = new TreeMap<>();
+            if (audiences != null) {
+                audiences.forEach((service, audience) -> {
+                    if (trimmed(service) != null && trimmed(audience) != null) {
+                        sorted.put(service.trim(), audience.trim());
+                    }
+                });
+            }
+            audiences = Collections.unmodifiableMap(sorted);
+        }
+
+        /** Null Object: no identity input supplied (the default; valid only for a composition without identity). */
+        public static IdentityOptions none() {
+            return new IdentityOptions(null, Map.of(), null, null, null, null, null, null);
+        }
+
+        /**
+         * Names of the scalar inputs that are missing, in declaration order. Audiences are not listed: whether they are
+         * complete depends on the composition's protected services, which {@link IdentityBindingRule#coverageProblems}
+         * checks.
+         */
+        public List<String> missing() {
+            List<String> missing = new ArrayList<>();
+            if (issuer == null) missing.add("issuer");
+            if (tenantClaim == null) missing.add("tenantClaim");
+            if (rolesClaim == null) missing.add("rolesClaim");
+            if (permissionsClaim == null) missing.add("permissionsClaim");
+            if (tokenEndpointRef == null) missing.add("tokenEndpointRef");
+            if (verificationKeysRef == null) missing.add("verificationKeysRef");
+            if (clientCredentialsRef == null) missing.add("clientCredentialsRef");
+            return List.copyOf(missing);
+        }
+
+        /** True when no identity input at all is present, audiences included. */
+        public boolean absent() {
+            return missing().size() == 7 && audiences.isEmpty();
+        }
+
+        /** Text helper: trims, mapping blank to null so "supplied" means non-blank. */
+        private static String trimmed(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
+        }
     }
 
     /**
@@ -333,9 +544,10 @@ public final class RuntimeBindingSetGenerator {
             String bindingIdPrefix,
             String flowBaseUrl,
             String foundryBaseUrl,
-            int timeoutMs
+            int timeoutMs,
+            IdentityOptions identity
     ) {
-        /** Default local-dev options used by the Flowfoundry runbook's signed support envelope. */
+        /** Default local-dev options used by the Flowfoundry runbook's signed support envelope; no identity inputs. */
         public static Options defaults() {
             return new Options(
                     Path.of("signed-compiled-contract.yaml"),
@@ -348,11 +560,12 @@ public final class RuntimeBindingSetGenerator {
                     "urn:unfurl:runtime-binding:flowfoundry",
                     "http://flow:8080",
                     "http://foundry:7979",
-                    30000);
+                    30000,
+                    IdentityOptions.none());
         }
 
         /**
-         * Normalizer: applies conservative local defaults without inventing signature metadata.
+         * Normalizer: applies conservative local defaults without inventing signature metadata or identity settings.
          */
         Options normalized() {
             Options defaults = defaults();
@@ -367,7 +580,8 @@ public final class RuntimeBindingSetGenerator {
                     blankToDefault(bindingIdPrefix, defaults.bindingIdPrefix),
                     blankToDefault(flowBaseUrl, defaults.flowBaseUrl),
                     blankToDefault(foundryBaseUrl, defaults.foundryBaseUrl),
-                    timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs);
+                    timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs,
+                    identity == null ? IdentityOptions.none() : identity);
         }
 
         private static String blankToDefault(String value, String fallback) {

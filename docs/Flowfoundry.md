@@ -596,6 +596,29 @@ fabric runtime-bindings \
   --out exports/flowfoundry/runtime-binding.yaml
 ```
 
+When the composition's needs require `identity-context` (HLD-needs-driven-identity), Fabric selects
+the identity provider component (`unfurl-adapter-keycloak`), and the binding needs its settings as
+explicit inputs in every environment. Step 14 fails if any is missing; nothing is defaulted. A
+composition whose needs leave identity out binds to any environment without these inputs:
+
+```bash
+fabric runtime-bindings \
+  --signed-contract exports/flowfoundry/signed-compiled-contract.yaml \
+  --tenant acme --environment production \
+  --flow-base-url https://flow.acme.example --foundry-base-url https://foundry.acme.example \
+  --identity-issuer https://idp.acme.example/realms/acme \
+  --identity-audiences urn:unfurl:foundry=foundry \
+  --identity-tenant-claim tenant --identity-roles-claim roles --identity-permissions-claim permissions \
+  --identity-token-endpoint-ref config://acme/identity/token-endpoint \
+  --identity-verification-keys-ref config://acme/identity/verification-keys \
+  --identity-client-credentials-ref secret://acme/identity/flow-client \
+  --out exports/flowfoundry/runtime-binding.yaml
+```
+
+Studio's `fabric.runtime-binding-generate` step takes the same settings as an `identity` object with
+`issuer`, `audiences` (a map from claim URI to audience), `tenantClaim`, `rolesClaim`,
+`permissionsClaim`, `tokenEndpointRef`, `verificationKeysRef` and `clientCredentialsRef`.
+
 ## Phase 4: Deployment
 
 ## Step 15: Assemble Foundry Deployment Root

@@ -35,7 +35,8 @@ final class AdvisorFixtures {
         return new AdvisorContext(FabricTestFixtures.catalog(rejected),
                 Need.ofRequiredCapabilities(CapabilityRequirement.requiredOf("vector.search", "^1")),
                 new MatchResult.NoMatch(
-                        List.of(new UnmetCapabilityRequirement("vector.search", "^1", null)),
+                        List.of(new UnmetCapabilityRequirement("vector.search", "^1",
+                        UnmetCapabilityRequirement.Reason.NOT_IN_CATALOG, null)),
                         List.of(),
                         List.of()));
     }

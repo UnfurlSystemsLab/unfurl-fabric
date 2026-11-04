@@ -81,4 +81,46 @@ class RefusalAlignmentTest {
         assertThat(validity.isValid()).isFalse();
         assertThat(validity.conflicts()).anyMatch(Conflict.RefusalConflict.class::isInstance);
     }
+
+    /**
+     * Regression: Foundry refuses {@code identity}, and the identity provider component depends on the externally owned
+     * {@code oidc.identity-provider}. A dependency whose capability merely contains the refused concern, or one owned by a
+     * customer system, must not make the concern required, or Foundry + identity provider could never compose.
+     */
+    @Test
+    void onlyAnExactPeerCapabilityMakesARefusedConcernRequired() {
+        CatalogEntry foundry = FabricTestFixtures.entry(
+                "foundry", "agent.run", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS), null,
+                List.of(FabricTestFixtures.refusal("identity")));
+        CatalogEntry identityProvider = FabricTestFixtures.entry(
+                "keycloak-adapter", "identity-context", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.MANAGED_ADAPTER),
+                new Dependencies(List.of("oidc.identity-provider@v1?transport=remote-http&owner=customer-idp",
+                        "identity-audit@v1")), List.of());
+        CatalogEntry audit = FabricTestFixtures.entry("identity-audit", "identity-audit");
+        CatalogEntry customerOwned = FabricTestFixtures.entry(
+                "consumer", "consumer.run", "1.0.0", "com.unfurl", "Unfurl",
+                com.unfurl.dcp.claim.Stability.STABLE,
+                com.unfurl.fabric.catalog.LifecycleStatus.ACTIVE,
+                Set.of(BindingMode.IN_PROCESS),
+                new Dependencies(List.of("identity@v1?owner=customer-idp")), List.of());
+        Need need = new Need(
+                List.of(CapabilityRequirement.requiredOf("agent.run", "^1"),
+                        CapabilityRequirement.requiredOf("identity-context", "^1"),
+                        CapabilityRequirement.requiredOf("consumer.run", "^1")),
+                List.of(),
+                List.of(),
+                Set.of(),
+                null,
+                Map.of());
+
+        CandidateValidity validity = validator.validate(List.of(foundry, identityProvider, audit, customerOwned), need);
+
+        assertThat(validity.isValid()).as(validity.conflicts().toString()).isTrue();
+    }
 }

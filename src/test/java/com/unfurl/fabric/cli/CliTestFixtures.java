@@ -94,6 +94,85 @@ final class CliTestFixtures {
         return target;
     }
 
+    /** Dependency the real Foundry claim declares on identity: it verifies tokens, so it is a protected service. */
+    static final String FOUNDRY_IDENTITY_DEPENDENCY =
+            "identity-context@v1?transport=in-process&shape=com.unfurl.substrate.policy.ExecutionContext&owner=customer-idp";
+
+    /**
+     * Fixture: a Foundry stand-in offering {@code agent.run} whose claim depends on {@code identity-context} as the real
+     * Foundry claim does, so a composition with the identity provider records it as a protected service (HLD-needs-driven-
+     * identity §5). The dependency is externally owned, so compositions without identity still compile.
+     */
+    static Path writeFoundryJar(Path dir, String fileName) throws IOException {
+        return writeCatalogJarWithDependencies(dir, fileName, "agent.run", "agent.run", "\"" + FOUNDRY_IDENTITY_DEPENDENCY + "\"");
+    }
+
+    /** Claim URI of the identity provider component, as published by unfurl-adapter-keycloak. */
+    static final String IDENTITY_PROVIDER_URI = "urn:unfurl:adapter:keycloak";
+
+    /**
+     * Fixture: a catalog jar mirroring the unfurl-adapter-keycloak component (HLD-needs-driven-identity §4): an
+     * INFRASTRUCTURE claim offering {@code identity-context}, deployable as a container (default) or as a managed external
+     * adapter, whose only need is the externally owned relational database. Kept self-contained so Fabric's tests do not
+     * depend on that repository.
+     */
+    static Path writeIdentityProviderJar(Path dir) throws IOException {
+        Files.createDirectories(dir);
+        Path target = dir.resolve("identity-provider.jar");
+        String manifest = """
+                claim:
+                  identity:
+                    uri: %s
+                    name: unfurl-adapter-keycloak
+                    kind: INFRASTRUCTURE
+                    version: 0.1.0
+                    publisher: Unfurl
+                  domain:
+                    summary: Open-source Keycloak as the composition's identity provider.
+                    concerns:
+                      - concern: identity-context
+                        description: Authenticated subjects and their tenant, roles and permissions claims.
+                    boundary_principles:
+                      - Keycloak is integrated, never rebuilt.
+                  refusals:
+                    - concern: authorization-decisions
+                      rationale: The consuming runtime's policy decides what a caller may do.
+                      owned_by: consuming runtime policy
+                  dependencies:
+                    needs:
+                      - "relational-database@v1?transport=jdbc&owner=customer-database"
+                  offers:
+                    - capability: identity-context
+                      description: Authenticated subject plus authorization claims.
+                      consumer_access: ANY
+                      stability: STABLE
+                      version: 1.0.0
+                      metered: false
+                  faults:
+                    emitted: []
+                catalog:
+                  lifecycle:
+                    status: ACTIVE
+                  artifact:
+                    coordinates: com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0
+                    packaging: jar
+                    source: catalog
+                  binding:
+                    default_mode: CONTAINER
+                    supported_modes: [CONTAINER, MANAGED_ADAPTER]
+                  component_shape_profile:
+                    default_shape: CONTAINERIZED_SERVICE
+                    supported_shapes: [CONTAINERIZED_SERVICE, MANAGED_EXTERNAL_ADAPTER]
+                    shape_runtime: {}
+                """.formatted(IDENTITY_PROVIDER_URI);
+        try (JarOutputStream jar = new JarOutputStream(Files.newOutputStream(target))) {
+            jar.putNextEntry(new JarEntry("META-INF/unfurl-catalog.yaml"));
+            jar.write(manifest.getBytes(StandardCharsets.UTF_8));
+            jar.closeEntry();
+        }
+        return target;
+    }
+
     static Path writeNeeds(Path dir, String capability) throws IOException {
         Path target = dir.resolve("needs.yaml");
         Files.writeString(target, """
@@ -126,6 +205,48 @@ final class CliTestFixtures {
             throw new AssertionError(compile.stderr());
         }
 
+        return sign(dir, catalog, needs, compiled);
+    }
+
+    /**
+     * Fixture: compiles and signs a Foundry composition ({@code agent.run}), optionally with the identity provider component,
+     * so runtime-binding generation sees an identity-context child contract exactly as a real release would.
+     */
+    static SignedPaths compileAndSignFoundry(Path dir, boolean withIdentity) throws IOException {
+        return compileAndSignFoundry(dir, withIdentity, null);
+    }
+
+    /**
+     * Fixture variant: compiles with an optional deployment-policy file, so a test can make Fabric select a non-default shape
+     * (for example the Keycloak adapter's external shape).
+     */
+    static SignedPaths compileAndSignFoundry(Path dir, boolean withIdentity, Path deploymentPolicy) throws IOException {
+        Path catalog = dir.resolve("catalog");
+        writeFoundryJar(catalog, "agent.jar");
+        StringBuilder needsText = new StringBuilder("""
+                requiredCapabilities:
+                  - capability: agent.run
+                    capabilityVersion: ^1
+                """);
+        if (withIdentity) {
+            writeIdentityProviderJar(catalog);
+            needsText.append("""
+                      - capability: identity-context
+                        capabilityVersion: ^1
+                    """);
+        }
+        Path needs = dir.resolve("needs.yaml");
+        Files.writeString(needs, needsText, StandardCharsets.UTF_8);
+        Path compiled = dir.resolve("compiled.yaml");
+        java.util.List<String> argv = new java.util.ArrayList<>(java.util.List.of("compile", "--catalog", catalog.toString(),
+                "--needs", needs.toString(), "--out", compiled.toString()));
+        if (deploymentPolicy != null) {
+            argv.addAll(java.util.List.of("--deployment-policy", deploymentPolicy.toString()));
+        }
+        CliRun compile = run(argv.toArray(String[]::new));
+        if (compile.exitCode() != 0) {
+            throw new AssertionError(compile.stderr());
+        }
         return sign(dir, catalog, needs, compiled);
     }
 

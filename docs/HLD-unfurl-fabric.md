@@ -36,13 +36,21 @@
 ## Core Flow
 
 1. Catalog scan reads component artifacts and produces content-pinned catalog entries. Studio upload admission follows the same manifest model: when an uploaded artifact contains `catalog.component_shape_profile`, the visual read model persists that profile metadata so restart, snapshot, compile, and deployment resolution do not degrade product runtimes to visual fallback shapes.
-2. Needs loading parses the required capabilities and constraints.
+2. Needs loading parses the required capabilities and constraints. Every capability in the needs is mandatory: one that
+   no allowed catalog entry satisfies fails planning and compilation with its reason (not in the catalog, offered only at
+   other versions, without the required offer details, or only by trust-rejected entries) and the fix, and an invalid
+   candidate reports each distinct conflict, including a selected component's unmet claim dependency with the component
+   named (`NoMatchExplanation`; HLD-needs-driven-identity §3). Identity is one such capability: a composition has
+   authentication and authorization exactly when its needs require `identity-context` (HLD-needs-driven-identity).
 3. Matching creates composition candidates and validates dependency bindings. Dependencies marked `owner=host`, `owner=fabric`, `owner=customer-controlled`, or a concrete customer owner such as `owner=customer-idp` are external runtime/profile bindings, not peer catalog gates. The binding must still be preserved in the candidate audit and deployment handoff so production packaging can require the real customer system.
+   Refusal alignment: a concern one selected component refuses becomes required (some selected component must offer a capability of that exact name) when the needs list it under `refusalExpectations`, or when another selected component's peer dependency names it as its capability, that is the part of the dependency URI before `@` and `?`. Matching is exact, never a substring, so a dependency such as `oidc.identity-provider@v1` does not make Foundry's refused `identity` concern required. Externally owned dependencies never make a concern required, because the customer system they name is bound outside the catalog.
 4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
 5. Deployment resolution selects supported runtime shapes and records rejected shapes. Product runtimes such as Flow and Foundry must resolve from their catalog `component_shape_profile`; substrate libraries and adapters may resolve in-process when they are bundled inside those product runtimes.
 6. Substrate profile derivation emits the required runtime profile without secret values.
 7. Compilation writes a light unsigned root DCP contract, the substrate profile, and support/diagnostic compiler
-   envelopes. The full `CompiledContract` remains useful for Fabric explain/replay tooling, but it is not the default
+   envelopes. Each child contract's metadata records `neededBy`: the sorted claim URIs of the other selected components
+   whose claims depend on its capability, so later steps (for example identity audience coverage,
+   HLD-needs-driven-identity §5) read that fact from the signed contract. The full `CompiledContract` remains useful for Fabric explain/replay tooling, but it is not the default
    deployment handoff.
 8. Signing freezes the root DCP contract as the primary signed handoff artifact. When downstream Fabric tools still need
    selection audit, binding plan, or child-contract closure, Studio also emits a signed compiled-envelope support
