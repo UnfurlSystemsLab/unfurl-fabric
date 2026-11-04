@@ -1,0 +1,4 @@
+# Launch scripts keep the line endings their shells need, whatever core.autocrlf is set to:
+# bash fails on CRLF, and cmd.exe batch files are safest with CRLF.
+*.sh  text eol=lf
+*.bat text eol=crlf

@@ -36,23 +36,25 @@ real agent run is not covered here.
 You need Java 21, Maven, and Git for Windows, which supplies `openssl`. To start an exported package
 you also need Docker with Compose 2.24.4 or later.
 
-Build everything once. If Fabric is running from its jar, stop it first, because the build replaces
-that file.
+Build everything once. The catalog needs the Foundry, Flow, adapter and substrate jars, not just
+Fabric's. If Fabric is running from its jar, stop it first, because the build replaces that file.
 
 ```powershell
 mvn -q package -DskipTests
 ```
 
-Then set up your session. This creates a work folder and a `fabric` command:
+Then set up your session. This creates a work folder, and a `fabric` command that runs Fabric's CLI
+through its launch script, `unfurl-fabric\launch.ps1`. The script checks for Java 21 and rebuilds
+Fabric's jar if it's missing.
 
 ```powershell
 $work = "$env:TEMP\foundry-assembly"
 New-Item -ItemType Directory -Force "$work\catalog", "$work\keys\trust" | Out-Null
 
-$examples  = 'unfurl-fabric\docs\examples\foundry-assemblies'
-$fixtures  = 'unfurl-e2e\fixtures'
-$fabricJar = (Resolve-Path unfurl-fabric\target\unfurl-fabric-studio-server.jar).Path
-function fabric { java -cp $fabricJar com.unfurl.fabric.cli.FabricCli @args }
+$examples = 'unfurl-fabric\docs\examples\foundry-assemblies'
+$fixtures = 'unfurl-e2e\fixtures'
+$launch   = (Resolve-Path unfurl-fabric\launch.ps1).Path
+function fabric { & $launch cli @args }
 
 function Wait-ForHealth($url) {
     foreach ($attempt in 1..60) {
@@ -67,6 +69,10 @@ function Assert-PortFree($port) {
     }
 }
 ```
+
+If PowerShell says that running scripts is disabled, allow local scripts for your account with
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then try again. From `cmd.exe`, use
+`unfurl-fabric\launch.bat` instead, which takes the same arguments.
 
 ## 1. Create the catalog
 
@@ -260,13 +266,17 @@ This route uses the Studio API to create the bundle. It starts a separate Studio
 own state file, so it doesn't touch a Fabric you already have running. It reuses `$work`, the catalog
 and the keys from above.
 
-**Start Studio with signing keys.** Without them, Studio exports unsigned files.
+**Start Studio with signing keys.** Without them, Studio exports unsigned files. The launch script
+runs in a hidden window, and its output goes to `$work\studio.log` and `$work\studio-error.log`; look
+there if Studio doesn't respond.
 
 ```powershell
 Assert-PortFree 7879
 $env:UNFURL_STUDIO_SIGNING_PRIVATE_KEY = "$work\keys\private.pem"
 $env:UNFURL_STUDIO_SIGNING_PUBLIC_KEY  = "$work\keys\public.pem"
-$studio = Start-Process java -PassThru -WindowStyle Hidden -ArgumentList '-jar', "`"$fabricJar`"", '--port', '7879', '--state-path', "`"$work\studio-state.json`""
+$studio = Start-Process powershell.exe -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput "$work\studio.log" -RedirectStandardError "$work\studio-error.log" `
+    -ArgumentList '-NoProfile', '-File', "`"$launch`"", '--port', '7879', '--state-path', "`"$work\studio-state.json`""
 
 $api = 'http://127.0.0.1:7879'
 $tenant = 'demo'
@@ -351,10 +361,11 @@ Save-Artifact $compile.signedContractArtifact 'signed-contract.json'
 Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'signed-compiled-contract*') 'signed-compiled-contract.yaml'
 Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'dcp-runtime-bundle*') 'dcp-runtime-bundle.zip'
 
-Stop-Process -Id $studio.Id
+taskkill /pid $studio.Id /t /f | Out-Null
 ```
 
-`$compile.status` should be `COMPILED`.
+`$compile.status` should be `COMPILED`. `taskkill /t` stops the launch script and the Java process it
+started; `Stop-Process` would stop only the script and leave Studio holding port 7879.
 
 **Build the deployment package.** Foundry's deployment folder is mounted read-only, so the running
 service never writes into your checkout.
