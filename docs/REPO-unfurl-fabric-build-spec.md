@@ -111,7 +111,8 @@ assembly-verify-binding
 - `plan`/`compile` resolve host placement and companions; `compile` writes the host as consumer and
   `companionArtifacts` on hosted child contracts.
 - `sign --dcp-runtime-bundle <zip>` writes the DCP runtime bundle with Studio's writer.
-- `runtime-bindings --component-config <claimUri>#<key>=config://…` supplies declared configuration references;
+- `scan` reads each jar's packaged `META-INF/unfurl-config.yaml` schema; `runtime-bindings --component-config
+  <claimUri>#<key>=<value|config://…|secret://…>` supplies the deployment layer, validated with DCP's schema validator;
   hosted bindings are `IN_PROCESS` with no endpoint.
 - `emit` passes the catalog as `componentArtifactsPath` for the admitted-component overlay.
 - `verify --catalog` checks companion drift; `explain-deployment` prints `host=` and `companionArtifacts=`.
