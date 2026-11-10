@@ -104,6 +104,19 @@ assembly-bind
 assembly-verify-binding
 ```
 
+**Proposed: hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands):
+
+- `scan` indexes companion jars by `pom.properties` and reports `companions=N`; identical bytes deduplicate, and
+  different bytes under the same coordinates are `CATALOG_COMPANION_CONFLICT`, naming both files.
+- `plan`/`compile` resolve host placement and companions; `compile` writes the host as consumer and
+  `companionArtifacts` on hosted child contracts.
+- `sign --dcp-runtime-bundle <zip>` writes the DCP runtime bundle with Studio's writer.
+- `runtime-bindings --component-config <claimUri>#<key>=config://…` supplies declared configuration references;
+  hosted bindings are `IN_PROCESS` with no endpoint.
+- `emit` passes the catalog as `componentArtifactsPath` for the admitted-component overlay.
+- `verify --catalog` checks companion drift; `explain-deployment` prints `host=` and `companionArtifacts=`.
+- Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.ownerOf`.
+
 ## Build Outputs
 
 Typical contract flow outputs:
