@@ -26,11 +26,14 @@ and the other repos.
 | Export a Foundry-only package that starts | Works in development mode, without authentication | [Command line](#start-a-foundry-only-package) |
 | Publish a reusable `flow-foundry`, `flow-only` or `foundry-only` assembly | Works | [Publish](#publish-a-reusable-assembly) |
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
+| Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
+| Run the Kotak Neo reads inside Foundry | **Needs a host connector** | The adapter's [host connection guide](../../../../unfurl-adapter-kotak-neo/docs/HOST-CONNECTION.md) |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
-November 2026, and Foundry on its own reported healthy and ready. No agent or model call was made, so
-a real agent run is not covered here.
+November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo steps were run on 10
+November 2026 up to `emit`. No agent, model or broker call was made, so a real agent run is not
+covered here.
 
 ## Before you start
 
@@ -102,6 +105,9 @@ fabric list-capabilities --catalog "$work\catalog"
 The domain, ports, offers, events, resolver and serialization modules are also in the catalog. They
 are shared libraries, so you normally don't choose them.
 
+The [Kotak Neo example](#example-add-the-kotak-neo-adapter) adds one more jar, `kotak-neo-core`,
+which offers `portfolio.holdings.list`, `portfolio.mtf-holdings.list` and `gtt.instructions.list`.
+
 ## 2. Choose a combination
 
 There are two ways to run Foundry:
@@ -151,6 +157,7 @@ Pick a needs file:
 | Foundry + Flow + adapter | `$examples\needs\foundry-flow-spring-ai.yaml` | Foundry, Flow, Spring AI adapter | Service |
 | Foundry + Flow + separate RAG | `$examples\needs\foundry-flow-separate-rag.yaml` | Foundry, Flow, RAG, Spring AI adapter | Service |
 | Foundry + Flow + identity provider | `$examples\needs\foundry-flow-identity.yaml` | Foundry, Flow, identity provider | Service, with authentication through Keycloak |
+| Foundry + Kotak Neo adapter | `$examples\needs\foundry-kotak-neo.yaml` | Foundry, Kotak Neo adapter | Service, with the adapter in-process. Needs the [Kotak Neo jar](#example-add-the-kotak-neo-adapter) in the catalog |
 | Everything | `$fixtures\needs-all-shapes.yaml` | Two valid choices, see below | Service and embedded |
 
 To make your own, copy one of these files. Use `^0.1` as the version, because every component is at
@@ -270,6 +277,7 @@ What you get depends on the combination:
 | Foundry only | `docker-compose.yaml` with the Foundry service alone, and `flow-runtime-profile.yaml` | Helm chart and manifests |
 | Foundry + Flow | `docker-compose.yaml` and `flow-runtime-profile.yaml` | Helm chart and manifests |
 | Foundry + Flow with substrates | `docker-compose.yaml` and `flow-runtime-profile.yaml` | Fails: same reason as embedded |
+| Foundry + Kotak Neo adapter | `docker-compose.yaml` with the Foundry service alone, and `flow-runtime-profile.yaml` | Fails: same reason as embedded |
 
 `target-local-images.yaml` sets real Docker image names. Without it, the `local` preset writes catalog
 coordinates into `image:`, and Docker can't use them.
@@ -521,6 +529,76 @@ If you see `flow deployment has unbound workflow capabilities`, a workflow uses 
 doesn't provide. Flow does this on purpose, so it can't start with work it can't run. Check your
 `--flow-workflows` folder.
 
+## Example: add the Kotak Neo adapter
+
+This example adds a component from outside the Foundry repos, the read-only
+[Kotak Neo adapter](../../../../unfurl-adapter-kotak-neo/README.md), and shows the claims-versus-needs
+split from [Choose a combination](#2-choose-a-combination) at work. The adapter reads broker
+holdings, margin-funded holdings and GTT instructions. It never places trades. It runs in-process in
+the app that admits it, and Foundry exposes its reads to agents as tools.
+
+The adapter is its own Maven build, outside the root reactor. Build it, then add its core jar to the
+catalog. Only the core jar carries a claim; the HTTP and Foundry jars are wired by the host.
+
+```powershell
+mvn -q -f unfurl-adapter-kotak-neo\pom.xml package -DskipTests
+Copy-Item unfurl-adapter-kotak-neo\kotak-neo-core\target\kotak-neo-core-0.1.0-SNAPSHOT.jar "$work\catalog"
+fabric scan --catalog "$work\catalog"
+```
+
+`scan` should now print `entries=18`. The adapter build takes `unfurl-dcp` and the Foundry substrate
+ports from your local Maven cache. If Maven says it can't find them, run the root build with
+`install` instead of `package` first.
+
+**What the jar's claim says.** It offers the three read capabilities, and it needs seven host ports:
+identity and account authorization, the Kotak session, runtime configuration, the read port, audit,
+telemetry and read admission. Each is declared like `host.audit@v1?owner=host`. The `owner=host`
+qualifier makes it a runtime binding the host supplies, so no catalog component has to offer it and
+the needs file doesn't list it.
+
+**What you write.** [needs/foundry-kotak-neo.yaml](needs/foundry-kotak-neo.yaml) asks for
+`agent.run` and the three reads:
+
+```powershell
+$needs = "$examples\needs\foundry-kotak-neo.yaml"
+fabric plan --catalog "$work\catalog" --needs $needs
+```
+
+```text
+EXACT
+cand-… entries=com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT,com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+```
+
+Compile, sign and verify as in [Compile and sign](#3-compile-and-sign). `compile` places Foundry as a
+container and the adapter as an in-process library:
+
+```text
+deploymentShapes={com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT=IN_PROCESS_LIBRARY, com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT=CONTAINERIZED_SERVICE}
+```
+
+`verify` should end with `overallOk=true`. `emit` with the `local` target writes a
+`docker-compose.yaml` with the Foundry service alone, because an in-process library has no container
+of its own. `k8s-dev` fails for the same reason as the embedded combinations.
+
+**Running the reads needs a host connector.** A compiled contract doesn't prove the host ports are
+bound, and the exported Foundry container doesn't load the adapter. The adapter is activated in the
+host through its [guided host connection](../../../../unfurl-adapter-kotak-neo/docs/HOST-CONNECTION.md),
+which binds each host port, admits each read through the DCP broker and registers the reads as
+Foundry tools. That step needs a connector from your host owner: until one is supplied it reports
+`HOST_CONNECTOR_REQUIRED`. The runtime bindings from `fabric runtime-bindings` aren't enough either:
+the adapter requires a `configuration.values.adapterConfig` ConfigRef, which they don't contain (see
+the adapter's [integration guide](../../../../unfurl-adapter-kotak-neo/docs/INTEGRATION.md)).
+
+**What will remove this limit.** A general way for Foundry to host such a component is designed but
+**not implemented yet**:
+- **DCP:** the host rules, including configuration packaged in the jar
+  (`unfurl-dcp/docs/HLD-C-dcp-v0.2-internal.md` §6.1).
+- **Foundry:** Foundry's part as a host ([HLD](../../../../unfurl-foundry/docs/HLD-admitted-component-host.md)).
+- **Fabric:** placement, companion pins and the emitted overlay ([HLD](../../HLD-in-process-component-hosting.md)).
+
+Once it is, Foundry admits the adapter at startup from the emitted package, and you supply only the
+account alias and session reference. Until then, use the host connection above.
+
 ## Publish a reusable assembly
 
 Publishing stores a finished combination as a versioned, signed release. Anyone can verify it without
@@ -616,6 +694,7 @@ compiled contract that includes Flow into this family fails, because the family 
 | The command line can't create `dcp-runtime-bundle.zip` | Only Studio's compile produces it | Use the Studio route |
 | A package with the Keycloak container can't start | The emitter writes a placeholder Keycloak service; it doesn't yet set the Keycloak image or run the adapter's realm provisioning | Leave `identity-context` out of the needs for local runs, or bind an existing Keycloak with `deployment-policy-external-keycloak.yaml` |
 | Flow can't call a secured Foundry | Flow sends no JWT and puts its context in the request body, which Foundry's secured profile rejects | Use `compose-development.yaml` on a trusted machine |
+| The Kotak Neo reads can't run from an exported package | The Foundry server has no API for installing the adapter, so its host connection needs a connector the host owner supplies, and Fabric's runtime bindings carry no `adapterConfig` ConfigRef | Stop at the signed contract, or supply a host connector as the adapter's [host connection guide](../../../../unfurl-adapter-kotak-neo/docs/HOST-CONNECTION.md) describes |
 
 **These are easy to trip over:**
 
