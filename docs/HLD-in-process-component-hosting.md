@@ -19,8 +19,8 @@ and `gtt.instructions.list`, binds `IN_PROCESS`, and needs seven `owner=host` po
 | The runtime binding carries what the component requires | A generic `endpoint_ref` and a development `base_url` (`http://foundry:7979/dcp/<capability>`), and none of the component's configuration (Kotak: its account alias and session reference). | Kotak's factory denies (`KotakInvocableFactory:41`); under DCP rule 8, `CONFIG_REQUIRED_MISSING` |
 | The host receives the pinned jars, contracts and bindings | `emit` mounts the operator's Foundry root only. | nothing to load |
 
-Two rules DCP now owns are also still private to Fabric: the canonical claim hash
-(`CatalogManifestCodec.computeClaimHash`) and the `owner=` qualifier (`CandidateValidator.ownerMarker`).
+Two rules DCP now owns, the canonical claim hash and the `owner=` qualifier, were private to Fabric; they now
+delegate to DCP (§9, done).
 
 ## 2. Scope
 
@@ -214,12 +214,14 @@ How the overlay reaches its host depends on the host:
 - **Refused.** A rendered host the target cannot mount into (Kubernetes in this slice) fails with
   `HOSTED_COMPONENT_TARGET_UNSUPPORTED`. Kubernetes delivery is a separate design.
 
-## 9. Delegating to DCP's shared rules
+## 9. Delegating to DCP's shared rules  (done)
 
 `CatalogManifestCodec.computeClaimHash` delegates to DCP `ClaimHash.canonical`, and
-`CandidateValidator.ownerMarker`/`isExternallyOwnedDependency` to DCP `Dependencies.ownerOf`/`isExternallyOwned`. A
-test computes the hash of every catalog fixture both ways before the switch and requires identical results, so no
-existing pin changes.
+`CandidateValidator.isExternallyOwnedDependency` to DCP `Dependencies.isExternallyOwned` (which reads the qualifier
+with `Dependencies.ownerOf`); Fabric's private canonical mapper and `ownerMarker` parser are deleted. Before the switch,
+a one-off check hashed all 28 claims reachable to the build (Fabric's catalog fixtures and every packaged
+`com.unfurl` claim) both ways and found them identical, so no existing pin changes; DCP's `ClaimHashTest` now pins the
+canonical bytes with a golden value.
 
 ## 10. Plan, explain and diagnostics
 

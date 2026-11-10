@@ -4,7 +4,6 @@ import com.unfurl.fabric.artifact.ArtifactDescriptor;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -13,31 +12,29 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.unfurl.dcp.claim.Claim;
+import com.unfurl.dcp.claim.ClaimHash;
 import com.unfurl.deployment.domain.ComponentShapeProfile;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 
 /**
  * Reads META-INF/unfurl-catalog.yaml — the two-block manifest separating a pure DCP claim
- * from catalog-only metadata (lifecycle, artifact, binding). Provides canonical claim-hash
- * computation. Used by CatalogScanner; never executes catalog JAR code.
+ * from catalog-only metadata (lifecycle, artifact, binding). Exposes the canonical claim hash,
+ * which is DCP's {@link ClaimHash#canonical} rule. Used by CatalogScanner; never executes catalog JAR code.
  *
- * <p>Pattern: <b>Codec/DTO mapper</b> with two purpose-built Jackson mappers — a lenient reader for
- * manifests and a strict <b>canonical</b> mapper (sorted keys/properties) for reproducible claim hashing.
- * Internal {@link ManifestEnvelope}/{@link CatalogBlock} DTOs decouple the wire schema from domain types.
+ * <p>Pattern: <b>Codec/DTO mapper</b> with one lenient Jackson reader for manifests. Claim hashing
+ * delegates to DCP so the composer and every in-process host compute one value (DCP LLD,
+ * <em>In-Process Component Host</em>). Internal {@link ManifestEnvelope}/{@link CatalogBlock} DTOs
+ * decouple the wire schema from domain types.
  */
 public final class CatalogManifestCodec {
 
     /** Lenient YAML mapper for reading manifests (ignores unknown fields). */
     private final ObjectMapper yamlMapper;
-    /** Strict, deterministic mapper used only for canonical claim serialization/hashing. */
-    private final ObjectMapper canonicalClaimMapper;
 
-    /** Construct the codec, building both the lenient and canonical mappers once. */
+    /** Construct the codec, building the lenient manifest mapper once. */
     public CatalogManifestCodec() {
         this.yamlMapper = buildYamlMapper();
-        this.canonicalClaimMapper = buildCanonicalClaimMapper();
     }
 
     /**
@@ -79,8 +76,8 @@ public final class CatalogManifestCodec {
 
     /**
      * Computes the canonical claim hash used by the catalog and the compiled contract to pin
-     * the exact claim bytes the planner observed. Serialization uses the canonical claim mapper
-     * to guarantee determinism (sorted properties, no flow-style aliasing, UTF-8).
+     * the exact claim bytes the planner observed. Delegates to DCP's {@link ClaimHash#canonical},
+     * the single definition a host recomputes before admitting an in-process provider.
      *
      * @param claim the claim to hash.
      * @return the lowercase hex SHA-256 of the canonical claim bytes.
@@ -88,10 +85,9 @@ public final class CatalogManifestCodec {
      */
     public String computeClaimHash(Claim claim) {
         try {
-            byte[] canonical = canonicalClaimMapper.writeValueAsBytes(claim);
-            return Sha256.hexLower(canonical);
-        } catch (IOException ex) {
-            throw new CatalogScanException("unable to canonicalize claim: " + ex.getMessage(), ex);
+            return ClaimHash.canonical(claim);
+        } catch (IllegalArgumentException ex) {
+            throw new CatalogScanException(ex.getMessage(), ex);
         }
     }
 
@@ -112,28 +108,8 @@ public final class CatalogManifestCodec {
         mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         // Canonical DCP wire format is snake_case (HLD-C2 §H). Align the manifest reader with the
         // snake_case admission validator (StudioClaimAdmissionValidator) so both Fabric parse paths
-        // bind identical fields. The canonical claim-hash mapper is deliberately left unchanged.
+        // bind identical fields. The canonical claim hash (DCP ClaimHash) deliberately keeps record names.
         mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        return mapper;
-    }
-
-    /**
-     * Build the strict canonical mapper for claim hashing: map entries and properties sorted
-     * alphabetically and line splitting disabled, so identical claims always serialize identically.
-     *
-     * @return the configured canonical mapper.
-     */
-    private static ObjectMapper buildCanonicalClaimMapper() {
-        YAMLFactory yamlFactory = new YAMLFactory()
-                .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
-                .disable(YAMLGenerator.Feature.SPLIT_LINES);
-        ObjectMapper mapper = new ObjectMapper(yamlFactory);
-        mapper.registerModule(new Jdk8Module());
-        mapper.registerModule(new JavaTimeModule());
-        mapper.enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
-        mapper.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
         return mapper;
     }
 
@@ -209,29 +185,5 @@ public final class CatalogManifestCodec {
             data = new byte[0];
         }
         return Sha256.hexLower(data);
-    }
-
-    /**
-     * UTF-8 canonical bytes of a Claim — used both for hashing and for direct byte comparison.
-     *
-     * @param claim the claim to canonicalize.
-     * @return the canonical UTF-8 bytes.
-     * @throws CatalogScanException if the claim cannot be canonicalized.
-     */
-    public byte[] canonicalClaimBytes(Claim claim) {
-        try {
-            return canonicalClaimMapper.writeValueAsBytes(claim);
-        } catch (IOException ex) {
-            throw new CatalogScanException("unable to canonicalize claim: " + ex.getMessage(), ex);
-        }
-    }
-
-    /**
-     * Charset used by canonical claim bytes. Exposed for diagnostic rendering.
-     *
-     * @return UTF-8.
-     */
-    public java.nio.charset.Charset charset() {
-        return StandardCharsets.UTF_8;
     }
 }
