@@ -16,7 +16,7 @@ and `gtt.instructions.list`, binds `IN_PROCESS`, and needs seven `owner=host` po
 | Pins cover the whole runtime artifact set (rule 2) | `artifactSha256` for `kotak-neo-core` only. Its HTTP and Foundry modules and Jackson are unpinned. | `COMPONENT_DEPENDENCY_MISSING` |
 | The consumer is the host (rule 7) | Every child contract's consumer is `urn:unfurl:host@0.0.0` (`HostOwnerMeta` default, CLI and Studio). | `CONSUMER_MISMATCH` |
 | Signed child contracts reach the host | Only Studio writes individually frozen child contracts (`dcp-runtime-bundle.zip`); the CLI cannot. | nothing to load |
-| The runtime binding carries what the component requires | A generic `endpoint_ref` and a development `base_url` (`http://foundry:7979/dcp/<capability>`), no `adapterConfig` ConfigRef. | Kotak's factory denies (`KotakInvocableFactory:41`) |
+| The runtime binding carries what the component requires | A generic `endpoint_ref` and a development `base_url` (`http://foundry:7979/dcp/<capability>`), and none of the component's configuration (Kotak: its account alias and session reference). | Kotak's factory denies (`KotakInvocableFactory:41`); under DCP rule 8, `CONFIG_REQUIRED_MISSING` |
 | The host receives the pinned jars, contracts and bindings | `emit` mounts the operator's Foundry root only. | nothing to load |
 
 Two rules DCP now owns are also still private to Fabric: the canonical claim hash
@@ -147,15 +147,38 @@ For a child contract whose provider is hosted, `fabric runtime-bindings` writes 
   endpoint. The development `base_url` is never written for these.
 - `consumer_instance` names the host. `instance_name` is the host's component id slug instead of `flowfoundry-host`.
 - `credentials_ref` keeps the conventional `secret://<tenant>/provider-access/<instance>`.
-- `configuration.values` carries the component's declared configuration references, each as a ConfigRef the operator
-  supplies:
-  `--component-config <claimUri>#<key>=config://<tenant>/<path>`. Fabric never guesses one; a missing or inline value
-  fails before any file is written, naming the component and key, as identity inputs do today
-  (HLD-needs-driven-identity §6).
+- `configuration` carries only the deployment layer of the component's configuration (below), never the packaged
+  defaults, which the host reads from the pinned jar itself.
 
-Where a component declares its keys is DCP decision D2. The recommendation is a DCP-defined offer interface detail,
-`offer_interface.details.runtime_configuration_refs: [adapterConfig]`, specified in HLD-C2 before code. Until DCP
-settles it, Fabric's input format above is unchanged and the declared list is the only open part.
+**Component configuration (DCP decision D2, resolved).** DCP defines it (HLD-C §3.10 and §6.1 rule 8; Java LLD,
+*Component configuration*). A component ships `META-INF/unfurl-config.yaml` in its jar: a schema of its keys and
+defaults for those it fixes. Kotak packages its API hosts, host allowlist, currency and resource limits there, and
+leaves `accountRef` and `sessionRef` to each deployment. Fabric's part:
+
+- **Scan** reads the file from the jar's base `META-INF/` path, as data, with DCP's `ComponentConfigurationSchema`,
+  and keeps the schema on the catalog entry. An invalid file makes the entry not selectable, with the DCP diagnostic.
+  `plan` lists each hosted component's deployment keys, so the operator knows what `runtime-bindings` will ask for.
+- **`runtime-bindings`** takes deployment values per component, applied to all of that component's bindings:
+
+  ```text
+  --component-config <claimUri>#<key>=<value>            inline, written to configuration.values
+  --component-config <claimUri>#<key>=config://<path>    a reference, written to configuration.config_refs
+  --component-config <claimUri>#<key>=secret://<path>    for a secret-ref key, written to configuration.values
+  ```
+
+  Fabric validates them with DCP's own validator before writing anything. Every `source: deployment` key must be
+  given, a fixed key can't be overridden, a `tighten` override can't widen, and a `secret-ref` must be `secret://`.
+  Failures are collected and name the component, key and rule. Fabric never guesses a value. A `config://` reference is
+  not resolved here, because its value lives in the deployment's store. The host resolves it and checks it again at
+  admission.
+- **Where overridden values live.** A value given inline belongs to a provisioned binding revision. `assembly-bind`
+  can sign a repository index covering its payload hash; deployment provisioning must verify that index, hash and
+  release/tenant/environment/revision before installing the binding bytes. Neither the host's binding codec nor its
+  validator verifies that signature, and a read-only overlay does not authenticate its source (DCP LLD, *Binding trust
+  boundary*). A value given as `config://` lives in the deployment's configuration store and is
+  resolved by the host's `ConfigResolver`: for Foundry, files such as a mounted Kubernetes ConfigMap through
+  `deployment-config-resolver`, or a contributed resolver for Vault, Azure App Configuration, the Kubernetes API or
+  similar. Either way the jar's schema bounds what it can be.
 
 ## 7. Signed child contracts from the CLI
 
@@ -211,7 +234,7 @@ existing pin changes.
 | `CATALOG_COMPANION_CONFLICT` | scan, plan, compile, Studio admission | Two jars share a companion's coordinates with different SHA-256; names every file and hash. |
 | `COMPANION_SHADOWS_SHARED_API` | compile | A companion contains classes under the host's shared prefixes. |
 | `HOST_PLACEMENT_MISSING` / `HOST_PLACEMENT_AMBIGUOUS` / `HOST_PLACEMENT_INVALID` | plan, compile | No, several, or a policy-named non-candidate host. |
-| `COMPONENT_CONFIG_MISSING` / `COMPONENT_CONFIG_INLINE` | runtime-bindings | A declared configuration reference is not supplied, or is not a `config://` reference. |
+| `CONFIG_*` (DCP codes) | scan, runtime-bindings | An invalid packaged `unfurl-config.yaml` (scan), or deployment values that break its schema: missing, unknown, fixed, widening, inline secret, given twice. |
 
 ## 11. Worked example: Foundry with the Kotak adapter
 
@@ -221,8 +244,11 @@ existing pin changes.
    unfurl-foundry` (inferred: Foundry is the only `ToolCapabilityRegistrar` host).
 3. `compile` → the three Kotak child contracts have consumer `urn:unfurl:foundry@0.1.0` and six
    `companionArtifacts`; `sign --dcp-runtime-bundle` writes the bundle.
-4. `runtime-bindings … --component-config unfurl://component/kotak-neo-adapter#adapterConfig=config://demo/kotak/adapter`
-   → three `IN_PROCESS` bindings consumed by Foundry, each with `adapterConfig`.
+4. `runtime-bindings … --component-config unfurl://component/kotak-neo-adapter#accountRef=primary-equity
+   --component-config unfurl://component/kotak-neo-adapter#sessionRef=secret://demo/kotak/primary-equity-session`
+   → three `IN_PROCESS` bindings consumed by Foundry, each carrying those two values. The hosts, allowlist, currency
+   and limits come from the jar. Adding `#maxRows=config://demo/kotak/max-rows` would let a ConfigMap tighten the row
+   limit; `#portfolioBase=…` is refused as `CONFIG_KEY_FIXED`.
 5. `emit` → the Foundry service plus `foundry-admitted/`. Foundry's profile binds `dcp-admitted-components` to
    `/opt/unfurl/foundry/admitted` (Foundry LLD), and DCP's host admits the three operations at startup.
 
@@ -232,9 +258,9 @@ existing pin changes.
 |---|---|
 | unfurl-deployment | HLD-D §6.2a placement step; `DeploymentPolicy.componentHosts`; `BindingPlanEntry.host`. |
 | unfurl-deploy-emitter | HLD-E §4.0b overlay emission from `componentArtifactsPath`, bundle and bindings. |
-| unfurl-dcp | D2: `runtime_configuration_refs` in HLD-C2. The rest is in UnfurlSystemsLab/unfurl-dcp#20. |
+| unfurl-dcp | All in UnfurlSystemsLab/unfurl-dcp#20, including component configuration (D2) and the `ComponentConfigurationSchema` validator Fabric reuses. |
 | unfurl-foundry | `component_host` block in Foundry's packaged manifest, matching its runtime `SharedApi`. |
-| unfurl-adapter-kotak-neo | `hosted_activation` from its exporter; `runtime_configuration_refs: [adapterConfig]` once D2 lands; the activation in `kotak-neo-foundry`. |
+| unfurl-adapter-kotak-neo | `hosted_activation` from its exporter; a packaged `META-INF/unfurl-config.yaml` (hosts, allowlist, currency and limits packaged; `accountRef` and `sessionRef` from the deployment); `KotakInvocableFactory` reading `ActivationContext.configuration()` instead of resolving an `adapterConfig` reference; the activation in `kotak-neo-foundry`. |
 
 ## 13. Tests
 
@@ -246,8 +272,11 @@ existing pin changes.
   components.
 - **Compile:** consumer party for hosted children and unchanged consumers for others; `companionArtifacts` sorted and
   hashed; refusal for a missing or shadowing companion.
-- **Runtime bindings:** `IN_PROCESS` without endpoints; host instance name; supplied, missing and inline configuration
-  references.
+- **Runtime bindings:** `IN_PROCESS` without endpoints; host instance name; Kotak's `accountRef` inline and
+  `sessionRef` as `secret://` written to `values`, and `maxRows` as `config://` written to `config_refs`; a missing
+  deployment key, a fixed-key override, a widening override and a plain-string secret each refused with every failure
+  listed; no packaged default ever copied into a binding.
+- **Scan:** a jar's packaged configuration schema read from the base path; an invalid one makes the entry unselectable.
 - **CLI bundle:** byte-identical to Studio's for the same compiled contract and key.
 - **Claim hash delegation:** identical hashes for every fixture.
 - **Black box:** a Fabric-compiled Foundry + synthetic hosted component package that DCP's host admits (once
