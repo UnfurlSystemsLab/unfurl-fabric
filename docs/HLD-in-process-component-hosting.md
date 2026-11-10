@@ -171,8 +171,11 @@ leaves `accountRef` and `sessionRef` to each deployment. Fabric's part:
   Failures are collected and name the component, key and rule. Fabric never guesses a value. A `config://` reference is
   not resolved here, because its value lives in the deployment's store. The host resolves it and checks it again at
   admission.
-- **Where overridden values live.** A value given inline is signed with the binding (`assembly-bind`), so changing it
-  takes a new binding revision. A value given as `config://` lives in the deployment's configuration store and is
+- **Where overridden values live.** A value given inline belongs to a provisioned binding revision. `assembly-bind`
+  can sign a repository index covering its payload hash; deployment provisioning must verify that index, hash and
+  release/tenant/environment/revision before installing the binding bytes. Neither the host's binding codec nor its
+  validator verifies that signature, and a read-only overlay does not authenticate its source (DCP LLD, *Binding trust
+  boundary*). A value given as `config://` lives in the deployment's configuration store and is
   resolved by the host's `ConfigResolver`: for Foundry, files such as a mounted Kubernetes ConfigMap through
   `deployment-config-resolver`, or a contributed resolver for Vault, Azure App Configuration, the Kubernetes API or
   similar. Either way the jar's schema bounds what it can be.
