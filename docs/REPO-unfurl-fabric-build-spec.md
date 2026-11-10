@@ -116,7 +116,8 @@ assembly-verify-binding
   hosted bindings are `IN_PROCESS` with no endpoint.
 - `emit` passes the catalog as `componentArtifactsPath` for the admitted-component overlay.
 - `verify --catalog` checks companion drift; `explain-deployment` prints `host=` and `companionArtifacts=`.
-- Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.ownerOf`.
+- Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.isExternallyOwned` /
+  `ownerOf` (**done**).
 
 ## Build Outputs
 

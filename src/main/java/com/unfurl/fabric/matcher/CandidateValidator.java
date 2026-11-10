@@ -311,39 +311,13 @@ public final class CandidateValidator {
     /**
      * Strategy helper: identifies runtime/profile dependencies whose owner marker places resolution
      * outside the peer catalog graph while preserving them in the claim for deployment binding.
+     * Delegates to DCP's {@link com.unfurl.dcp.claim.Dependencies#isExternallyOwned}, the single rule
+     * in-process hosts also apply to {@code owner=host} needs.
      *
      * @param dep the raw DCP dependency URI.
      * @return true when Fabric should not require a selected catalog entry to offer the dependency.
      */
     public static boolean isExternallyOwnedDependency(String dep) {
-        String owner = ownerMarker(dep);
-        return "customer-controlled".equals(owner)
-                || "host".equals(owner)
-                || "fabric".equals(owner)
-                || owner.startsWith("customer-");
-    }
-
-    /**
-     * Parser helper: extracts the dependency {@code owner=} query marker so Fabric can separate
-     * peer catalog gates from runtime/profile bindings without hard-coding individual customers.
-     *
-     * @param dep the raw DCP dependency URI.
-     * @return the owner marker, or an empty string when absent.
-     */
-    private static String ownerMarker(String dep) {
-        if (dep == null || dep.isBlank()) {
-            return "";
-        }
-        int q = dep.indexOf('?');
-        if (q < 0 || q == dep.length() - 1) {
-            return "";
-        }
-        String[] parts = dep.substring(q + 1).split("&");
-        for (String part : parts) {
-            if (part.startsWith("owner=")) {
-                return part.substring("owner=".length()).trim();
-            }
-        }
-        return "";
+        return com.unfurl.dcp.claim.Dependencies.isExternallyOwned(dep);
     }
 }
