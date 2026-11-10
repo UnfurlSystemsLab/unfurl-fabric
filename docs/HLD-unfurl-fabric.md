@@ -57,6 +57,10 @@
    Refusal alignment: a concern one selected component refuses becomes required (some selected component must offer a capability of that exact name) when the needs list it under `refusalExpectations`, or when another selected component's peer dependency (a need, not an optional dependency) names it as its capability, that is the part of the dependency URI before `@` and `?`. Matching is exact, never a substring, so a dependency such as `oidc.identity-provider@v1` does not make Foundry's refused `identity` concern required. Externally owned dependencies never make a concern required, because the customer system they name is bound outside the catalog.
 4. Selection either chooses the single valid candidate, applies explicit `--select`, or requires `--auto-select-best` when candidates are ambiguous.
 5. Deployment resolution selects supported runtime shapes and records rejected shapes. Product runtimes such as Flow and Foundry must resolve from their catalog `component_shape_profile`; substrate libraries and adapters may resolve in-process when they are bundled inside those product runtimes.
+   [proposed] A component whose catalog block declares `hosted_activation` is admitted at runtime by a selected service
+   through DCP's in-process component host. Resolution then also places it on a host (policy-named, or inferred only
+   when unambiguous), compile writes that host as the consumer party of its child contracts and freezes its companion
+   artifacts, and emit delivers an admitted-component overlay. Design: `HLD-in-process-component-hosting.md`.
 6. Substrate profile derivation emits the required runtime profile without secret values.
 7. Compilation writes a light unsigned root DCP contract, the substrate profile, and support/diagnostic compiler
    envelopes. Each child contract's metadata records `neededBy`: the sorted claim URIs of the other selected components
@@ -65,7 +69,8 @@
    deployment handoff.
 8. Signing freezes the root DCP contract as the primary signed handoff artifact. When downstream Fabric tools still need
    selection audit, binding plan, or child-contract closure, Studio also emits a signed compiled-envelope support
-   artifact.
+   artifact. [proposed] Studio and the CLI (`sign --dcp-runtime-bundle`) share one writer for the DCP runtime bundle of
+   individually frozen child contracts (`HLD-in-process-component-hosting.md` §7).
 9. Verification checks signature, catalog drift, and trust keys.
 
 ## Studio Flow
