@@ -123,13 +123,16 @@ choice of components, and there are two ways to make it:
 | Command line (`plan`, `compile`) | List the capabilities you want, and Fabric picks the components that offer them | Required (`--needs`) |
 | Studio | Add the components yourself, as in [Export a package that starts](#export-a-package-that-starts) | Not used |
 
-Either way, compile checks the chosen components against their claims. A required dependency that
-no chosen component offers fails with `NO_MATCH`, naming the component and what it needs. An
-optional one is bound only when a chosen component offers it. The rest of this section is about the
-command line.
+Either way, compile checks the chosen components against their claims. A required peer-component
+dependency that no chosen component offers fails with `NO_MATCH`, naming the component and what it
+needs. An optional peer dependency is bound when a chosen component offers it. Externally owned
+dependencies (such as `owner=host` or a customer owner) are runtime/profile bindings, including
+optional ones; required `substrate=true` dependencies are derived into the substrate profile.
+These do not require peer catalog components, and successful compilation does not prove their
+runtime bindings are ready. The rest of this section is about the command line.
 
 A needs file lists the capabilities you want. **Fabric doesn't add dependencies for you, so the file
-must list every capability the selected components require.** For example, `agent.execute` needs
+must list every peer capability the selected components require.** For example, `agent.execute` needs
 `model-provider`. A component's optional dependencies are different: they are never required, and
 the component runs without them, so you list one only when you want its provider included.
 
