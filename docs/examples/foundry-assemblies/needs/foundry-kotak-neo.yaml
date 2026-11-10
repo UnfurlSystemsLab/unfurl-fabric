@@ -1,0 +1,18 @@
+# The Foundry service with the Kotak Neo read adapter.
+#
+# The adapter's claim ships in kotak-neo-core's META-INF/unfurl-catalog.yaml. It
+# offers three read-only capabilities and needs seven host ports, such as
+# host.audit and host.kotak-session. Each of those is qualified owner=host, so it
+# is a runtime binding the host supplies, not a capability to list here or a
+# component to select. The adapter runs in-process in the host that admits it;
+# Foundry projects its reads as tools.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: portfolio.holdings.list
+    capabilityVersion: ^0.1
+  - capability: portfolio.mtf-holdings.list
+    capabilityVersion: ^0.1
+  - capability: gtt.instructions.list
+    capabilityVersion: ^0.1
