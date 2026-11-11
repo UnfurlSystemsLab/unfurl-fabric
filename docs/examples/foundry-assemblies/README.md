@@ -31,7 +31,7 @@ and the other repos.
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
-November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo steps were run on 11
+November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo steps were run on 12
 November 2026 through `emit`, and Foundry's admitted-component host loaded the result. No agent, model or broker call was made, so a real agent run is not
 covered here.
 
@@ -88,7 +88,8 @@ fabric scan --catalog "$work\catalog"
 fabric list-capabilities --catalog "$work\catalog"
 ```
 
-`scan` should print `entries=17` and `skipped=0`. These are the components you'll choose from:
+`scan` should print `entries=17`, `companions=0` and `skipped=0`. These are the components you'll
+choose from:
 
 | Component | Capabilities | What it is |
 |---|---|---|
@@ -105,8 +106,9 @@ fabric list-capabilities --catalog "$work\catalog"
 The domain, ports, offers, events, resolver and serialization modules are also in the catalog. They
 are shared libraries, so you normally don't choose them.
 
-The [Kotak Neo example](#example-add-the-kotak-neo-adapter) adds one more jar, `kotak-neo-core`,
-which offers `portfolio.holdings.list`, `portfolio.mtf-holdings.list` and `gtt.instructions.list`.
+The [Kotak Neo example](#example-add-the-kotak-neo-adapter) adds one more component, `kotak-neo-core`,
+which offers `portfolio.holdings.list`, `portfolio.mtf-holdings.list` and `gtt.instructions.list`, and
+the six companion jars Foundry needs to run it.
 
 ## 2. Choose a combination
 
@@ -653,8 +655,9 @@ If you pass `--foundry-deployment-root` to `emit`, it checks for this binding an
 missing, so you don't ship an overlay that nothing reads. When Foundry starts, it verifies each
 contract and admits the three reads as agent tools. If any check fails, it refuses to start.
 
-**What was checked.** On 11 November 2026, these steps were run through `emit`, and Foundry's
-admitted-component host loaded the emitted folder and listed the three Kotak tools. No Foundry
+**What was checked.** On 12 November 2026, these steps were run on the full catalog from
+[Create the catalog](#1-create-the-catalog) through `emit`, and Foundry's admitted-component host loaded
+the emitted folder and listed the three Kotak tools. No Foundry
 container was started, and no Kotak or agent call was made. A live read needs a real session secret
 and policy bindings in your Foundry deployment.
 
