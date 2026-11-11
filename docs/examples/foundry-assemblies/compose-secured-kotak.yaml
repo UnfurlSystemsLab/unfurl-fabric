@@ -1,0 +1,15 @@
+# Authenticated settings for the Flow + Foundry + Kotak Neo + Keycloak package.
+#
+# Apply this after the emitted docker-compose.yaml and compose-development.yaml (which still limits both
+# ports to this machine and adds Flow's health check). It switches Foundry to
+# foundry-kotak-secured-profile.yaml, which the guide copies into your Foundry deployment folder: every
+# request then needs a Bearer token from the example's Keycloak realm, verified against the realm's key
+# that the guide exports to identity/keys/<kid>.pem.
+#
+# Flow doesn't send tokens yet, so with this override Flow can't call Foundry; use it to check Foundry's
+# identity and the admitted Kotak tools.
+
+services:
+  foundry:
+    environment:
+      UNFURL_FOUNDRY_PROFILE: profiles/foundry-kotak-secured-profile.yaml
