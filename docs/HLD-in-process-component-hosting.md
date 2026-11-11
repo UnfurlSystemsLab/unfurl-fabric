@@ -297,7 +297,7 @@ checks every companion a child contract pins against the catalog's companion ind
 | `HOST_PLACEMENT_MISSING` / `HOST_PLACEMENT_AMBIGUOUS` / `HOST_PLACEMENT_INVALID` | plan, compile | No, several, or a policy-named non-candidate host. |
 | `CONFIG_*` (DCP codes) | scan, runtime-bindings | An invalid packaged `unfurl-config.yaml` (scan), or deployment values that break its schema: missing, unknown, fixed, widening, inline secret, given twice. |
 
-## 11. Worked example: Foundry with the Kotak adapter
+## 11. Worked example: Foundry with the Kotak adapter  (run 11 November 2026 through emit and Foundry admission; guide: `docs/examples/foundry-assemblies`)
 
 1. Catalog: the Foundry jar (with `component_host`), `kotak-neo-core` (with `hosted_activation`) and its six
    companions. `scan` prints `companions=6`.
@@ -313,7 +313,7 @@ checks every companion a child contract pins against the catalog's companion ind
 5. `emit` → the Foundry service plus `foundry-admitted/`. Foundry's profile binds `dcp-admitted-components` to
    `/opt/unfurl/foundry/admitted` (Foundry LLD), and DCP's host admits the three operations at startup.
 
-## 12. Companion changes in other repos
+## 12. Companion changes in other repos  (done)
 
 | Repo | Change |
 |---|---|
