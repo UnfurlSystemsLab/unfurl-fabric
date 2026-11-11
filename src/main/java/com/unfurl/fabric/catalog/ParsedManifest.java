@@ -21,8 +21,25 @@ public record ParsedManifest(
         Lifecycle lifecycle,
         AuthoredArtifact authoredArtifact,
         BindingDescriptor binding,
-        ComponentShapeProfile componentShapeProfile
+        ComponentShapeProfile componentShapeProfile,
+        HostedActivation hostedActivation,
+        ComponentHostDeclaration componentHost
 ) {
+    /** Constructor for manifests without hosting blocks. */
+    public ParsedManifest(
+            Claim claim,
+            Lifecycle lifecycle,
+            AuthoredArtifact authoredArtifact,
+            BindingDescriptor binding,
+            ComponentShapeProfile componentShapeProfile) {
+        this(claim, lifecycle, authoredArtifact, binding, componentShapeProfile, null, null);
+    }
+
+    /** Returns the catalog metadata of this manifest, including its optional hosting blocks. */
+    public CatalogMetadata metadata() {
+        return new CatalogMetadata(lifecycle, binding, hostedActivation, componentHost);
+    }
+
     /**
      * Convenience constructor for manifests without a component shape profile.
      *

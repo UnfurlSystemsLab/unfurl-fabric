@@ -14,6 +14,7 @@ final class ScanCommand {
         CliArgs args = CliArgs.parse(argv);
         CatalogScanReport report = CliSupport.scan(args);
         out.println("entries=" + report.catalog().entries().size());
+        out.println("companions=" + report.catalog().companions().size());
         out.println("skipped=" + report.skippedEntries().size());
         Path target = args.optionalPath("out");
         if (target != null) {

@@ -54,6 +54,8 @@ import java.util.stream.Collectors;
  * child ids, and the compile timestamp), so identical inputs at the same instant yield identical output.
  */
 public final class ContractCompiler {
+    /** Child contract extension pinning a hosted provider's companion artifacts (HLD-in-process-component-hosting §5). */
+    public static final String EXT_COMPANION_ARTIFACTS = "companionArtifacts";
     /**
      * Child-contract metadata extension: the sorted claim URIs of the other selected components whose claims depend on the
      * contract's capability (HLD-unfurl-fabric Core Flow step 7). Always present, possibly empty, so its absence marks a
@@ -92,6 +94,20 @@ public final class ContractCompiler {
      * @throws ContractCompileException if the candidate is null/empty or any selected entry exposes no offers.
      */
     public CompiledContract compile(CompositionCandidate candidate, Need need, HostOwnerMeta hostOwnerMeta) {
+        return compile(candidate, need, hostOwnerMeta, HostedComponents.none());
+    }
+
+    /**
+     * Compiles a candidate whose hosted in-process components have been placed (HLD-in-process-component-hosting §4,
+     * §5). A hosted entry's child contracts name its host as consumer and pin its companions in
+     * {@code companionArtifacts}; every pinned artifact must keep clear of the host's shared API packages
+     * ({@code COMPANION_SHADOWS_SHARED_API} otherwise, which the host would refuse at startup).
+     *
+     * @param hosted the placement of each hosted entry; {@link HostedComponents#none()} when there is none
+     */
+    public CompiledContract compile(CompositionCandidate candidate, Need need, HostOwnerMeta hostOwnerMeta,
+                                    HostedComponents hosted) {
+        hosted = hosted == null ? HostedComponents.none() : hosted;
         if (candidate == null) {
             throw new ContractCompileException("candidate is required");
         }
@@ -107,7 +123,10 @@ public final class ContractCompiler {
                 .toList();
         Instant compiledAt = clock.instant();
         DecisionAudit audit = auditFor(candidate, need, entries, compiledAt);
-        List<CompositionContract> childContracts = childContracts(entries, hostOwnerMeta, compiledAt);
+        for (CatalogEntry entry : entries) {
+            hosted.placement(entry).ifPresent(placement -> HostedArtifactCheck.requireClearOfSharedApi(entry, placement));
+        }
+        List<CompositionContract> childContracts = childContracts(entries, hostOwnerMeta, hosted, compiledAt);
         CompositionContract contract = aggregateContract(candidate, hostOwnerMeta, childContracts, audit);
         return new CompiledContract(contract, childContracts, selections, audit, null, null, null);
     }
@@ -167,6 +186,7 @@ public final class ContractCompiler {
     private static List<CompositionContract> childContracts(
             List<CatalogEntry> entries,
             HostOwnerMeta hostOwnerMeta,
+            HostedComponents hosted,
             Instant compiledAt
     ) {
         List<CompositionContract> contracts = new ArrayList<>();
@@ -178,7 +198,7 @@ public final class ContractCompiler {
             }
             for (Offer offer : offers) {
                 contracts.add(childContract(entry, offer, neededBy(entries, entry, offer.capability()), hostOwnerMeta,
-                        compiledAt));
+                        hosted.placement(entry), compiledAt));
             }
         }
         return List.copyOf(contracts);
@@ -226,6 +246,7 @@ public final class ContractCompiler {
             Offer offer,
             List<String> neededBy,
             HostOwnerMeta hostOwnerMeta,
+            java.util.Optional<HostedComponents.Placement> placement,
             Instant compiledAt
     ) {
         String capability = requireOfferCapability(entry, offer);
@@ -238,12 +259,22 @@ public final class ContractCompiler {
         extensions.put("artifactSha256", entry.artifact().sha256());
         extensions.put("claimHash", entry.claimDescriptor().claimHash());
         extensions.put(EXT_NEEDED_BY, neededBy);
+        if (entry.metadata().optionalHostedActivation().isPresent()) {
+            // The provider's whole runtime artifact set beyond the claim jar (DCP decision D1), sorted by coordinates.
+            extensions.put(EXT_COMPANION_ARTIFACTS, entry.companions().stream()
+                    .sorted(java.util.Comparator.comparing(com.unfurl.fabric.catalog.CompanionArtifact::coordinates))
+                    .map(companion -> Map.<String, Object>of("coordinates", companion.coordinates(), "sha256", companion.sha256()))
+                    .toList());
+        }
+        // A hosted component's consumer is its host (DCP HLD-C §6.1 rule 7); every other edge keeps the host owner.
+        Party consumer = placement.map(HostedComponents.Placement::consumer)
+                .orElseGet(() -> new Party(hostOwnerMeta.consumerClaimUri(), hostOwnerMeta.consumerClaimVersion()));
 
         return new CompositionContract(
                 childContractId(entry, offer, compiledAt),
                 "0.1.0",
                 new Parties(
-                        new Party(hostOwnerMeta.consumerClaimUri(), hostOwnerMeta.consumerClaimVersion()),
+                        consumer,
                         new Party(entry.claimDescriptor().claim().identity().uri(),
                                 entry.claimDescriptor().claim().identity().version())),
                 new Binding(capability, capability, version),

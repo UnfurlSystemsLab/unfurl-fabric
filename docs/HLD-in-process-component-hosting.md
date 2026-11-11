@@ -34,7 +34,7 @@ plan and explain output; delegating to DCP's shared rules.
   `HostOwnerMeta` consumer.
 - Any Fabric→Flow or Foundry→Flow edge.
 
-## 3. Catalog: who is hosted, by what, with which artifacts
+## 3. Catalog: who is hosted, by what, with which artifacts  (implemented for the CLI scan; Studio companion upload pending)
 
 Both blocks are **catalog metadata**, not claim content: they live in `META-INF/unfurl-catalog.yaml`'s `catalog` block
 next to `artifact`, `binding` and `lifecycle`, so they change the artifact hash but never the claim hash.
@@ -92,12 +92,20 @@ entries, and `scan` reports them as `companions=N`, not as `skipped`. Resolution
 - **Missing.** A `hosted_activation` naming a companion the catalog lacks makes that entry not selectable, with
   `CATALOG_COMPANION_MISSING` naming the coordinates.
 
-Both diagnostics are shown by `scan`, `plan` and Studio admission and are never dropped silently. Studio admission
+Both diagnostics are shown by `scan`, `plan` and Studio admission and are never dropped silently.
+
+**Implementation (CLI scan).**
+- `CatalogScanner` offers every manifest-less jar to `CompanionIndex`.
+- `Catalog.companions()` is the resulting index; `scan` prints `companions=N`.
+- A hosted entry whose companions are missing or conflicting is reported as `SkippedEntry` reason `COMPANION_UNRESOLVED`, with the detail starting with the code, and is left out of the catalog.
+- Each selectable hosted entry carries its resolved companions (`CatalogEntry.companions()`), so `compile` and `emit` read them without the catalog.
+- The two catalog blocks are `CatalogMetadata.hostedActivation`/`componentHost`, null when absent.
+- **Not yet implemented:** Studio admission of companion jar uploads, the conflict rule above included. Until it is, Studio-admitted catalogs have no companions, so their hosted entries pin only the claim jar. Studio admission
 accepts companion jar uploads by bytes, like component jars, and applies the same rules: uploading different bytes
 under coordinates already admitted for the tenant is refused with `CATALOG_COMPANION_CONFLICT`, naming the stored
 artifact and its hash.
 
-## 4. Placement and consumer authoring (DCP decision D3)
+## 4. Placement and consumer authoring (DCP decision D3)  (implemented)
 
 **Placement** is part of deployment resolution (HLD-D §6.2a). After shapes are chosen, each entry with
 `hosted_activation` whose shape is in-process gets a host:
@@ -121,7 +129,7 @@ external identity. All other child contracts keep the `HostOwnerMeta` consumer. 
 `RuntimeBindingValidator` already requires a binding's consumer instance to equal the contract's consumer party,
 runtime bindings follow automatically.
 
-## 5. Pins in the child contract (DCP decision D1)
+## 5. Pins in the child contract (DCP decision D1)  (implemented)
 
 Each hosted component's child contracts carry, beside today's `artifactCoordinates`, `artifactSha256` and
 `claimHash`, the frozen companion set from the catalog:

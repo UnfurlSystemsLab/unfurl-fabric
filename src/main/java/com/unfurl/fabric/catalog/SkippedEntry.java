@@ -37,6 +37,12 @@ public record SkippedEntry(
         /** The manifest was present but could not be parsed. */
         MALFORMED_MANIFEST,
         /** The manifest parsed but lacked a required field/block. */
-        MISSING_REQUIRED_FIELD
+        MISSING_REQUIRED_FIELD,
+        /**
+         * A hosted component whose {@code hosted_activation.companions} cannot be resolved: a companion is absent
+         * ({@code CATALOG_COMPANION_MISSING}) or several jars hold different bytes under its coordinates
+         * ({@code CATALOG_COMPANION_CONFLICT}). The detail starts with the code. The entry is not selectable.
+         */
+        COMPANION_UNRESOLVED
     }
 }

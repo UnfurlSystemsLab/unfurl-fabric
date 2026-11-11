@@ -104,9 +104,12 @@ final class CliSupport {
             String selectionMode,
             DeploymentPolicy deploymentPolicy) {
         ResolverOutcome resolved = resolveDeployment(candidate, deploymentPolicy);
-        CompiledContract compiled = new ContractCompiler(CLI_COMPILE_CLOCK)
-                .compile(candidate, need, new HostOwnerMeta(null, null, null));
         BindingPlan bindingPlan = resolved.plan();
+        // Hosted components name their placed host as consumer and pin their companions (HLD-in-process-component-hosting §4, §5).
+        com.unfurl.fabric.compile.HostedComponents hosted =
+                com.unfurl.fabric.compile.HostedComponents.from(candidate.entries(), bindingPlan);
+        CompiledContract compiled = new ContractCompiler(CLI_COMPILE_CLOCK)
+                .compile(candidate, need, new HostOwnerMeta(null, null, null), hosted);
         SubstrateProfile profile = new SubstrateProfileDeriver().derive(candidate, bindingPlan);
         SubstrateProfileCodec profileCodec = new SubstrateProfileCodec();
         SubstrateProfile hashedProfile = profile.withProfileHash(profileCodec.computeProfileHash(profile));
@@ -228,7 +231,10 @@ final class CliSupport {
                                 .map(Offer::capability)
                                 .sorted()
                                 .toList(),
-                        entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry))))
+                        entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry)),
+                        // Host placement inputs (HLD-D §6.2a), copied from the catalog block.
+                        com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry),
+                        com.unfurl.fabric.compile.HostedComponents.componentHost(entry)))
                 .toList();
     }
 

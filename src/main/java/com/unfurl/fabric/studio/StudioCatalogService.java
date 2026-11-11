@@ -4125,9 +4125,11 @@ public final class StudioCatalogService {
             Need need,
             ResolverOutcome resolved
     ) {
-        CompiledContract compiled = new ContractCompiler()
-                .compile(candidate, need, new HostOwnerMeta(null, null, null));
         BindingPlan bindingPlan = resolved.plan();
+        // Same hosting rules as the CLI: hosted components name their placed host as consumer and pin their companions.
+        CompiledContract compiled = new ContractCompiler()
+                .compile(candidate, need, new HostOwnerMeta(null, null, null),
+                        com.unfurl.fabric.compile.HostedComponents.from(candidate.entries(), bindingPlan));
         SubstrateProfile profile = new SubstrateProfileDeriver().derive(candidate, bindingPlan);
         CompositionContractCodec rootCodec = new CompositionContractCodec();
         CompiledContractCodec compiledCodec = new CompiledContractCodec();
