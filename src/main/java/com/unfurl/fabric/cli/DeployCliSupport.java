@@ -11,6 +11,7 @@ import com.unfurl.deploy.core.StitchRequest;
 import com.unfurl.deploy.core.StitchResult;
 import com.unfurl.deploy.spi.ApplyRequest;
 import com.unfurl.deploy.spi.ApplyResult;
+import com.unfurl.deploy.spi.ArtifactKind;
 import com.unfurl.deploy.spi.DeployEmitter;
 import com.unfurl.deploy.spi.EmitRequest;
 import com.unfurl.deploy.spi.EmitResult;
@@ -43,6 +44,8 @@ final class DeployCliSupport {
         Path contractPath = args.requiredPath("contract");
         Path profilePath = args.requiredPath("profile");
         Path trustKeysPath = args.requiredPath("trust-keys");
+        SignedFabricContract signed = readSigned(contractPath);
+        Path componentArtifacts = componentArtifacts(args, signed);
         DeploymentTarget target = withComposeRuntimePaths(
                 loadTarget(args.get("target")),
                 contractPath,
@@ -51,11 +54,12 @@ final class DeployCliSupport {
                 args.optionalPath("dcp-runtime-bundle"),
                 args.optionalPath("flow-workflows"),
                 args.optionalPath("foundry-deployment-root"),
+                componentArtifacts,
                 trustKeysPath);
         EmitterConfig config = new EmitterConfig(target, target.options(), true);
         DeployEmitter backend = new EmitterBootstrap().create(config);
         EmitRequest request = new EmitRequest(
-                readSigned(contractPath),
+                signed,
                 readProfile(profilePath),
                 target,
                 outDir);
@@ -69,6 +73,8 @@ final class DeployCliSupport {
         Path contractPath = args.requiredPath("contract");
         Path profilePath = args.requiredPath("profile");
         Path trustKeysPath = args.requiredPath("trust-keys");
+        SignedFabricContract signed = readSigned(contractPath);
+        Path componentArtifacts = componentArtifacts(args, signed);
         List<DeploymentTarget> targets = loadTargets(args.get("targets")).stream()
                 .map(target -> withComposeRuntimePaths(
                         target,
@@ -78,11 +84,12 @@ final class DeployCliSupport {
                         args.optionalPath("dcp-runtime-bundle"),
                         args.optionalPath("flow-workflows"),
                         args.optionalPath("foundry-deployment-root"),
+                        componentArtifacts,
                         trustKeysPath))
                 .toList();
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(trustKeysPath);
         StitchResult result = new StitchDriver().stitch(new StitchRequest(
-                readSigned(contractPath),
+                signed,
                 readProfile(profilePath),
                 targets,
                 outDir),
@@ -101,7 +108,8 @@ final class DeployCliSupport {
      * target's options. The compose backend uses these options to emit a STRICT
      * runtime profile and, when the full handoff set is present, a Flow
      * deployment root. Public DCP trust keys are also threaded through for Flow runtime
-     * verification. Explicit values in the target file win ({@code putIfAbsent}).
+     * verification. Explicit values in the target file win ({@code putIfAbsent}). The catalog folder becomes
+     * {@code componentArtifactsPath} for the admitted-component overlay (HLD-in-process-component-hosting §8).
      */
     private static DeploymentTarget withComposeRuntimePaths(
             DeploymentTarget target,
@@ -111,6 +119,7 @@ final class DeployCliSupport {
             Path dcpRuntimeBundle,
             Path flowWorkflows,
             Path foundryDeploymentRoot,
+            Path componentArtifacts,
             Path trustKeysPath) {
         if (!"local-compose".equals(target.kind())) {
             return target;
@@ -122,6 +131,7 @@ final class DeployCliSupport {
         putIfPresent(options, "dcpRuntimeBundlePath", dcpRuntimeBundle);
         putIfPresent(options, "flowWorkflowsPath", flowWorkflows);
         putIfPresent(options, "foundryDeploymentRootPath", foundryDeploymentRoot);
+        putIfPresent(options, "componentArtifactsPath", componentArtifacts);
         putIfPresent(options, "trustKeysPath", trustKeysPath);
         return new DeploymentTarget(
                 target.kind(),
@@ -130,6 +140,50 @@ final class DeployCliSupport {
                 target.endpoint(),
                 options,
                 target.credentialRefs());
+    }
+
+    /**
+     * Overlay input (HLD-in-process-component-hosting §8): a signed plan with hosted in-process components needs
+     * {@code --catalog}, the local catalog folder its pinned jars are copied from; a plan without them refuses it, the
+     * same rule the emitter applies, so the operator learns it before any target runs.
+     *
+     * @return the catalog folder, or {@code null} when the plan hosts nothing
+     */
+    private static Path componentArtifacts(CliArgs args, SignedFabricContract signed) {
+        var plan = signed.contract().bindingPlan();
+        List<String> hosted = plan == null ? List.of() : plan.entries().stream()
+                .filter(entry -> entry.host().isPresent()).map(entry -> entry.componentId()).distinct().sorted().toList();
+        Path catalog = args.optionalPath("catalog");
+        if (hosted.isEmpty()) {
+            if (catalog != null) {
+                throw FabricCliException.usage("--catalog is read for hosted in-process components, and the signed plan has none");
+            }
+            return null;
+        }
+        if (catalog == null) {
+            throw FabricCliException.usage("the signed plan hosts in-process components " + hosted
+                    + "; --catalog must name the catalog folder their pinned jars are copied from");
+        }
+        return catalog;
+    }
+
+    /**
+     * Visible operator step (HLD-E §4.0b): one line per admitted-component export, naming where it is and the host
+     * identity from its {@code host.json}; an export is never mounted or started, so the operator must deliver it.
+     */
+    private static void printOperatorDeliveries(Path dir, List<EmittedArtifact> artifacts, PrintStream out) {
+        for (EmittedArtifact artifact : artifacts) {
+            if (artifact.kind() != ArtifactKind.HOSTED_COMPONENT_EXPORT) continue;
+            Path export = dir.resolve(artifact.path());
+            try {
+                var host = new com.fasterxml.jackson.databind.ObjectMapper().readTree(export.resolve("host.json").toFile());
+                out.println("operatorDelivery=" + export.toAbsolutePath().normalize()
+                        + " host=" + host.path("claimUri").asText() + "@" + host.path("claimVersion").asText()
+                        + " (not mounted or started: deliver it to that host)");
+            } catch (IOException ex) {
+                throw FabricCliException.runtime("unable to read " + export.resolve("host.json") + ": " + ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -180,6 +234,7 @@ final class DeployCliSupport {
             ok.artifacts().forEach(artifact -> printArtifact(artifact, out));
             out.println("requiredSecrets=" + ok.manifest().requiredSecrets().size());
             out.println("emitManifestSha256=" + ok.manifest().emitManifestSha256());
+            printOperatorDeliveries(outcome.outDir(), ok.artifacts(), out);
             return;
         }
         EmitResult.Unsupported unsupported = (EmitResult.Unsupported) outcome.result();
@@ -197,6 +252,13 @@ final class DeployCliSupport {
                         + " subManifestSha256=" + target.subManifestSha256()));
         out.println("coverage=" + outcome.result().manifest().coverage().size());
         out.println("stitchSha256=" + outcome.result().manifest().stitchSha256());
+        // Sub-emits follow target order and the manifest's targets are sorted, so pair them by sub-manifest hash.
+        for (var target : outcome.result().manifest().targets()) {
+            outcome.result().subEmits().stream()
+                    .filter(sub -> sub.manifest().emitManifestSha256().equals(target.subManifestSha256()))
+                    .findFirst()
+                    .ifPresent(sub -> printOperatorDeliveries(outcome.outDir().resolve(target.dir()), sub.artifacts(), out));
+        }
     }
 
     static void printStitchApply(StitchApplyResult result, PrintStream out) {

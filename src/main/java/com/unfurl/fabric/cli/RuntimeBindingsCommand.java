@@ -72,7 +72,35 @@ final class RuntimeBindingsCommand {
                 value(args, "flow-base-url", defaults.flowBaseUrl()),
                 value(args, "foundry-base-url", defaults.foundryBaseUrl()),
                 intValue(args, "timeout-ms", defaults.timeoutMs()),
-                identity(args));
+                identity(args),
+                componentConfiguration(args, signed));
+    }
+
+    /**
+     * Hosted components' deployment configuration (HLD-in-process-component-hosting §6): when the contract hosts
+     * in-process components, {@code --catalog} names the catalog their packaged schemas are read from, and every
+     * {@code --component-config <claimUri>#<key>=<value>} is validated against them with DCP's validator before any
+     * binding is written. A contract without hosted components refuses {@code --component-config}.
+     */
+    private java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration(
+            CliArgs args, SignedFabricContract signed) {
+        java.util.Set<java.net.URI> hosted = com.unfurl.fabric.runtime.HostedComponentConfiguration.hostedProviders(signed.contract());
+        java.util.List<String> flags = args.all("component-config");
+        if (hosted.isEmpty()) {
+            if (!flags.isEmpty()) throw FabricCliException.usage("--component-config is for hosted components, and this contract hosts none");
+            return java.util.Map.of();
+        }
+        java.nio.file.Path catalog = args.optionalPath("catalog");
+        if (catalog == null) {
+            throw FabricCliException.usage("--catalog is required: the contract hosts " + hosted
+                    + ", whose packaged configuration schemas are read from the catalog");
+        }
+        try {
+            return com.unfurl.fabric.runtime.HostedComponentConfiguration.build(hosted,
+                    new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog().entries(), flags);
+        } catch (IllegalArgumentException invalid) {
+            throw FabricCliException.usage("hosted component configuration is invalid: " + invalid.getMessage());
+        }
     }
 
     /**

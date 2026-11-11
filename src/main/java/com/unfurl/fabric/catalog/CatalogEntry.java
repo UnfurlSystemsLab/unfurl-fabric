@@ -1,5 +1,6 @@
 package com.unfurl.fabric.catalog;
 
+import java.util.List;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.unfurl.deployment.domain.ComponentShapeProfile;
 import com.unfurl.fabric.artifact.ArtifactDescriptor;
@@ -26,8 +27,22 @@ public record CatalogEntry(
         ClaimDescriptor claimDescriptor,
         CatalogMetadata metadata,
         ComponentShapeProfile componentShapeProfile,
-        @JsonIgnore Path localPath
+        @JsonIgnore Path localPath,
+        @JsonIgnore List<CompanionArtifact> companions
 ) {
+    /**
+     * Constructor for entries without resolved companions: every entry that is not a hosted component, and hosted
+     * components before scan-time resolution.
+     */
+    public CatalogEntry(
+            ArtifactDescriptor artifact,
+            ClaimDescriptor claimDescriptor,
+            CatalogMetadata metadata,
+            ComponentShapeProfile componentShapeProfile,
+            Path localPath) {
+        this(artifact, claimDescriptor, metadata, componentShapeProfile, localPath, List.of());
+    }
+
     /**
      * Convenience constructor for entries without a component shape profile.
      *
@@ -55,6 +70,15 @@ public record CatalogEntry(
         if (metadata == null) {
             throw new IllegalArgumentException("catalog metadata is required");
         }
+        companions = companions == null ? List.of() : List.copyOf(companions);
+    }
+
+    /**
+     * Returns this entry with the companions its {@code hosted_activation} names, as resolved by the scan
+     * (HLD-in-process-component-hosting §3), in the order the activation lists them.
+     */
+    public CatalogEntry withCompanions(List<CompanionArtifact> resolved) {
+        return new CatalogEntry(artifact, claimDescriptor, metadata, componentShapeProfile, localPath, resolved);
     }
 
     /**

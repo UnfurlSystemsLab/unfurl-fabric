@@ -1,6 +1,6 @@
 # HLD: Composing components hosted in-process by a selected service
 
-Status: **proposed design, not implemented.** This is Fabric's side of DCP's in-process component host
+Status: **implemented** (§3 to §10, CLI and Studio). This is Fabric's side of DCP's in-process component host
 (UnfurlSystemsLab/unfurl-dcp#20: HLD-C §6.1 and the Java LLD *In-Process Component Host*). Foundry's side is
 UnfurlSystemsLab/unfurl-foundry#17. Placement belongs to `unfurl-deployment` (HLD-D §6.2a) and the emitted overlay to
 `unfurl-deploy-emitter` (HLD-E §4.0b); this HLD defines what Fabric needs from them.
@@ -34,7 +34,7 @@ plan and explain output; delegating to DCP's shared rules.
   `HostOwnerMeta` consumer.
 - Any Fabric→Flow or Foundry→Flow edge.
 
-## 3. Catalog: who is hosted, by what, with which artifacts
+## 3. Catalog: who is hosted, by what, with which artifacts  (implemented)
 
 Both blocks are **catalog metadata**, not claim content: they live in `META-INF/unfurl-catalog.yaml`'s `catalog` block
 next to `artifact`, `binding` and `lifecycle`, so they change the artifact hash but never the claim hash.
@@ -80,8 +80,9 @@ it. Fabric uses the declaration only to fail early. The host enforces it at runt
 candidates by the Maven coordinates in their `META-INF/maven/*/*/pom.properties`, and hashed. They are not selectable
 entries, and `scan` reports them as `companions=N`, not as `skipped`. Resolution never depends on scan order:
 
-- **One coordinate set per jar.** A jar with exactly one `pom.properties` is indexed under it. A jar with none, or with
-  several (a shaded jar), is not a companion candidate and is listed with that reason. It can never satisfy a companion
+- **One coordinate set per jar.** A jar with exactly one `pom.properties`, complete with `groupId`, `artifactId` and
+  `version`, is indexed under it. A jar with none, with several (a shaded jar, counting incomplete files too), or whose
+  only one is incomplete, is not a companion candidate and is listed with that reason. It can never satisfy a companion
   by accident.
 - **Identical bytes are one artifact.** Several jars with the same coordinates and the same SHA-256, such as a copy
   under another file name, are deduplicated. The index keeps one entry and lists every path.
@@ -92,12 +93,37 @@ entries, and `scan` reports them as `companions=N`, not as `skipped`. Resolution
 - **Missing.** A `hosted_activation` naming a companion the catalog lacks makes that entry not selectable, with
   `CATALOG_COMPANION_MISSING` naming the coordinates.
 
-Both diagnostics are shown by `scan`, `plan` and Studio admission and are never dropped silently. Studio admission
-accepts companion jar uploads by bytes, like component jars, and applies the same rules: uploading different bytes
-under coordinates already admitted for the tenant is refused with `CATALOG_COMPANION_CONFLICT`, naming the stored
-artifact and its hash.
+Both diagnostics are shown by `scan`, `plan` and Studio admission and are never dropped silently.
 
-## 4. Placement and consumer authoring (DCP decision D3)
+**Implementation (CLI scan).**
+- `CatalogScanner` offers every manifest-less jar to `CompanionIndex`.
+- `Catalog.companions()` is the resulting index; `scan` prints `companions=N`.
+- A hosted entry whose companions are missing or conflicting is reported as `SkippedEntry` reason `COMPANION_UNRESOLVED`, with the detail starting with the code, and is left out of the catalog.
+- Each selectable hosted entry carries its resolved companions (`CatalogEntry.companions()`), so `compile` and `emit` read them without the catalog.
+- The two catalog blocks are `CatalogMetadata.hostedActivation`/`componentHost`, null when absent.
+- Coordinates are read by one public reader, `CompanionCoordinates.read(jarBytes)`, shared by the scan and Studio.
+
+**Implementation (Studio admission).** Studio admission accepts companion jar uploads by bytes, like component jars,
+and applies the same rules:
+- A `.jar` upload with no `META-INF/unfurl-catalog.yaml` and exactly one `pom.properties`, a complete one, is a companion
+  (`StudioClaimAdmissionValidator` returns a companion validation). Any other manifest-less jar is still refused, now
+  saying it is neither a component nor a companion candidate.
+- The bytes go to `StudioCompanionStore`, a tenant-scoped, content-addressed, write-once Repository
+  (`<state dir>/studio-companions/<tenant>/<sha256>.jar`; a per-process temporary directory for an in-memory Studio,
+  whose state is not persisted either). A `StudioCompanionRecord(coordinates, sha256, fileName)` is kept per tenant in
+  `StudioStateStore.State.companionsByTenant`, so it survives restarts.
+- Re-uploading identical bytes is idempotent. Different bytes under coordinates already admitted for the tenant are
+  refused with `CATALOG_COMPANION_CONFLICT`, naming the stored file and its hash; the stored companion is kept.
+- The admission result is `VERIFIED` with entry id `companion:<coordinates>` and no claim hash; companions never
+  appear in the visual catalog, because they are not composable.
+- An uploaded component keeps its full catalog metadata (`ParsedManifest.metadata()`), `hosted_activation` and
+  `component_host` included, so Studio places hosted components exactly as the CLI does.
+- At compile, a hosted entry's `hosted_activation.companions` are resolved against the tenant's records
+  (`CompanionArtifact` with the stored path, so the shared-API check reads the bytes). A missing one fails compile with
+  `CATALOG_COMPANION_MISSING`, naming the coordinates. Companions uploaded after the hosted component are picked up at
+  the next compile.
+
+## 4. Placement and consumer authoring (DCP decision D3)  (implemented)
 
 **Placement** is part of deployment resolution (HLD-D §6.2a). After shapes are chosen, each entry with
 `hosted_activation` whose shape is in-process gets a host:
@@ -121,7 +147,7 @@ external identity. All other child contracts keep the `HostOwnerMeta` consumer. 
 `RuntimeBindingValidator` already requires a binding's consumer instance to equal the contract's consumer party,
 runtime bindings follow automatically.
 
-## 5. Pins in the child contract (DCP decision D1)
+## 5. Pins in the child contract (DCP decision D1)  (implemented)
 
 Each hosted component's child contracts carry, beside today's `artifactCoordinates`, `artifactSha256` and
 `claimHash`, the frozen companion set from the catalog:
@@ -139,7 +165,7 @@ metadata:
 would refuse it as `ARTIFACT_SHADOWS_SHARED_API`, so Fabric reports it at compile time. `verify --catalog` treats a
 companion's hash drift like a component's.
 
-## 6. Runtime bindings for hosted contracts (DCP decision D2)
+## 6. Runtime bindings for hosted contracts (DCP decision D2)  (implemented)
 
 For a child contract whose provider is hosted, `fabric runtime-bindings` writes a binding for an in-process provider:
 
@@ -180,14 +206,37 @@ leaves `accountRef` and `sessionRef` to each deployment. Fabric's part:
   `deployment-config-resolver`, or a contributed resolver for Vault, Azure App Configuration, the Kubernetes API or
   similar. Either way the jar's schema bounds what it can be.
 
-## 7. Signed child contracts from the CLI
+**Implementation.**
+- Scan refuses an entry whose packaged file is invalid, as `INVALID_COMPONENT_CONFIGURATION` with DCP's failures.
+- `runtime-bindings` takes `--catalog`, required exactly when the contract hosts a component, and reads the packaged
+  schemas there (`runtime/HostedComponentConfiguration`).
+- Each inline `--component-config` value is converted to the key's declared type (`integer`, `boolean`,
+  comma-separated `list<T>`). A value that does not convert stays a string, so DCP's validator refuses it. Nothing is
+  coerced silently.
+- `--component-config` is refused for a contract that hosts no component.
+- Hosted bindings are `IN_PROCESS`, with no base URL and no endpoint reference. Their consumer instance is the host,
+  with the host's claim slug as instance name.
+- `plan` lists each hosted component's deployment keys from its packaged schema (§10).
+- `RuntimeBindingSetGenerator` builds a DCP `RuntimeBindingSet` and writes it with DCP's `RuntimeBindingCodec`, so the
+  document format and its set invariants (unique binding and contract ids) have one owner; Fabric's own mapper is gone.
+
+## 7. Signed child contracts from the CLI  (implemented)
 
 Studio's `dcpRuntimeBundle` (`claims/` plus one signed `contracts/frozen/*.frozen.json` per child contract, through
 DCP `ContractFreezer`) moves to `compile.DcpRuntimeBundleWriter`. Studio and the CLI both call it.
 `fabric sign --dcp-runtime-bundle <out.zip>` writes the bundle with the same key that signs the contract. This also
-removes the guide's limit that only Studio can produce the bundle.
+removes the guide's limit that only Studio can produce the bundle. The bundle includes the selected providers'
+claims, so it needs `--catalog`, the catalog the contract was compiled from; every selection must be found there by
+artifact SHA-256.
 
-## 8. Emit: the admitted-component overlay
+## 8. Emit: the admitted-component overlay  (implemented)
+
+`emit` and `deploy` take `--catalog`. When the signed plan has hosted entries it is required and becomes the
+`local-compose` target's `componentArtifactsPath`; for a plan without them it is refused, the emitter's own rule, before
+any target runs. After an emit or a stitched deploy, every `HOSTED_COMPONENT_EXPORT` artifact prints
+`operatorDelivery=<absolute path> host=<claimUri>@<claimVersion> (not mounted or started: deliver it to that host)`,
+read from its `host.json`. Fabric's CLI tests use fake backends for these, so the overlay itself is tested in
+`unfurl-deploy-emitter` (`AdmittedComponentOverlayRendererTest`).
 
 `fabric emit` passes the catalog folder to the emitter as `componentArtifactsPath` when the plan has a hosted
 component. The emitter (HLD-E §4.0b) writes, per hosting service, an overlay from the DCP runtime bundle, the runtime
@@ -223,12 +272,23 @@ a one-off check hashed all 28 claims reachable to the build (Fabric's catalog fi
 `com.unfurl` claim) both ways and found them identical, so no existing pin changes; DCP's `ClaimHashTest` now pins the
 canonical bytes with a golden value.
 
-## 10. Plan, explain and diagnostics
+## 10. Plan, explain and diagnostics  (implemented)
+
+Exact CLI forms: `plan` prints, under a candidate with hosted components, `hosted: <component> by <host>` (an external
+host as `external <claimUri>@<claimVersion>`, `(named by policy)` when the policy chose it) or
+`hosted: placement failed: <code>: <message>`, then `deployment keys: <claimUri> requires <key (type)>…; may change
+<key (tighten|replace)>…`. After the candidates it prints `companions missing: <jar> <detail>` for each hosted jar the
+scan left out. A candidate without hosted components prints exactly as before. `explain-deployment` prints `host=` and
+`companionArtifacts=[coordinates@sha256…]` for every entry (`<none>` and `[]` when not hosted). `verify --catalog`
+checks every companion a child contract pins against the catalog's companion index, in the same `hashDrifts` and
+`missingFromCatalog` counts, and prints a `drift:` or `missing:` line per finding.
 
 - `plan` prints `hosted: <component> by <host>` under each candidate, or the placement failure line, and
   `companions missing:` lines.
 - `explain-deployment` prints `host=` and `companionArtifacts=` per entry.
-- Studio's dependency audit shows the host edge and each companion with its hash.
+- Studio's dependency audit shows the host edge and each companion with its hash: when the compiled candidate hosts
+  components, the compile response carries the diagnostic artifact `hosted-components.json`, one
+  `{ component, host, consumer: { claimUri, claimVersion }, companions: [{ coordinates, sha256 }] }` per hosted entry.
 
 | Code | Step | Cause |
 |---|---|---|
@@ -238,7 +298,7 @@ canonical bytes with a golden value.
 | `HOST_PLACEMENT_MISSING` / `HOST_PLACEMENT_AMBIGUOUS` / `HOST_PLACEMENT_INVALID` | plan, compile | No, several, or a policy-named non-candidate host. |
 | `CONFIG_*` (DCP codes) | scan, runtime-bindings | An invalid packaged `unfurl-config.yaml` (scan), or deployment values that break its schema: missing, unknown, fixed, widening, inline secret, given twice. |
 
-## 11. Worked example: Foundry with the Kotak adapter
+## 11. Worked example: Foundry with the Kotak adapter  (run 11 November 2026 through emit and Foundry admission; guide: `docs/examples/foundry-assemblies`)
 
 1. Catalog: the Foundry jar (with `component_host`), `kotak-neo-core` (with `hosted_activation`) and its six
    companions. `scan` prints `companions=6`.
@@ -254,7 +314,7 @@ canonical bytes with a golden value.
 5. `emit` → the Foundry service plus `foundry-admitted/`. Foundry's profile binds `dcp-admitted-components` to
    `/opt/unfurl/foundry/admitted` (Foundry LLD), and DCP's host admits the three operations at startup.
 
-## 12. Companion changes in other repos
+## 12. Companion changes in other repos  (done)
 
 | Repo | Change |
 |---|---|

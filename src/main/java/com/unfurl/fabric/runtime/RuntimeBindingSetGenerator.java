@@ -1,15 +1,5 @@
 package com.unfurl.fabric.runtime;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.MapperFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.unfurl.dcp.contract.CompositionContract;
 import com.unfurl.dcp.runtimebinding.ConfigRef;
 import com.unfurl.dcp.runtimebinding.Configuration;
@@ -19,7 +9,9 @@ import com.unfurl.dcp.runtimebinding.DeploymentKind;
 import com.unfurl.dcp.runtimebinding.Lifecycle;
 import com.unfurl.dcp.runtimebinding.ProviderInstance;
 import com.unfurl.dcp.runtimebinding.RuntimeBinding;
+import com.unfurl.dcp.runtimebinding.RuntimeBindingCodec;
 import com.unfurl.dcp.runtimebinding.RuntimeBindingMetadata;
+import com.unfurl.dcp.runtimebinding.RuntimeBindingSet;
 import com.unfurl.dcp.runtimebinding.RuntimeBindingValidator;
 import com.unfurl.dcp.runtimebinding.RuntimePolicy;
 import com.unfurl.dcp.runtimebinding.SecretRef;
@@ -29,14 +21,12 @@ import com.unfurl.dcp.validation.Severity;
 import com.unfurl.deployment.plan.BindingPlan;
 import com.unfurl.fabric.signing.SignedFabricContract;
 
-import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -57,7 +47,6 @@ import java.util.TreeMap;
  */
 public final class RuntimeBindingSetGenerator {
     private final Clock clock;
-    private final ObjectMapper yamlMapper;
 
     /** Production constructor: stamps generated binding sets with the current UTC time. */
     public RuntimeBindingSetGenerator() {
@@ -71,7 +60,6 @@ public final class RuntimeBindingSetGenerator {
      */
     public RuntimeBindingSetGenerator(Clock clock) {
         this.clock = clock == null ? Clock.systemUTC() : clock;
-        this.yamlMapper = yamlMapper();
     }
 
     /**
@@ -98,17 +86,9 @@ public final class RuntimeBindingSetGenerator {
             bindings.add(childBinding(child, signed.contract().bindingPlan(), safe));
         }
         validate(root, bindings, rootContract, childContracts);
-        Map<String, Object> wrapper = new LinkedHashMap<>();
-        wrapper.put("runtime_binding_set", Map.of(
-                "root_binding_id", root.bindingId(),
-                "generated_at", clock.instant(),
-                "source_signed_contract", safe.sourceSignedContract().toString(),
-                "runtime_bindings", bindings));
-        try {
-            return yamlMapper.writeValueAsBytes(wrapper);
-        } catch (IOException ex) {
-            throw new IllegalStateException("unable to write runtime binding set: " + ex.getMessage(), ex);
-        }
+        // DCP owns the document format: its codec writes it, and its set type enforces unique binding and contract ids.
+        return RuntimeBindingCodec.write(new RuntimeBindingSet(root.bindingId(), clock.instant(),
+                safe.sourceSignedContract().toString(), bindings));
     }
 
     /**
@@ -154,6 +134,9 @@ public final class RuntimeBindingSetGenerator {
     private RuntimeBinding childBinding(CompositionContract contract, BindingPlan plan, Options options) {
         if (IdentityBindingRule.isIdentity(contract)) {
             return identityBinding(contract, plan, options);
+        }
+        if (isHosted(contract, plan)) {
+            return hostedBinding(contract, options);
         }
         String capability = contract.binding().providerCapability();
         URI baseUrl = endpointFor(capability, options);
@@ -381,6 +364,45 @@ public final class RuntimeBindingSetGenerator {
      * Plan lookup: the binding mode of the plan entry for this contract's provider artifact and capability, or null when the
      * plan is absent or has no such entry.
      */
+    /**
+     * Whether a child contract's provider is hosted in-process by another runtime: its binding-plan entry has a host
+     * (HLD-D §6.2a). Such a contract already names that host as consumer (HLD-in-process-component-hosting §4).
+     */
+    private boolean isHosted(CompositionContract contract, BindingPlan plan) {
+        if (plan == null || contract.metadata() == null) return false;
+        Object coordinates = contract.metadata().extensions().get("artifactCoordinates");
+        String capability = contract.binding().providerCapability();
+        return plan.entries().stream().anyMatch(entry -> entry.artifactCoordinates().equals(coordinates)
+                && capability.equals(entry.capability()) && entry.host().isPresent());
+    }
+
+    /**
+     * Leaf assembler for a hosted in-process provider (HLD-in-process-component-hosting §6): {@code IN_PROCESS} with no
+     * base URL and no endpoint reference, consumed by the host (whose instance name is its claim slug), carrying only the
+     * deployment layer of the component's configuration. Packaged defaults stay in the pinned jar, where the host reads
+     * them. The deployment values were validated against the packaged schema before generation.
+     */
+    private RuntimeBinding hostedBinding(CompositionContract contract, Options options) {
+        Configuration deployment = options.componentConfiguration()
+                .getOrDefault(contract.parties().provider().claimUri(), new Configuration(Map.of()));
+        RuntimeBinding binding = binding(
+                childBindingId(contract, options),
+                contract,
+                DeploymentKind.IN_PROCESS,
+                null,
+                null,
+                conventionalCredentialsRef(contract, options),
+                deployment,
+                childMetadata(contract),
+                options);
+        return new RuntimeBinding(binding.bindingId(), binding.contractId(), binding.contractVersion(), binding.targetEnvironment(),
+                binding.providerInstance(),
+                new ConsumerInstance(contract.parties().consumer().claimUri(), contract.parties().consumer().claimVersion(),
+                        slug(contract.parties().consumer().claimUri().toString())),
+                binding.runtimePolicy(), binding.configuration(), binding.deploymentControls(), binding.lifecycle(),
+                binding.metadata());
+    }
+
     private Object planBindingMode(CompositionContract contract, BindingPlan plan) {
         if (plan == null || contract.metadata() == null || contract.metadata().extensions() == null) {
             return null;
@@ -438,27 +460,6 @@ public final class RuntimeBindingSetGenerator {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }
-    }
-
-    /**
-     * Mapper factory: writes public DCP YAML using snake_case and no document marker. Quotes are minimized, but number-like
-     * strings stay quoted so untyped configuration values (an audience such as {@code "1234"}) are read back as strings by
-     * Flow, Foundry and {@code assembly-bind}'s DCP validation.
-     */
-    private static ObjectMapper yamlMapper() {
-        YAMLFactory factory = new YAMLFactory()
-                .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
-                .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
-                .enable(YAMLGenerator.Feature.ALWAYS_QUOTE_NUMBERS_AS_STRINGS);
-        ObjectMapper mapper = new ObjectMapper(factory);
-        mapper.registerModule(new Jdk8Module());
-        mapper.registerModule(new JavaTimeModule());
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);
-        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
-        return mapper;
     }
 
     /**
@@ -545,8 +546,23 @@ public final class RuntimeBindingSetGenerator {
             String flowBaseUrl,
             String foundryBaseUrl,
             int timeoutMs,
-            IdentityOptions identity
+            IdentityOptions identity,
+            Map<URI, Configuration> componentConfiguration
     ) {
+        /** Validating constructor: the per-component configuration map is copied and never null. */
+        public Options {
+            componentConfiguration = componentConfiguration == null ? Map.of() : Map.copyOf(componentConfiguration);
+        }
+
+        /** Compatibility constructor: no hosted component configuration. */
+        public Options(Path sourceSignedContract, String signedContractSha256, String signedContractCanonicalHash,
+                       String signerKeyFingerprint, String tenant, String environment, String telemetryNamespace,
+                       String bindingIdPrefix, String flowBaseUrl, String foundryBaseUrl, int timeoutMs,
+                       IdentityOptions identity) {
+            this(sourceSignedContract, signedContractSha256, signedContractCanonicalHash, signerKeyFingerprint, tenant,
+                    environment, telemetryNamespace, bindingIdPrefix, flowBaseUrl, foundryBaseUrl, timeoutMs, identity, Map.of());
+        }
+
         /** Default local-dev options used by the Flowfoundry runbook's signed support envelope; no identity inputs. */
         public static Options defaults() {
             return new Options(
@@ -581,7 +597,8 @@ public final class RuntimeBindingSetGenerator {
                     blankToDefault(flowBaseUrl, defaults.flowBaseUrl),
                     blankToDefault(foundryBaseUrl, defaults.foundryBaseUrl),
                     timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs,
-                    identity == null ? IdentityOptions.none() : identity);
+                    identity == null ? IdentityOptions.none() : identity,
+                    componentConfiguration);
         }
 
         private static String blankToDefault(String value, String fallback) {

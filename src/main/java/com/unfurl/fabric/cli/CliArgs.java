@@ -1,18 +1,23 @@
 package com.unfurl.fabric.cli;
 
+import java.util.List;
+import java.util.ArrayList;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 final class CliArgs {
     private final Map<String, String> values;
+    private final Map<String, List<String>> repeated;
 
-    private CliArgs(Map<String, String> values) {
+    private CliArgs(Map<String, String> values, Map<String, List<String>> repeated) {
         this.values = values;
+        this.repeated = repeated;
     }
 
     static CliArgs parse(String[] args) {
         Map<String, String> values = new LinkedHashMap<>();
+        Map<String, List<String>> repeated = new LinkedHashMap<>();
         for (int i = 0; i < args.length; i++) {
             String token = args[i];
             if (!token.startsWith("--")) {
@@ -30,8 +35,14 @@ final class CliArgs {
                 throw FabricCliException.usage("missing value for --" + key);
             }
             values.put(key, args[++i]);
+            repeated.computeIfAbsent(key, k -> new ArrayList<>()).add(values.get(key));
         }
-        return new CliArgs(values);
+        return new CliArgs(values, repeated);
+    }
+
+    /** Returns every value given for a repeatable flag, in order; {@link #get} returns only the last one. */
+    List<String> all(String key) {
+        return List.copyOf(repeated.getOrDefault(key, List.of()));
     }
 
     String get(String key) {

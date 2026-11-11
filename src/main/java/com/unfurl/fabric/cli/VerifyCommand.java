@@ -54,6 +54,8 @@ final class VerifyCommand {
             out.println("catalogClean=" + d.clean());
             out.println("hashDrifts=" + d.hashDrifts().size());
             out.println("missingFromCatalog=" + d.missingFromCatalog().size());
+            d.hashDrifts().forEach(drift -> out.println("drift: " + drift.detail()));
+            d.missingFromCatalog().forEach(absent -> out.println("missing: " + absent.detail()));
         });
         out.println("overallOk=" + report.overallOk());
     }

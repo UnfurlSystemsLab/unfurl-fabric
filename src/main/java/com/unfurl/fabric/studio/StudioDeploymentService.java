@@ -158,7 +158,10 @@ public final class StudioDeploymentService {
                                 .map(Offer::capability)
                                 .sorted()
                                 .toList(),
-                        entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry))))
+                        entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry)),
+                        // Host placement inputs (HLD-D §6.2a), copied from the catalog block.
+                        com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry),
+                        com.unfurl.fabric.compile.HostedComponents.componentHost(entry)))
                 .toList();
     }
 

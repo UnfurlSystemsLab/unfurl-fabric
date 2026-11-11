@@ -2,6 +2,7 @@ package com.unfurl.fabric.cli;
 
 import com.unfurl.deployment.plan.BindingPlan;
 import com.unfurl.deployment.plan.BindingPlanEntry;
+import com.unfurl.fabric.compile.HostedComponents;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
 
@@ -31,8 +32,25 @@ final class ExplainDeploymentCommand {
             out.println("  bindingMode=" + entry.bindingMode());
             out.println("  endpointRef=" + entry.endpointRef().orElse("<none>"));
             out.println("  requiredSubstratePorts=" + entry.requiredSubstratePorts());
+            out.println("  host=" + entry.host().map(HostedComponents::describe).orElse("<none>"));
+            out.println("  companionArtifacts=" + companions(signed, entry));
         }
         return 0;
+    }
+
+    /**
+     * The companions pinned for an entry (HLD-in-process-component-hosting §10): read from the child contract that
+     * entry's artifact provides its capability through, as {@code coordinates@sha256}; {@code []} when none.
+     */
+    private static java.util.List<String> companions(SignedFabricContract signed, BindingPlanEntry entry) {
+        return signed.contract().childContracts().stream()
+                .filter(child -> child.binding().providerCapability().equals(entry.capability())
+                        && child.metadata() != null
+                        && entry.artifactCoordinates().equals(child.metadata().extensions().get("artifactCoordinates")))
+                .flatMap(child -> HostedComponents.companionPins(child).stream())
+                .map(pin -> pin.coordinates() + "@" + pin.sha256())
+                .distinct()
+                .toList();
     }
 
     private SignedFabricContract readSigned(Path path) {

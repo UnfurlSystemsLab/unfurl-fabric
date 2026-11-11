@@ -31,6 +31,10 @@ import java.util.jar.JarFile;
  *
  * <p>Pattern: <b>service</b> with injected collaborators (codec + clock); skips are signalled via an
  * internal control-flow exception ({@link SkipJar}) so one bad JAR never aborts the whole scan.
+ *
+ * <p>Jars without a catalog manifest are offered to the {@link CompanionIndex} (HLD-in-process-component-hosting §3).
+ * A hosted entry whose companions are missing or conflicting is reported as
+ * {@link SkippedEntry.SkipReason#COMPANION_UNRESOLVED} and left out of the catalog, so it is never selectable.
  */
 public final class CatalogScanner {
 
@@ -78,24 +82,51 @@ public final class CatalogScanner {
 
         List<CatalogEntry> entries = new ArrayList<>();
         List<SkippedEntry> skipped = new ArrayList<>();
+        CompanionIndex companions = new CompanionIndex();
 
+        List<Path> jars = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(catalogDirectory, "*.jar")) {
-            for (Path jarPath : stream) {
-                try {
-                    CatalogEntry entry = scanSingleJar(jarPath);
-                    if (entry != null) {
-                        entries.add(entry);
-                    }
-                } catch (SkipJar skip) {
-                    skipped.add(new SkippedEntry(jarPath, skip.reason, skip.detail));
-                }
-            }
+            stream.forEach(jars::add);
         } catch (IOException ex) {
             throw new CatalogScanException(
                     "unable to list catalog directory " + catalogDirectory + ": " + ex.getMessage(), ex);
         }
+        // Sorted, so the index and every diagnostic are independent of directory listing order.
+        jars.sort(java.util.Comparator.comparing(Path::toString));
+        for (Path jarPath : jars) {
+            try {
+                CatalogEntry entry = scanSingleJar(jarPath);
+                if (entry != null) {
+                    entries.add(entry);
+                }
+            } catch (SkipJar skip) {
+                // A jar without a catalog manifest may be a companion (§3); it is a skip only when it is not one.
+                if (skip.reason == SkippedEntry.SkipReason.MISSING_MANIFEST) {
+                    Optional<String> notCompanion = companions.offer(jarPath);
+                    if (notCompanion.isEmpty()) continue;
+                    skipped.add(new SkippedEntry(jarPath, skip.reason, skip.detail + "; " + notCompanion.get()));
+                } else {
+                    skipped.add(new SkippedEntry(jarPath, skip.reason, skip.detail));
+                }
+            }
+        }
 
-        Catalog catalog = new Catalog(entries);
+        // An entry whose companions are missing or conflicting is not selectable, and says why.
+        List<CatalogEntry> selectable = new ArrayList<>();
+        for (CatalogEntry entry : entries) {
+            Optional<String> unresolved = entry.metadata().optionalHostedActivation().flatMap(companions::unresolved);
+            Optional<String> invalidConfiguration = invalidConfiguration(entry);
+            if (invalidConfiguration.isPresent()) {
+                skipped.add(new SkippedEntry(entry.localPath(), SkippedEntry.SkipReason.INVALID_COMPONENT_CONFIGURATION,
+                        invalidConfiguration.get()));
+            } else if (unresolved.isPresent()) {
+                skipped.add(new SkippedEntry(entry.localPath(), SkippedEntry.SkipReason.COMPANION_UNRESOLVED, unresolved.get()));
+            } else {
+                selectable.add(entry.metadata().optionalHostedActivation().map(companions::resolve).map(entry::withCompanions).orElse(entry));
+            }
+        }
+
+        Catalog catalog = new Catalog(selectable, companions.artifacts());
         return new CatalogScanReport(catalog, Instant.now(clock), catalogDirectory, skipped);
     }
 
@@ -131,9 +162,25 @@ public final class CatalogScanner {
                 parsed.claim(),
                 codec.computeClaimHash(parsed.claim()));
 
-        CatalogMetadata metadata = new CatalogMetadata(parsed.lifecycle(), parsed.binding());
+        CatalogMetadata metadata = parsed.metadata();
 
         return new CatalogEntry(artifact, claimDescriptor, metadata, parsed.componentShapeProfile(), jarPath);
+    }
+
+    /**
+     * Checks the entry's packaged {@code META-INF/unfurl-config.yaml}, as data, with DCP's schema parser.
+     *
+     * @return empty when the entry packages no configuration or a valid one; otherwise every failure
+     */
+    private static Optional<String> invalidConfiguration(CatalogEntry entry) {
+        try {
+            com.unfurl.fabric.runtime.HostedComponentConfiguration.packagedSchema(entry.localPath());
+            return Optional.empty();
+        } catch (com.unfurl.dcp.componentconfig.ComponentConfigurationException invalid) {
+            return Optional.of(invalid.getMessage());
+        } catch (IOException unreadable) {
+            return Optional.of("the packaged configuration cannot be read: " + unreadable.getMessage());
+        }
     }
 
     /**

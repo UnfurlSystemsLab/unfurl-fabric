@@ -15,6 +15,7 @@ import com.unfurl.dcp.validation.Diagnostic;
 import com.unfurl.dcp.validation.Severity;
 import com.unfurl.fabric.catalog.CatalogManifestCodec;
 import com.unfurl.fabric.catalog.CatalogScanException;
+import com.unfurl.fabric.catalog.CompanionCoordinates;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -100,6 +101,9 @@ final class StudioClaimAdmissionValidator {
                     "declared sha256 " + artifact.sha256() + " does not match the uploaded artifact (" + artifactSha + ")")));
         }
         ManifestSource manifest = extractEmbeddedCatalogManifest(artifactBytes);
+        if (manifest.absent()) {
+            return companionOrRejected(artifactBytes, artifactSha, manifest);
+        }
         if (!manifest.diagnostics().isEmpty()) {
             return AdmissionValidation.rejected(manifest.diagnostics());
         }
@@ -132,7 +136,7 @@ final class StudioClaimAdmissionValidator {
      * missing manifest are claim-admission diagnostics so operators see the same DCP error panel used for schema
      * problems.
      */
-    private ManifestSource extractEmbeddedCatalogManifest(byte[] artifactBytes) {
+    private static ManifestSource extractEmbeddedCatalogManifest(byte[] artifactBytes) {
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(artifactBytes))) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
@@ -140,12 +144,35 @@ final class StudioClaimAdmissionValidator {
                     return ManifestSource.of(new String(zip.readAllBytes(), StandardCharsets.UTF_8));
                 }
             }
-            return ManifestSource.rejected("artifact." + EMBEDDED_CATALOG_MANIFEST_PATH,
+            return ManifestSource.missing("artifact." + EMBEDDED_CATALOG_MANIFEST_PATH,
                     "JAR artifact is missing " + EMBEDDED_CATALOG_MANIFEST_PATH);
         } catch (IOException ex) {
             return ManifestSource.rejected("artifact",
                     "unable to read JAR artifact catalog manifest: " + ex.getMessage());
         }
+    }
+
+    /**
+     * Companion admission (HLD-in-process-component-hosting §3): a jar without a catalog manifest is a companion when it
+     * carries exactly one {@code pom.properties}, read with the scan's own {@link CompanionCoordinates} reader from the
+     * bytes that were hashed. Any other manifest-less jar is refused, saying it is neither a component nor a companion.
+     */
+    private static AdmissionValidation companionOrRejected(byte[] artifactBytes, String artifactSha, ManifestSource manifest) {
+        CompanionCoordinates.Identity identity;
+        try {
+            identity = CompanionCoordinates.read(artifactBytes);
+        } catch (IOException ex) {
+            return AdmissionValidation.rejected(List.of(error(ErrorCode.CLAIM_MALFORMED.name(), "artifact",
+                    "unable to read JAR artifact: " + ex.getMessage())));
+        }
+        java.util.Optional<String> coordinates = identity.single();
+        if (coordinates.isEmpty()) {
+            // One problem, one diagnostic: the missing manifest, saying why the jar is not a companion either.
+            StudioDcpDiagnostic missing = manifest.diagnostics().get(0);
+            return AdmissionValidation.rejected(List.of(error(missing.code(), missing.path(), missing.message()
+                    + ", so it is not a component, and it is " + identity.refusal())));
+        }
+        return AdmissionValidation.companion(coordinates.get(), artifactSha, artifactBytes);
     }
 
     /**
@@ -221,15 +248,20 @@ final class StudioClaimAdmissionValidator {
             Claim claim,
             List<StudioDcpDiagnostic> diagnostics,
             String claimYaml,
-            String artifactSha
+            String artifactSha,
+            String companionCoordinates,
+            byte[] companionBytes
     ) {
         /**
-         * Invariant constructor: copied diagnostics prevent mutation after validation.
+         * Invariant constructor: copied diagnostics prevent mutation after validation. A companion outcome carries
+         * coordinates and bytes and no claim; a component outcome carries a claim and neither.
          */
         AdmissionValidation {
             diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
             claimYaml = claimYaml == null ? "" : claimYaml;
             artifactSha = artifactSha == null ? "" : artifactSha;
+            companionCoordinates = companionCoordinates == null ? "" : companionCoordinates;
+            companionBytes = companionBytes == null ? new byte[0] : companionBytes.clone();
         }
 
         /**
@@ -237,14 +269,24 @@ final class StudioClaimAdmissionValidator {
          */
         static AdmissionValidation verified(Claim claim, List<StudioDcpDiagnostic> diagnostics, String claimYaml,
                                             String artifactSha) {
-            return new AdmissionValidation(claim, diagnostics, claimYaml, artifactSha);
+            return new AdmissionValidation(claim, diagnostics, claimYaml, artifactSha, "", null);
         }
 
         /**
          * Factory for a rejected artifact; the absent claim prevents accidental catalog updates.
          */
         static AdmissionValidation rejected(List<StudioDcpDiagnostic> diagnostics) {
-            return new AdmissionValidation(null, diagnostics, "", "");
+            return new AdmissionValidation(null, diagnostics, "", "", "", null);
+        }
+
+        /** Factory for a companion jar: its one coordinate set, its hash, and the bytes to store. */
+        static AdmissionValidation companion(String coordinates, String artifactSha, byte[] bytes) {
+            return new AdmissionValidation(null, List.of(), "", artifactSha, coordinates, bytes);
+        }
+
+        /** Predicate: the upload is a companion jar, admitted to the tenant's companion store rather than the catalog. */
+        boolean companion() {
+            return !companionCoordinates.isBlank();
         }
 
         /**
@@ -260,7 +302,7 @@ final class StudioClaimAdmissionValidator {
      * Value object: carries either the manifest text read from the jar or the diagnostics explaining why it could
      * not be read.
      */
-    private record ManifestSource(String manifestYaml, List<StudioDcpDiagnostic> diagnostics) {
+    private record ManifestSource(String manifestYaml, List<StudioDcpDiagnostic> diagnostics, boolean absent) {
         /**
          * Invariant constructor: normalizes nullable helper output to immutable values.
          */
@@ -269,18 +311,23 @@ final class StudioClaimAdmissionValidator {
             diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
         }
 
+        /** Factory for a readable jar that has no catalog manifest: possibly a companion. */
+        private static ManifestSource missing(String field, String message) {
+            return new ManifestSource("", List.of(error(ErrorCode.CLAIM_MALFORMED.name(), field, message)), true);
+        }
+
         /**
          * Factory for a manifest read from the jar.
          */
         private static ManifestSource of(String manifestYaml) {
-            return new ManifestSource(manifestYaml, List.of());
+            return new ManifestSource(manifestYaml, List.of(), false);
         }
 
         /**
          * Factory for a manifest that could not be read.
          */
         private static ManifestSource rejected(String path, String message) {
-            return new ManifestSource("", List.of(error(ErrorCode.CLAIM_MALFORMED.name(), path, message)));
+            return new ManifestSource("", List.of(error(ErrorCode.CLAIM_MALFORMED.name(), path, message)), false);
         }
     }
 }
