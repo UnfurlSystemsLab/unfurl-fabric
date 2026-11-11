@@ -1,22 +1,17 @@
 package com.unfurl.fabric.catalog;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.Enumeration;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
 import java.util.TreeMap;
-import java.util.jar.JarEntry;
-import java.util.jar.JarFile;
 
 /**
  * Builder of the catalog's companion index (HLD-in-process-component-hosting §3, companion resolution). Jars without a
@@ -31,10 +26,8 @@ import java.util.jar.JarFile;
  * Reading is metadata access only; no catalog code runs.
  */
 final class CompanionIndex {
-    static final String MISSING = "CATALOG_COMPANION_MISSING";
-    static final String CONFLICT = "CATALOG_COMPANION_CONFLICT";
-    private static final String POM_PROPERTIES = "/pom.properties";
-    private static final String MAVEN_DIR = "META-INF/maven/";
+    static final String MISSING = CompanionCoordinates.MISSING;
+    static final String CONFLICT = CompanionCoordinates.CONFLICT;
 
     /** Every candidate jar by coordinates, then by SHA-256, with the paths holding those bytes. */
     private final Map<String, Map<String, List<Path>>> candidates = new TreeMap<>();
@@ -48,14 +41,14 @@ final class CompanionIndex {
         List<String> coordinates;
         byte[] bytes;
         try {
-            coordinates = coordinates(jar);
+            // One read: the coordinates come from the same bytes that are hashed.
             bytes = Files.readAllBytes(jar);
+            coordinates = CompanionCoordinates.read(bytes);
         } catch (IOException unreadable) {
             return Optional.of("not a companion candidate: unreadable (" + unreadable.getMessage() + ")");
         }
         if (coordinates.size() != 1) {
-            return Optional.of("not a companion candidate: it has " + coordinates.size()
-                    + " pom.properties entries, and a companion needs exactly one");
+            return Optional.of(CompanionCoordinates.notACandidate(coordinates.size()));
         }
         candidates.computeIfAbsent(coordinates.get(0), c -> new TreeMap<>())
                 .computeIfAbsent(sha256(bytes), s -> new ArrayList<>()).add(jar);
@@ -101,27 +94,6 @@ final class CompanionIndex {
             artifacts.put(coordinates, new CompanionArtifact(coordinates, only.getKey(), paths.get(0), paths));
         });
         return artifacts;
-    }
-
-    /** Reads the {@code group:artifact:version} of every {@code META-INF/maven/*}{@code /*}{@code /pom.properties}. */
-    private static List<String> coordinates(Path jar) throws IOException {
-        List<String> found = new ArrayList<>();
-        try (JarFile file = new JarFile(jar.toFile(), false)) {
-            for (Enumeration<JarEntry> entries = file.entries(); entries.hasMoreElements(); ) {
-                JarEntry entry = entries.nextElement();
-                String name = entry.getName();
-                if (!name.startsWith(MAVEN_DIR) || !name.endsWith(POM_PROPERTIES) || name.split("/").length != 5) continue;
-                Properties properties = new Properties();
-                try (InputStream in = file.getInputStream(entry)) {
-                    properties.load(in);
-                }
-                String group = properties.getProperty("groupId");
-                String artifact = properties.getProperty("artifactId");
-                String version = properties.getProperty("version");
-                if (group != null && artifact != null && version != null) found.add(group + ":" + artifact + ":" + version);
-            }
-        }
-        return found;
     }
 
     private static String sha256(byte[] bytes) {

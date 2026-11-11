@@ -624,6 +624,102 @@ class StudioCatalogServiceTest {
     }
 
     /**
+     * Studio companion admission (HLD-in-process-component-hosting §3, §10): a hosted component compiles only once its
+     * companion is admitted; the companion is stored, persisted and pinned, a different jar under the same coordinates
+     * is refused naming the stored one, and the compile response audits the host edge and the companion's hash.
+     */
+    @Test
+    void admitsCompanionJarsAndPinsThemIntoHostedComponents(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioCatalogService service = new StudioCatalogService(store, null);
+        assertThat(service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-flow", List.of(
+                jarDraft(dir, "flow.jar", catalogManifestYaml("flow", "workflow.execute")),
+                jarDraft(dir, "foundry.jar", hostManifestYaml("foundry", "agent.run")),
+                jarDraft(dir, "broker.jar", hostedManifestYaml("broker", "broker.read", COMPANION))))).status())
+                .isEqualTo("VERIFIED");
+        int catalogSize = service.listCatalogVisuals("tenant-a").entries().size();
+        service.extractNeeds("tenant-a", "assembly-flow", new StudioNeedsExtractionRequest("Flowfoundry Export",
+                List.of("workflow.yaml", "workload.agent.yaml"), "containerized-local"));
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+        addComponent(service, created.session(), "uploaded:broker.jar", 2);
+
+        StudioCompileDraftCandidateResponse missing = compile(service, created.session());
+        assertThat(missing.status()).isEqualTo("INVALID");
+        assertThat(missing.reason()).isEqualTo("CATALOG_COMPANION_MISSING");
+        assertThat(missing.details()).contains(COMPANION);
+
+        byte[] companion = companionJar(dir, "broker-http.jar", new byte[]{1});
+        StudioCatalogAdmissionResponse admitted = service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-flow",
+                List.of(new StudioComponentArtifactDraft("broker-http.jar", "", "", Base64.getEncoder().encodeToString(companion)))));
+        assertThat(admitted.status()).isEqualTo("VERIFIED");
+        assertThat(admitted.results()).singleElement()
+                .satisfies(result -> assertThat(result.catalogEntryId()).isEqualTo("companion:" + COMPANION));
+        assertThat(admitted.catalog().entries()).hasSize(catalogSize);
+        String companionSha = java.util.HexFormat.of().formatHex(
+                java.security.MessageDigest.getInstance("SHA-256").digest(companion));
+
+        StudioCatalogAdmissionResponse conflict = service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-flow",
+                List.of(new StudioComponentArtifactDraft("broker-http-rebuilt.jar", "", "",
+                        Base64.getEncoder().encodeToString(companionJar(dir, "rebuilt.jar", new byte[]{2}))))));
+        assertThat(conflict.status()).isEqualTo("REJECTED");
+        assertThat(conflict.results()).singleElement().satisfies(result -> assertThat(result.diagnostics()).singleElement()
+                .satisfies(diagnostic -> {
+                    assertThat(diagnostic.code()).isEqualTo("CATALOG_COMPANION_CONFLICT");
+                    assertThat(diagnostic.message()).contains("broker-http.jar (sha256 " + companionSha + ")", "broker-http-rebuilt.jar");
+                }));
+
+        // After a restart the persisted companion still resolves, and the audit shows the host edge and its hash.
+        StudioCatalogService restarted = new StudioCatalogService(store, null);
+        StudioCompileDraftCandidateResponse compiled = compile(restarted, created.session());
+        assertThat(compiled.status()).as(compiled.reason() + ": " + compiled.details()).isEqualTo("COMPILED");
+        StudioExportArtifact audit = compiled.diagnosticArtifacts().stream()
+                .filter(artifact -> artifact.url().contains("hosted-components.json")).findFirst().orElseThrow();
+        assertThat(restarted.diagnosticArtifactContent("tenant-a", audit.artifactId(), audit.sha256()))
+                .hasValueSatisfying(content -> assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
+                        .contains("\"component\" : \"com.unfurl:broker:1.0.0\"", "\"host\" : \"com.unfurl:foundry:1.0.0\"",
+                                "\"coordinates\" : \"" + COMPANION + "\"", "\"sha256\" : \"" + companionSha + "\""));
+    }
+
+    private static final String COMPANION = "com.example:broker-http:1.0.0";
+    private static final String REGISTRAR_SHAPE = "com.unfurl.foundry.substrate.offers.ToolCapabilityRegistrar";
+
+    /** Fixture manifest: a service that hosts in-process components of {@link #REGISTRAR_SHAPE}. */
+    private static String hostManifestYaml(String name, String capability) {
+        return catalogManifestYaml(name, capability) + """
+                  component_host:
+                    registrar_shape: %s
+                    shared_api_prefixes: [com.unfurl.foundry.substrate.]
+                """.formatted(REGISTRAR_SHAPE);
+    }
+
+    /** Fixture manifest: an in-process-only component hosted by {@link #REGISTRAR_SHAPE}, naming one companion. */
+    private static String hostedManifestYaml(String name, String capability, String companion) {
+        return catalogManifestYaml(name, capability)
+                .replace("supported_shapes: [IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE]", "supported_shapes: [IN_PROCESS_LIBRARY]")
+                + """
+                  hosted_activation:
+                    registrar_shapes: [%s]
+                    companions: [%s]
+                """.formatted(REGISTRAR_SHAPE, companion);
+    }
+
+    /** Fixture jar: a companion carrying exactly one {@code pom.properties} for {@link #COMPANION}. */
+    private static byte[] companionJar(Path dir, String fileName, byte[] payload) throws Exception {
+        Path jar = dir.resolve(fileName);
+        try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
+            output.putNextEntry(new JarEntry("META-INF/maven/com.example/broker-http/pom.properties"));
+            output.write("groupId=com.example\nartifactId=broker-http\nversion=1.0.0\n".getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+            output.putNextEntry(new JarEntry("com/example/http/Client.class"));
+            output.write(payload);
+            output.closeEntry();
+        }
+        return Files.readAllBytes(jar);
+    }
+
+    /**
      * A persisted manifest whose claim no longer matches its pinned hash is not compiled.
      */
     @Test

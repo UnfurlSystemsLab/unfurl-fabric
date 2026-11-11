@@ -107,7 +107,8 @@ assembly-verify-binding
 **Hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands). Implemented in the CLI: scan,
 plan/compile placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`), `runtime-bindings --component-config`
 (with `--catalog`), `emit`/`deploy --catalog` overlay input and export lines, `verify --catalog` companion drift,
-`plan` and `explain-deployment` hosting lines. Pending: Studio admission of companion uploads:
+`plan` and `explain-deployment` hosting lines; Studio companion admission and the `hosted-components.json` compile
+audit:
 
 - `scan` indexes companion jars by `pom.properties` and reports `companions=N`; identical bytes deduplicate, and
   different bytes under the same coordinates are `CATALOG_COMPANION_CONFLICT`, naming both files.
@@ -122,6 +123,10 @@ plan/compile placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`),
 - `plan` prints `hosted:`, `deployment keys:` and `companions missing:` lines; `verify --catalog` checks companion drift
   and prints each finding; `explain-deployment` prints `host=` and `companionArtifacts=`.
 - `runtime-bindings` writes through DCP's `RuntimeBindingCodec`.
+- Studio admits manifest-less jars with one `pom.properties` as companions (`StudioCompanionStore`, persisted
+  `companionsByTenant`; `CATALOG_COMPANION_CONFLICT` on different bytes), keeps uploaded entries' hosting blocks,
+  resolves companions at compile (`CATALOG_COMPANION_MISSING`), and adds `hosted-components.json` to compile
+  diagnostics.
 - Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.isExternallyOwned` /
   `ownerOf` (**done**).
 

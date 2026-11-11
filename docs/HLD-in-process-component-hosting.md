@@ -1,6 +1,6 @@
 # HLD: Composing components hosted in-process by a selected service
 
-Status: **implemented in the CLI** (§3 to §10); Studio admission of companion uploads is pending (§3). This is Fabric's side of DCP's in-process component host
+Status: **implemented** (§3 to §10, CLI and Studio). This is Fabric's side of DCP's in-process component host
 (UnfurlSystemsLab/unfurl-dcp#20: HLD-C §6.1 and the Java LLD *In-Process Component Host*). Foundry's side is
 UnfurlSystemsLab/unfurl-foundry#17. Placement belongs to `unfurl-deployment` (HLD-D §6.2a) and the emitted overlay to
 `unfurl-deploy-emitter` (HLD-E §4.0b); this HLD defines what Fabric needs from them.
@@ -34,7 +34,7 @@ plan and explain output; delegating to DCP's shared rules.
   `HostOwnerMeta` consumer.
 - Any Fabric→Flow or Foundry→Flow edge.
 
-## 3. Catalog: who is hosted, by what, with which artifacts  (implemented for the CLI scan; Studio companion upload pending)
+## 3. Catalog: who is hosted, by what, with which artifacts  (implemented)
 
 Both blocks are **catalog metadata**, not claim content: they live in `META-INF/unfurl-catalog.yaml`'s `catalog` block
 next to `artifact`, `binding` and `lifecycle`, so they change the artifact hash but never the claim hash.
@@ -100,10 +100,27 @@ Both diagnostics are shown by `scan`, `plan` and Studio admission and are never 
 - A hosted entry whose companions are missing or conflicting is reported as `SkippedEntry` reason `COMPANION_UNRESOLVED`, with the detail starting with the code, and is left out of the catalog.
 - Each selectable hosted entry carries its resolved companions (`CatalogEntry.companions()`), so `compile` and `emit` read them without the catalog.
 - The two catalog blocks are `CatalogMetadata.hostedActivation`/`componentHost`, null when absent.
-- **Not yet implemented:** Studio admission of companion jar uploads, the conflict rule above included. Until it is, Studio-admitted catalogs have no companions, so their hosted entries pin only the claim jar. Studio admission
-accepts companion jar uploads by bytes, like component jars, and applies the same rules: uploading different bytes
-under coordinates already admitted for the tenant is refused with `CATALOG_COMPANION_CONFLICT`, naming the stored
-artifact and its hash.
+- Coordinates are read by one public reader, `CompanionCoordinates.read(jarBytes)`, shared by the scan and Studio.
+
+**Implementation (Studio admission).** Studio admission accepts companion jar uploads by bytes, like component jars,
+and applies the same rules:
+- A `.jar` upload with no `META-INF/unfurl-catalog.yaml` and exactly one `pom.properties` is a companion
+  (`StudioClaimAdmissionValidator` returns a companion validation). Any other manifest-less jar is still refused, now
+  saying it is neither a component nor a companion candidate.
+- The bytes go to `StudioCompanionStore`, a tenant-scoped, content-addressed, write-once Repository
+  (`<state dir>/studio-companions/<tenant>/<sha256>.jar`; a per-process temporary directory for an in-memory Studio,
+  whose state is not persisted either). A `StudioCompanionRecord(coordinates, sha256, fileName)` is kept per tenant in
+  `StudioStateStore.State.companionsByTenant`, so it survives restarts.
+- Re-uploading identical bytes is idempotent. Different bytes under coordinates already admitted for the tenant are
+  refused with `CATALOG_COMPANION_CONFLICT`, naming the stored file and its hash; the stored companion is kept.
+- The admission result is `VERIFIED` with entry id `companion:<coordinates>` and no claim hash; companions never
+  appear in the visual catalog, because they are not composable.
+- An uploaded component keeps its full catalog metadata (`ParsedManifest.metadata()`), `hosted_activation` and
+  `component_host` included, so Studio places hosted components exactly as the CLI does.
+- At compile, a hosted entry's `hosted_activation.companions` are resolved against the tenant's records
+  (`CompanionArtifact` with the stored path, so the shared-API check reads the bytes). A missing one fails compile with
+  `CATALOG_COMPANION_MISSING`, naming the coordinates. Companions uploaded after the hosted component are picked up at
+  the next compile.
 
 ## 4. Placement and consumer authoring (DCP decision D3)  (implemented)
 
@@ -254,7 +271,7 @@ a one-off check hashed all 28 claims reachable to the build (Fabric's catalog fi
 `com.unfurl` claim) both ways and found them identical, so no existing pin changes; DCP's `ClaimHashTest` now pins the
 canonical bytes with a golden value.
 
-## 10. Plan, explain and diagnostics  (implemented in the CLI; Studio's audit view pending with §3)
+## 10. Plan, explain and diagnostics  (implemented)
 
 Exact CLI forms: `plan` prints, under a candidate with hosted components, `hosted: <component> by <host>` (an external
 host as `external <claimUri>@<claimVersion>`, `(named by policy)` when the policy chose it) or
@@ -268,7 +285,9 @@ checks every companion a child contract pins against the catalog's companion ind
 - `plan` prints `hosted: <component> by <host>` under each candidate, or the placement failure line, and
   `companions missing:` lines.
 - `explain-deployment` prints `host=` and `companionArtifacts=` per entry.
-- Studio's dependency audit shows the host edge and each companion with its hash.
+- Studio's dependency audit shows the host edge and each companion with its hash: when the compiled candidate hosts
+  components, the compile response carries the diagnostic artifact `hosted-components.json`, one
+  `{ component, host, consumer: { claimUri, claimVersion }, companions: [{ coordinates, sha256 }] }` per hosted entry.
 
 | Code | Step | Cause |
 |---|---|---|

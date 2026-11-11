@@ -99,13 +99,30 @@ public final class StudioStateStore {
             Map<String, Map<String, StudioDraftSession>> sessionsByTenant,
             Map<String, Map<String, StudioFileRecord>> filesByTenant,
             Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant,
-            Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant
+            Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant,
+            Map<String, Map<String, StudioCompanionRecord>> companionsByTenant
     ) {
+        /**
+         * Compatibility constructor: a state without companion records (HLD-in-process-component-hosting §3); a state
+         * file written before companions existed reads with none.
+         */
+        public State(
+                Map<String, List<StudioVisualCatalogEntry>> entriesByTenant,
+                Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant,
+                Map<String, Map<String, StudioLayoutState>> layoutsByTenant,
+                Map<String, Map<String, StudioDraftSession>> sessionsByTenant,
+                Map<String, Map<String, StudioFileRecord>> filesByTenant,
+                Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant,
+                Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant) {
+            this(entriesByTenant, assembliesByTenant, layoutsByTenant, sessionsByTenant, filesByTenant,
+                    sessionFileLinksByTenant, catalogSnapshotsByTenant, Map.of());
+        }
+
         /**
          * Factory: builds an empty normalized state for first-run Studio stores.
          */
         public static State empty() {
-            return new State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+            return new State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
         }
 
         /**
@@ -120,7 +137,8 @@ public final class StudioStateStore {
                     sessionsByTenant == null ? Map.of() : copySessions(sessionsByTenant),
                     filesByTenant == null ? Map.of() : copyFiles(filesByTenant),
                     sessionFileLinksByTenant == null ? Map.of() : copyLinks(sessionFileLinksByTenant),
-                    catalogSnapshotsByTenant == null ? Map.of() : copySnapshots(catalogSnapshotsByTenant));
+                    catalogSnapshotsByTenant == null ? Map.of() : copySnapshots(catalogSnapshotsByTenant),
+                    companionsByTenant == null ? Map.of() : copyCompanions(companionsByTenant));
         }
 
         private static Map<String, List<StudioVisualCatalogEntry>> copyEntries(
@@ -168,6 +186,15 @@ public final class StudioStateStore {
         ) {
             Map<String, List<StudioSessionFileLink>> copy = new HashMap<>();
             source.forEach((tenant, links) -> copy.put(tenant, links == null ? List.of() : List.copyOf(links)));
+            return copy;
+        }
+
+        /** Copies the companion records per tenant, by coordinates. */
+        private static Map<String, Map<String, StudioCompanionRecord>> copyCompanions(
+                Map<String, Map<String, StudioCompanionRecord>> source
+        ) {
+            Map<String, Map<String, StudioCompanionRecord>> copy = new HashMap<>();
+            source.forEach((tenant, records) -> copy.put(tenant, records == null ? Map.of() : Map.copyOf(records)));
             return copy;
         }
 

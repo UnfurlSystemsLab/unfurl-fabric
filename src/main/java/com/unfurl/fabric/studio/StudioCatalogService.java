@@ -131,6 +131,9 @@ public final class StudioCatalogService {
     private final Map<String, Map<String, StudioAssetContent>> diagnosticArtifactsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, StudioAssetContent>> exportArtifactsByTenant = new ConcurrentHashMap<>();
     private final Map<String, Map<String, CatalogEntry>> catalogEntriesByTenant = new ConcurrentHashMap<>();
+    /** Admitted companion jars per tenant, by coordinates (HLD-in-process-component-hosting §3); bytes in companionStore. */
+    private final Map<String, Map<String, StudioCompanionRecord>> companionsByTenant = new ConcurrentHashMap<>();
+    private final StudioCompanionStore companionStore;
     private final Map<String, Map<String, Need>> needsByTenant = new ConcurrentHashMap<>();
     private final StudioStateStore store;
     private final Path assetRoot;
@@ -164,6 +167,7 @@ public final class StudioCatalogService {
         this.store = store;
         this.assetRoot = assetRoot == null ? null : assetRoot.toAbsolutePath().normalize();
         this.eventBus = eventBus == null ? new InMemoryStudioSessionEventBus() : eventBus;
+        this.companionStore = StudioCompanionStore.forState(store);
         if (store != null) {
             StudioStateStore.State state = store.load();
             entriesByTenant.putAll(state.entriesByTenant());
@@ -179,6 +183,8 @@ public final class StudioCatalogService {
                     sessionFileLinksByTenant.put(tenant, List.copyOf(links)));
             state.catalogSnapshotsByTenant().forEach((tenant, snapshots) ->
                     catalogSnapshotsByTenant.put(tenant, new ConcurrentHashMap<>(snapshots)));
+            state.companionsByTenant().forEach((tenant, records) ->
+                    companionsByTenant.put(tenant, new ConcurrentHashMap<>(records)));
         }
     }
 
@@ -353,6 +359,10 @@ public final class StudioCatalogService {
                 continue;
             }
             StudioClaimAdmissionValidator.AdmissionValidation validation = claimAdmissionValidator.validate(artifact);
+            if (validation.companion()) {
+                results.add(admitCompanion(tenant, artifact.fileName(), validation));
+                continue;
+            }
             if (!validation.verified()) {
                 results.add(new StudioClaimVerificationResult(
                         artifact.fileName(),
@@ -411,6 +421,36 @@ public final class StudioCatalogService {
                 response.catalog(),
                 response.claimBundleArtifact(),
                 List.of(diagnosticArtifact(tenant, "catalog-admission", "catalog-admission.json", response)));
+    }
+
+    /**
+     * Companion admission (HLD-in-process-component-hosting §3): stores a companion jar's bytes and records its
+     * coordinates for the tenant. Identical bytes again are idempotent; different bytes under admitted coordinates are
+     * refused with {@code CATALOG_COMPANION_CONFLICT}, naming the stored file and hash, and the stored one is kept.
+     * Companions are not composable, so they never enter the visual catalog.
+     */
+    private StudioClaimVerificationResult admitCompanion(
+            String tenant, String fileName, StudioClaimAdmissionValidator.AdmissionValidation validation) {
+        String coordinates = validation.companionCoordinates();
+        String sha = validation.artifactSha().startsWith("sha256:")
+                ? validation.artifactSha().substring("sha256:".length()) : validation.artifactSha();
+        Map<String, StudioCompanionRecord> records = companionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        synchronized (records) {
+            StudioCompanionRecord stored = records.get(coordinates);
+            if (stored != null && !stored.sha256().equals(sha)) {
+                String message = com.unfurl.fabric.catalog.CompanionCoordinates.CONFLICT + ": " + coordinates
+                        + " is already admitted for this tenant as " + stored.fileName() + " (sha256 " + stored.sha256()
+                        + "), and " + fileName + " has different bytes (sha256 " + sha + ")";
+                return new StudioClaimVerificationResult(fileName, "REJECTED", "", "", List.of(message), List.of(
+                        new StudioDcpDiagnostic("ERROR", com.unfurl.fabric.catalog.CompanionCoordinates.CONFLICT, "artifact", message)));
+            }
+            companionStore.store(tenant, validation.companionBytes());
+            if (stored == null) {
+                records.put(coordinates, new StudioCompanionRecord(coordinates, sha, fileName));
+            }
+        }
+        return new StudioClaimVerificationResult(fileName, "VERIFIED", "companion:" + coordinates, "",
+                List.of("admitted as companion " + coordinates + " (sha256 " + sha + ")"), List.of());
     }
 
     /**
@@ -584,7 +624,8 @@ public final class StudioCatalogService {
         return new CatalogEntry(
                 artifact,
                 new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
-                new CatalogMetadata(parsed.lifecycle(), parsed.binding()),
+                // The full catalog metadata, hosting blocks included, so Studio places hosted components as the CLI does.
+                parsed.metadata(),
                 parsed.componentShapeProfile(),
                 null);
     }
@@ -3703,6 +3744,15 @@ public final class StudioCatalogService {
                 "compiled-contract-envelope.yaml",
                 "application/yaml",
                 compiled.compiledEnvelopeBytes()));
+        List<Map<String, Object>> hostedAudit = hostedComponentsAudit(compiled.contract());
+        if (!hostedAudit.isEmpty()) {
+            diagnosticArtifacts.add(diagnosticFileArtifact(
+                    session.tenantId(),
+                    "hosted-components-" + session.sessionId(),
+                    "hosted-components.json",
+                    "application/json",
+                    jsonBytes(hostedAudit)));
+        }
         StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
                 "COMPILED",
                 build.candidate().candidateId(),
@@ -3840,9 +3890,11 @@ public final class StudioCatalogService {
         List<String> warnings = new ArrayList<>();
         for (StudioVisualCatalogEntry visual : selectedVisuals) {
             try {
-                selected.add(catalogEntryForVisual(session.tenantId(), visual));
+                selected.add(withTenantCompanions(session.tenantId(), catalogEntryForVisual(session.tenantId(), visual)));
             } catch (CatalogEntryNotAdmittedException ex) {
                 return CandidateBuild.invalid(new InvalidDraft("CATALOG_ENTRY_NOT_ADMITTED", ex.getMessage()));
+            } catch (CompanionMissingException ex) {
+                return CandidateBuild.invalid(new InvalidDraft(com.unfurl.fabric.catalog.CompanionCoordinates.MISSING, ex.getMessage()));
             }
             warnings.addAll(visual.warnings());
         }
@@ -3970,6 +4022,48 @@ public final class StudioCatalogService {
                 .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
                 .put(entry.catalogEntryId(), rebuilt);
         return rebuilt;
+    }
+
+    /**
+     * Companion resolution for compile (HLD-in-process-component-hosting §3): a hosted entry's
+     * {@code hosted_activation.companions} are resolved against the tenant's admitted companions, each with its stored
+     * path so the shared-API check reads the admitted bytes. An entry the catalog scan already resolved, or one that
+     * names no companions, is returned unchanged.
+     *
+     * @throws CompanionMissingException {@code CATALOG_COMPANION_MISSING} naming every companion the tenant lacks
+     */
+    private CatalogEntry withTenantCompanions(String tenantId, CatalogEntry entry) {
+        var activation = entry.metadata().optionalHostedActivation();
+        if (activation.isEmpty() || activation.get().companions().isEmpty() || !entry.companions().isEmpty()) {
+            return entry;
+        }
+        String tenant = normalizeTenant(tenantId);
+        Map<String, StudioCompanionRecord> records = companionsByTenant.getOrDefault(tenant, Map.of());
+        List<String> missing = activation.get().companions().stream().filter(c -> !records.containsKey(c)).toList();
+        if (!missing.isEmpty()) {
+            throw new CompanionMissingException(com.unfurl.fabric.catalog.CompanionCoordinates.MISSING + ": "
+                    + entry.artifact().coordinates() + " needs companions this tenant has not admitted: "
+                    + String.join(", ", missing) + "; upload their jars");
+        }
+        List<com.unfurl.fabric.catalog.CompanionArtifact> companions = new ArrayList<>();
+        for (String coordinates : activation.get().companions()) {
+            StudioCompanionRecord record = records.get(coordinates);
+            Path stored = companionStore.path(tenant, record.sha256());
+            if (!Files.isRegularFile(stored)) {
+                throw new CompanionMissingException(com.unfurl.fabric.catalog.CompanionCoordinates.MISSING + ": the stored bytes of "
+                        + coordinates + " are no longer in the companion store; upload its jar again");
+            }
+            companions.add(new com.unfurl.fabric.catalog.CompanionArtifact(coordinates, record.sha256(), stored, List.of(stored)));
+        }
+        return entry.withCompanions(companions);
+    }
+
+    /** Raised when a hosted entry names companions the tenant has not admitted. */
+    private static final class CompanionMissingException extends RuntimeException {
+        /** @param message starts with {@code CATALOG_COMPANION_MISSING} and names the coordinates. */
+        private CompanionMissingException(String message) {
+            super(message);
+        }
     }
 
     /**
@@ -4110,6 +4204,35 @@ public final class StudioCatalogService {
             }
         }
         return bindings;
+    }
+
+    /**
+     * Dependency audit of hosting (HLD-in-process-component-hosting §10): one row per hosted binding-plan entry with the
+     * host edge (the placement and the child contract's consumer) and each pinned companion with its hash, read from
+     * the compiled child contract. Empty when the candidate hosts nothing.
+     */
+    private static List<Map<String, Object>> hostedComponentsAudit(CompiledContract compiled) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        if (compiled.bindingPlan() == null) {
+            return rows;
+        }
+        for (var entry : compiled.bindingPlan().entries()) {
+            if (entry.host().isEmpty()) continue;
+            for (var child : compiled.childContracts()) {
+                if (!child.binding().providerCapability().equals(entry.capability()) || child.metadata() == null
+                        || !entry.artifactCoordinates().equals(child.metadata().extensions().get("artifactCoordinates"))) continue;
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("component", entry.componentId());
+                row.put("capability", entry.capability());
+                row.put("host", com.unfurl.fabric.compile.HostedComponents.describe(entry.host().get()));
+                row.put("consumer", Map.of("claimUri", child.parties().consumer().claimUri().toString(),
+                        "claimVersion", child.parties().consumer().claimVersion()));
+                row.put("companions", com.unfurl.fabric.compile.HostedComponents.companionPins(child).stream()
+                        .map(pin -> Map.of("coordinates", pin.coordinates(), "sha256", pin.sha256())).toList());
+                rows.add(row);
+            }
+        }
+        return rows;
     }
 
     /**
@@ -4449,7 +4572,8 @@ public final class StudioCatalogService {
                 Map.copyOf(sessionsByTenant),
                 Map.copyOf(filesByTenant),
                 Map.copyOf(sessionFileLinksByTenant),
-                Map.copyOf(catalogSnapshotsByTenant)));
+                Map.copyOf(catalogSnapshotsByTenant),
+                Map.copyOf(companionsByTenant)));
     }
 
     /**
