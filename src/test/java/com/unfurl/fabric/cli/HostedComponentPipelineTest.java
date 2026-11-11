@@ -274,6 +274,84 @@ class HostedComponentPipelineTest {
     }
 
 
+    /**
+     * Studio's tool gateway applies the same hosting rules as the CLI (LLD-fabric-studio-api, <em>Tool gateway</em>):
+     * {@code fabric.runtime-binding-generate} needs the catalog and valid deployment values, and
+     * {@code fabric.foundry-root-assemble} writes the admitted overlay into the Foundry root it builds.
+     */
+    @Test
+    void studioToolGatewayBindsAndAssemblesHostedComponents(@TempDir Path work) throws Exception {
+        String foundry = "com.unfurl.foundry:unfurl-foundry:1.0.0";
+        writeJar(catalog.resolve("foundry.jar"), Map.of(CatalogScanner_MANIFEST,
+                hostManifest("urn:unfurl:foundry", foundry, "agent.run").getBytes(StandardCharsets.UTF_8)));
+        writeHosted(List.of(), PACKAGED_CONFIG);
+        Path needs = Files.writeString(work.resolve("needs.yaml"),
+                "requiredCapabilities:\n  - capability: broker.read\n    capabilityVersion: ^1\n  - capability: agent.run\n    capabilityVersion: ^1\n");
+        Path compiled = work.resolve("compiled.yaml");
+        assertExit(0, CliTestFixtures.run("compile", "--catalog", catalog.toString(), "--needs", needs.toString(), "--out", compiled.toString()));
+        var keys = com.unfurl.fabric.signing.SigningTestFixtures.generateEcKeyPair();
+        Path publicKey = com.unfurl.fabric.signing.SigningTestFixtures.writePublicKeyPem(work, "pub.pem", keys.getPublic());
+        Path signed = work.resolve("signed.yaml");
+        Path bundle = work.resolve("bundle.zip");
+        assertExit(0, CliTestFixtures.run("sign", "--contract", compiled.toString(),
+                "--key", com.unfurl.fabric.signing.SigningTestFixtures.writePrivateKeyPem(work, "key.pem", keys.getPrivate()).toString(),
+                "--public-key", publicKey.toString(), "--out", signed.toString(),
+                "--dcp-runtime-bundle", bundle.toString(), "--catalog", catalog.toString()));
+        var gateway = new com.unfurl.fabric.studio.StudioToolGateway(new com.unfurl.fabric.studio.StudioCatalogService(),
+                com.unfurl.fabric.studio.StudioJson.mapper());
+        Path bindings = work.resolve("runtime-binding.yaml");
+
+        var noCatalog = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
+                Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString()), Map.of()));
+        assertThat(noCatalog.output()).containsEntry("status", "GAP");
+        assertThat(String.valueOf(noCatalog.output())).contains("the contract hosts in-process components");
+        var missingValues = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
+                Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString(),
+                        "catalogPath", catalog.toString()), Map.of()));
+        assertThat(String.valueOf(missingValues.output())).contains("GAP", "CONFIG_REQUIRED_MISSING [accountRef]");
+        assertThat(bindings).doesNotExist();
+
+        var bound = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
+                Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString(),
+                        "catalogPath", catalog.toString(), "componentConfig", List.of(
+                                "urn:example:broker-adapter#accountRef=primary-equity",
+                                "urn:example:broker-adapter#sessionRef=secret://demo/broker/session")), Map.of()));
+        assertThat(bound.output()).containsEntry("status", "PASS");
+        var set = com.unfurl.dcp.runtimebinding.RuntimeBindingCodec.read(Files.readAllBytes(bindings));
+        assertThat(set.runtimeBindings()).anySatisfy(binding -> {
+            assertThat(binding.providerInstance().deploymentKind()).isEqualTo(com.unfurl.dcp.runtimebinding.DeploymentKind.IN_PROCESS);
+            assertThat(binding.configuration().values()).containsEntry("accountRef", "primary-equity");
+        });
+
+        Path source = Files.createDirectories(work.resolve("foundry-source"));
+        Files.createDirectories(source.resolve("profiles"));
+        Files.writeString(source.resolve("profiles/foundry-runtime-profile.yaml"),
+                "bindings:\n  - kind: TOOL_REGISTRY_SOURCE\n    adapter: dcp-admitted-components\n    config: {path: admitted}\n");
+        Files.createDirectories(source.resolve("agents"));
+        Files.createDirectories(source.resolve("prompts"));
+        Files.createDirectories(source.resolve("registries"));
+        Files.writeString(source.resolve("agents/a.agent.yaml"), "id: a\n");
+        Files.writeString(source.resolve("prompts/a.md"), "prompt\n");
+        Files.writeString(source.resolve("registries/tools.yaml"), "tools: []\n");
+        Path trust = copyKey(publicKey, Files.createDirectories(work.resolve("trust")));
+        Path root = work.resolve("foundry-root");
+        var assembled = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("r", "fabric.foundry-root-assemble",
+                Map.of("outputDir", root.toString(), "foundrySourceRoot", source.toString(), "signedContractPath", signed.toString(),
+                        "runtimeBindingPath", bindings.toString(), "signedCompiledContractPath", signed.toString(),
+                        "catalogPath", catalog.toString(), "dcpRuntimeBundlePath", bundle.toString(), "trustKeysPath", trust.toString()),
+                Map.of()));
+        assertThat(assembled.output()).as(String.valueOf(assembled.output())).containsEntry("status", "PASS");
+        assertThat(String.valueOf(assembled.output())).contains("dcp-admitted-components", "urn:unfurl:foundry");
+        assertThat(root.resolve("admitted/components/broker-adapter.jar")).exists();
+        assertThat(root.resolve("profiles/foundry-runtime-profile.yaml"))
+                .hasContent(Files.readString(source.resolve("profiles/foundry-runtime-profile.yaml")));
+        assertThat(root.resolve("admitted/trust-keys/pub.pem")).exists();
+        try (var frozen = Files.list(root.resolve("admitted/contracts/frozen"))) {
+            assertThat(frozen.map(path -> path.getFileName().toString())).singleElement()
+                    .satisfies(name -> assertThat(name).startsWith("broker-read-"));
+        }
+    }
+
     /** Deployment values that break the packaged schema are refused before any binding is written, all at once. */
     @Test
     void refusesComponentConfigurationThePackagedSchemaForbids(@TempDir Path work) throws Exception {

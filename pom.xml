@@ -112,7 +112,6 @@
                 <groupId>com.unfurl.deploy</groupId>
                 <artifactId>emitter-compose</artifactId>
                 <version>${deploy-emitter.version}</version>
-                <scope>runtime</scope>
             </dependency>
             <dependency>
                 <groupId>com.unfurl.deploy</groupId>
@@ -245,9 +244,9 @@
             <artifactId>emitter-core</artifactId>
         </dependency>
         <dependency>
+            <!-- Compile scope: Studio's Foundry-root assembly writes the admitted overlay with the emitter's renderer. -->
             <groupId>com.unfurl.deploy</groupId>
             <artifactId>emitter-compose</artifactId>
-            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>com.unfurl.deploy</groupId>

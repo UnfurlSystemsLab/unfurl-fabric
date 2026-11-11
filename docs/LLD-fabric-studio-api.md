@@ -382,10 +382,20 @@ services where possible:
   default because they are debug-symbol style artifacts; callers may opt in with
   `includeDiagnostics`.
 - `fabric.runtime-binding-generate` wraps the DCP runtime-binding generator over
-  the signed compiled support envelope.
+  the signed compiled support envelope. When the contract hosts in-process components
+  (HLD-in-process-component-hosting §6) it applies the CLI's rule
+  (`HostedComponentConfiguration.forContract`): `catalogPath` names the catalog whose packaged
+  schemas are read, and `componentConfig` lists `<claimUri>#<key>=<value|config://…|secret://…>`
+  entries validated with DCP's validator. A missing catalog, invalid or missing values, or values
+  for a contract that hosts nothing return `GAP` naming the problem; no binding is written.
 - `fabric.foundry-root-assemble` and `fabric.flow-root-assemble` copy only
-  explicit deployment-root inputs and validate required files before returning
-  PASS.
+  explicit deployment-root inputs (including the source root's profiles) and validate required files before returning
+  PASS. When the signed compiled contract hosts components on Foundry,
+  `fabric.foundry-root-assemble` also takes `catalogPath`, `dcpRuntimeBundlePath` and optional
+  `trustKeysPath`, and writes the admitted-component overlay into `<root>/admitted/` with the
+  emitter's `renderIntoDeploymentRoot` (HLD-E §4.0b). The result's `admittedOverlay` names the folder
+  and the profile binding Foundry needs to read it; a host other than Foundry, or overlay inputs for
+  a contract that hosts nothing, return `GAP`.
 - `fabric.container-image-build` defaults to explicit `PLAN_ONLY` or
   `DOCKER_BUILD`; missing mode or image context returns `GAP` questions instead
   of guessing.

@@ -103,6 +103,10 @@ Both diagnostics are shown by `scan`, `plan` and Studio admission and are never 
 - The two catalog blocks are `CatalogMetadata.hostedActivation`/`componentHost`, null when absent.
 - Coordinates are read by one public reader, `CompanionCoordinates.read(jarBytes)`, shared by the scan and Studio.
 
+**Studio tool gateway.** The agent-driven deployment steps follow the same rules: `fabric.runtime-binding-generate`
+takes `catalogPath` and `componentConfig` and shares the CLI's rule, and `fabric.foundry-root-assemble` writes the
+admitted overlay into the Foundry root it builds (`LLD-fabric-studio-api.md`, *Tool gateway*).
+
 **Implementation (Studio admission).** Studio admission accepts companion jar uploads by bytes, like component jars,
 and applies the same rules:
 - A `.jar` upload with no `META-INF/unfurl-catalog.yaml` and exactly one `pom.properties`, a complete one, is a companion

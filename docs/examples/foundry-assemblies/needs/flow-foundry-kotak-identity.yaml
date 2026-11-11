@@ -1,0 +1,21 @@
+# Flow and Foundry, the Kotak Neo read adapter hosted by Foundry, and the identity provider.
+#
+# agent.run and workflow.execute select Foundry and Flow. The three reads select kotak-neo-core,
+# which Foundry runs in its own process (its catalog block names Foundry's registrar shape).
+# identity-context selects the Keycloak adapter, which turns authentication on: every
+# environment's runtime bindings must then bind it to a Keycloak realm. Identity's offer is 1.x,
+# so it is asked for at ^1; the rest are at ^0.1.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: workflow.execute
+    capabilityVersion: ^0.1
+  - capability: portfolio.holdings.list
+    capabilityVersion: ^0.1
+  - capability: portfolio.mtf-holdings.list
+    capabilityVersion: ^0.1
+  - capability: gtt.instructions.list
+    capabilityVersion: ^0.1
+  - capability: identity-context
+    capabilityVersion: ^1

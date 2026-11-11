@@ -1,0 +1,126 @@
+{
+  "realm": "demo",
+  "displayName": "Unfurl demo (development)",
+  "enabled": true,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "agent-operator",
+        "description": "Operates agents in tenant demo"
+      }
+    ],
+    "client": {
+      "foundry": [
+        {
+          "name": "foundry.tool.read",
+          "description": "List the tenant's tools"
+        },
+        {
+          "name": "kotak:portfolio.holdings.list",
+          "description": "Read Kotak Neo holdings"
+        },
+        {
+          "name": "kotak:portfolio.mtf-holdings.list",
+          "description": "Read Kotak Neo margin-funded holdings"
+        },
+        {
+          "name": "kotak:gtt.instructions.list",
+          "description": "Read Kotak Neo GTT instructions"
+        }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "foundry",
+      "name": "Foundry (token audience)",
+      "enabled": true,
+      "bearerOnly": true,
+      "protocol": "openid-connect"
+    },
+    {
+      "clientId": "flow",
+      "name": "Flow (service account)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "audience-foundry",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "foundry",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        },
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "tenant",
+            "claim.value": "demo",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "foundry",
+            "claim.name": "permissions",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-flow",
+      "enabled": true,
+      "serviceAccountClientId": "flow",
+      "realmRoles": [
+        "default-roles-demo",
+        "agent-operator"
+      ],
+      "clientRoles": {
+        "foundry": [
+          "foundry.tool.read",
+          "kotak:portfolio.holdings.list",
+          "kotak:portfolio.mtf-holdings.list",
+          "kotak:gtt.instructions.list"
+        ]
+      }
+    }
+  ]
+}

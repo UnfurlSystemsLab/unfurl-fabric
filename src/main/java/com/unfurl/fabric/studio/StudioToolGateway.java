@@ -247,6 +247,14 @@ public final class StudioToolGateway {
             Path signed = resolveLocalPath(signedPath);
             byte[] signedBytes = Files.readAllBytes(signed);
             SignedFabricContract contract = new SignedFabricContractCodec().parse(signedBytes);
+            java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration;
+            try {
+                String catalogPath = text(arguments, "catalogPath", "");
+                componentConfiguration = com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(contract.contract(),
+                        catalogPath.isBlank() ? null : resolveExistingPath(catalogPath), stringList(value(arguments, "componentConfig")));
+            } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
+                return hostedConfigurationGap(toolName, refusal);
+            }
             RuntimeBindingSetGenerator.Options defaults = RuntimeBindingSetGenerator.Options.defaults();
             RuntimeBindingSetGenerator.Options options = new RuntimeBindingSetGenerator.Options(
                     signed,
@@ -260,7 +268,8 @@ public final class StudioToolGateway {
                     text(arguments, "flowBaseUrl", defaults.flowBaseUrl()),
                     text(arguments, "foundryBaseUrl", defaults.foundryBaseUrl()),
                     (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()),
-                    identityOptions(asMap(value(arguments, "identity"))));
+                    identityOptions(asMap(value(arguments, "identity"))),
+                    componentConfiguration);
             byte[] yaml = new RuntimeBindingSetGenerator().generate(contract, options);
             Path target = resolveOutputPath(outputPath);
             Files.createDirectories(target.getParent());
@@ -279,6 +288,34 @@ public final class StudioToolGateway {
                                     + "tenantClaim, rolesClaim, permissionsClaim, tokenEndpointRef, verificationKeysRef and "
                                     + "clientCredentialsRef. Otherwise leave identity out."));
         }
+    }
+
+    /**
+     * The shared hosted-configuration rule (HLD-in-process-component-hosting §6), phrased with this tool's arguments: a
+     * {@code GAP} naming the problem and what to supply, and no binding written.
+     */
+    private StudioToolCallResult hostedConfigurationGap(String toolName,
+                                                        com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
+        return switch (refusal.reason()) {
+            case CONFIGURATION_WITHOUT_HOSTED -> gap(toolName,
+                    "componentConfig is for hosted in-process components, and this contract hosts none", Map.of(),
+                    List.of("Leave componentConfig and catalogPath out for this contract."));
+            case CATALOG_REQUIRED -> gap(toolName, "the contract hosts in-process components " + refusal.getMessage()
+                    + ", whose packaged configuration schemas are read from the catalog", Map.of(),
+                    List.of("Which catalog folder holds the hosted components' jars (catalogPath)?",
+                            "Which deployment values does each hosted component need (componentConfig entries <claimUri>#<key>=<value>)?"));
+            case INVALID -> gap(toolName, "hosted component configuration is invalid: " + refusal.getMessage(), Map.of(),
+                    List.of("Supply every required deployment key, as a value, config:// or secret:// reference as its type needs.",
+                            "Do not change keys the component fixes, and only tighten limits."));
+        };
+    }
+
+    /** Argument adapter: a list argument given as a JSON array, or one string; empty when absent. */
+    private static List<String> stringList(Object raw) {
+        if (raw == null) return List.of();
+        if (raw instanceof Collection<?> values) return values.stream().map(String::valueOf).toList();
+        String text = String.valueOf(raw);
+        return text.isBlank() ? List.of() : List.of(text);
     }
 
     /**
@@ -323,12 +360,21 @@ public final class StudioToolGateway {
             copyFile(resolveLocalPath(signedContractPath), root.resolve("signed-contract.yaml"));
             copyFile(resolveLocalPath(runtimeBindingPath), root.resolve("runtime-binding.yaml"));
             copyFile(resolveLocalPath(signedCompiledPath), root.resolve("signed-compiled-contract.yaml"));
+            Map<String, Object> admitted;
+            try {
+                admitted = admittedOverlay(arguments, root, resolveLocalPath(signedCompiledPath), resolveLocalPath(runtimeBindingPath));
+            } catch (IllegalArgumentException refused) {
+                return gap(toolName, "unable to write the admitted-component overlay: " + refused.getMessage(), Map.of(),
+                        List.of("Which catalog folder holds the hosted components' jars (catalogPath)?",
+                                "Which DCP runtime bundle holds their signed contracts (dcpRuntimeBundlePath)?"));
+            }
             List<String> gaps = foundryRootGaps(root);
             Map<String, Object> payload = Map.of(
                     "rootPath", root.toString(),
                     "inventory", inventoryTree(root),
                     "treeSha256", treeSha256(root),
-                    "diagnostics", gaps);
+                    "diagnostics", gaps,
+                    "admittedOverlay", admitted);
             if (!gaps.isEmpty()) {
                 return result("GAP", toolName, payload);
             }
@@ -337,6 +383,36 @@ public final class StudioToolGateway {
             return gap(toolName, "unable to assemble Foundry deployment root: " + ex.getMessage(), Map.of(),
                     List.of("Provide a Foundry source root or explicit agent/prompt/tool/registry file lists."));
         }
+    }
+
+    /**
+     * Admitted-component overlay of a Foundry root (HLD-E §4.0b): when the signed compiled contract hosts components on
+     * Foundry, writes {@code <root>/admitted/} with the emitter's renderer, the same copy, filter and pin rules as emit.
+     *
+     * @return {@code {}} when the contract hosts nothing; otherwise the overlay folder and the profile binding Foundry's
+     *         profile must contain to read it
+     * @throws IllegalArgumentException when inputs are missing or superfluous, or a host is not Foundry
+     */
+    private Map<String, Object> admittedOverlay(Map<String, Object> arguments, Path root, Path signedCompiled, Path runtimeBinding)
+            throws IOException {
+        SignedFabricContract signed = new SignedFabricContractCodec().parse(Files.readAllBytes(signedCompiled));
+        com.unfurl.deployment.plan.BindingPlan plan = signed.contract().bindingPlan() == null
+                ? new com.unfurl.deployment.plan.BindingPlan(List.of()) : signed.contract().bindingPlan();
+        Map<String, String> options = new LinkedHashMap<>();
+        String catalogPath = text(arguments, "catalogPath", "");
+        String bundlePath = text(arguments, "dcpRuntimeBundlePath", "");
+        String trustKeys = text(arguments, "trustKeysPath", "");
+        if (!catalogPath.isBlank()) options.put("componentArtifactsPath", resolveExistingPath(catalogPath).toString());
+        if (!bundlePath.isBlank()) options.put("dcpRuntimeBundlePath", resolveLocalPath(bundlePath).toString());
+        if (!trustKeys.isBlank()) options.put("trustKeysPath", resolveExistingPath(trustKeys).toString());
+        options.put("runtimeBindingPath", runtimeBinding.toString());
+        return new com.unfurl.deploy.compose.AdmittedComponentOverlayRenderer().renderIntoDeploymentRoot(root, plan, options)
+                .<Map<String, Object>>map(overlay -> Map.of(
+                        "path", overlay.root().toString(),
+                        "host", overlay.hostClaimUri() + "@" + overlay.hostClaimVersion(),
+                        "requiredProfileBinding", Map.of("kind", "TOOL_REGISTRY_SOURCE", "adapter", "dcp-admitted-components",
+                                "config", Map.of("path", "admitted"))))
+                .orElse(Map.of());
     }
 
     /**
@@ -813,7 +889,7 @@ public final class StudioToolGateway {
     }
 
     /**
-     * Foundry root helper: copies an existing deployment root plus explicit category lists.
+     * Foundry root helper: copies an existing deployment root, including its runtime profiles, plus explicit category lists.
      */
     private void copyFoundryDeploymentInputs(Map<String, Object> arguments, Path root) throws IOException {
         String sourceRoot = text(arguments, "foundrySourceRoot", text(arguments, "sourceRoot", ""));
@@ -822,7 +898,7 @@ public final class StudioToolGateway {
             if (!Files.isDirectory(source)) {
                 throw new IllegalArgumentException("foundrySourceRoot must be a directory");
             }
-            for (String subdir : List.of("agents", "prompts", "tools", "providers", "registries")) {
+            for (String subdir : List.of("profiles", "agents", "prompts", "tools", "providers", "registries")) {
                 copyDirectoryContents(source.resolve(subdir), root.resolve(subdir));
             }
         }
