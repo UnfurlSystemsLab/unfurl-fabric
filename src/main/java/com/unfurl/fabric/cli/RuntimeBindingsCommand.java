@@ -84,22 +84,17 @@ final class RuntimeBindingsCommand {
      */
     private java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration(
             CliArgs args, SignedFabricContract signed) {
-        java.util.Set<java.net.URI> hosted = com.unfurl.fabric.runtime.HostedComponentConfiguration.hostedProviders(signed.contract());
-        java.util.List<String> flags = args.all("component-config");
-        if (hosted.isEmpty()) {
-            if (!flags.isEmpty()) throw FabricCliException.usage("--component-config is for hosted components, and this contract hosts none");
-            return java.util.Map.of();
-        }
-        java.nio.file.Path catalog = args.optionalPath("catalog");
-        if (catalog == null) {
-            throw FabricCliException.usage("--catalog is required: the contract hosts " + hosted
-                    + ", whose packaged configuration schemas are read from the catalog");
-        }
         try {
-            return com.unfurl.fabric.runtime.HostedComponentConfiguration.build(hosted,
-                    new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog().entries(), flags);
-        } catch (IllegalArgumentException invalid) {
-            throw FabricCliException.usage("hosted component configuration is invalid: " + invalid.getMessage());
+            return com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(signed.contract(),
+                    args.optionalPath("catalog"), args.all("component-config"));
+        } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
+            // The shared rule, phrased with this command's flags.
+            throw FabricCliException.usage(switch (refusal.reason()) {
+                case CONFIGURATION_WITHOUT_HOSTED -> "--component-config is for hosted components, and this contract hosts none";
+                case CATALOG_REQUIRED -> "--catalog is required: the contract hosts " + refusal.getMessage()
+                        + ", whose packaged configuration schemas are read from the catalog";
+                case INVALID -> "hosted component configuration is invalid: " + refusal.getMessage();
+            });
         }
     }
 

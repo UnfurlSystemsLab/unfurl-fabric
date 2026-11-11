@@ -123,6 +123,9 @@ audit:
 - `plan` prints `hosted:`, `deployment keys:` and `companions missing:` lines; `verify --catalog` checks companion drift
   and prints each finding; `explain-deployment` prints `host=` and `companionArtifacts=`.
 - `runtime-bindings` writes through DCP's `RuntimeBindingCodec`.
+- Studio's tool gateway applies the same hosting rules: `fabric.runtime-binding-generate` (`catalogPath`,
+  `componentConfig`) and `fabric.foundry-root-assemble` (`<root>/admitted/` through the emitter's overlay renderer, so
+  `emitter-compose` is a compile dependency).
 - Studio admits manifest-less jars with one `pom.properties` as companions (`StudioCompanionStore`, persisted
   `companionsByTenant`; `CATALOG_COMPANION_CONFLICT` on different bytes), keeps uploaded entries' hosting blocks,
   resolves companions at compile (`CATALOG_COMPANION_MISSING`), and adds `hosted-components.json` to compile
