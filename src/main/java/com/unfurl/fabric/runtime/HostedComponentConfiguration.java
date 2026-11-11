@@ -96,6 +96,64 @@ public final class HostedComponentConfiguration {
         });
     }
 
+    /**
+     * Refusal of hosted-component configuration, with the reason so each surface (CLI flags, Studio tool arguments)
+     * can phrase it in its own terms while sharing one rule.
+     */
+    public static final class Refusal extends IllegalArgumentException {
+        /** Why the configuration was refused. */
+        public enum Reason {
+            /** Configuration was given for a contract that hosts no component. */
+            CONFIGURATION_WITHOUT_HOSTED,
+            /** The contract hosts components, and no catalog was named to read their packaged schemas from. */
+            CATALOG_REQUIRED,
+            /** The values break a packaged schema, or name no hosted component. */
+            INVALID
+        }
+
+        private final Reason reason;
+
+        /** @param detail the hosted components (catalog required) or every failure (invalid) */
+        public Refusal(Reason reason, String detail) {
+            super(detail);
+            this.reason = reason;
+        }
+
+        /** Returns why the configuration was refused. */
+        public Reason reason() {
+            return reason;
+        }
+    }
+
+    /**
+     * The one rule for a signed contract's hosted-component configuration (HLD-in-process-component-hosting §6), shared
+     * by {@code fabric runtime-bindings} and Studio's {@code fabric.runtime-binding-generate}: a contract that hosts
+     * nothing accepts no configuration; one that hosts components needs the catalog their packaged schemas are read
+     * from, and every value is validated against them with DCP's validator.
+     *
+     * @param compiled the signed compiled contract
+     * @param catalog  the catalog folder, or null when none was named
+     * @param flags    {@code <claimUri>#<key>=<value>} entries, possibly empty
+     * @return each hosted component's configuration; empty when the contract hosts nothing
+     * @throws Refusal with its reason
+     */
+    public static Map<URI, Configuration> forContract(CompiledContract compiled, Path catalog, List<String> flags) {
+        Set<URI> hosted = hostedProviders(compiled);
+        List<String> given = flags == null ? List.of() : flags;
+        if (hosted.isEmpty()) {
+            if (!given.isEmpty()) throw new Refusal(Refusal.Reason.CONFIGURATION_WITHOUT_HOSTED, "this contract hosts no component");
+            return Map.of();
+        }
+        if (catalog == null) throw new Refusal(Refusal.Reason.CATALOG_REQUIRED, hosted.toString());
+        try {
+            return build(hosted, new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog().entries(), given);
+        } catch (Refusal refusal) {
+            throw refusal;
+        } catch (IllegalArgumentException invalid) {
+            throw new Refusal(Refusal.Reason.INVALID, invalid.getMessage());
+        }
+    }
+
     public static Set<URI> hostedProviders(CompiledContract compiled) {
         Set<URI> providers = new LinkedHashSet<>();
         if (compiled.bindingPlan() == null) return providers;
