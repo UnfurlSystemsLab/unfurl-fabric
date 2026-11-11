@@ -1,0 +1,12 @@
+# Development settings for the Flow + Foundry + Kotak Neo + Keycloak package.
+#
+# Apply this after the emitted docker-compose.yaml and compose-development.yaml. It changes one thing:
+# Foundry uses foundry-kotak-development-profile.yaml, which the guide copies into your Foundry
+# deployment folder. That profile is the development profile plus the bindings that admit the Kotak
+# Neo adapter from the emitted foundry-admitted/ folder. Like compose-development.yaml, it runs with
+# no authentication, on this machine only.
+
+services:
+  foundry:
+    environment:
+      UNFURL_FOUNDRY_PROFILE: profiles/foundry-kotak-development-profile.yaml
