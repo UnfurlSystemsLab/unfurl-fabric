@@ -28,7 +28,7 @@ and the other repos.
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
 | Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
 | Run the Kotak Neo reads inside Foundry | Works up to Foundry admitting the adapter; a live read needs your session secret | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
-| Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works in development mode, without authentication; identity is bound, not enforced | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
+| Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works. Foundry checks Keycloak's tokens, but Flow can't call a secured Foundry yet | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
@@ -670,8 +670,9 @@ For a host that doesn't run Foundry's admitted-component host, the adapter's
 ## End to end from the command line: Flow, Foundry, Kotak Neo and Keycloak
 
 This example builds one package from the command line alone, with no Studio. Flow and Foundry run as
-containers, Foundry runs the Kotak Neo adapter inside its own process, and Keycloak is your
-existing Keycloak, bound as the identity provider. It reuses `$work`, `$examples` and the signing
+containers, Foundry runs the Kotak Neo adapter inside its own process, and Keycloak is an existing
+Keycloak bound as the identity provider. A local Keycloak container stands in for yours, so you can
+check that Foundry accepts its tokens. It reuses `$work`, `$examples` and the signing
 keys from [Compile and sign](#3-compile-and-sign), and needs the catalog from
 [Create the catalog](#1-create-the-catalog) plus the seven Kotak jars from the
 [Kotak Neo example](#example-add-the-kotak-neo-adapter).
@@ -713,9 +714,34 @@ deploymentShapes={com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT=IN_PRO
 
 `verify` should end with `overallOk=true`.
 
+**Start a Keycloak.** [keycloak/demo-realm.json](keycloak/demo-realm.json) is a development realm
+named `demo`. It has a `foundry` client (the token audience) and a confidential `flow` client whose
+service account holds the three Kotak read permissions. Keycloak imports it at startup. If you
+already run a Keycloak with such a realm, skip this step and use its issuer below.
+
+The example uses the `quay.io/keycloak/keycloak:24.0` image. The adapter needs Keycloak 26.2 or
+later only for token exchange, which Flow doesn't do yet.
+
+```powershell
+$bytes = New-Object byte[] 18
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$kcAdminPassword = [Convert]::ToBase64String($bytes)
+
+Assert-PortFree 8180
+docker run -d --name unfurl-keycloak -p 127.0.0.1:8180:8080 -e KEYCLOAK_ADMIN=admin -e "KEYCLOAK_ADMIN_PASSWORD=$kcAdminPassword" `
+    -v "$((Resolve-Path "$examples\keycloak").Path):/opt/keycloak/data/import:ro" quay.io/keycloak/keycloak:24.0 start-dev --import-realm --hostname-url=http://localhost:8180
+$keycloak = 'http://127.0.0.1:8180'
+(Wait-ForHealth "$keycloak/realms/demo/.well-known/openid-configuration").issuer
+```
+
+It prints `http://localhost:8180/realms/demo`, the issuer you bind next. `--hostname-url` pins it.
+Without it, Keycloak builds the issuer from the address each request uses, and a token fetched from
+`127.0.0.1` wouldn't match. The guide calls `127.0.0.1` because Windows PowerShell tries IPv6 first
+for `localhost`, and Docker publishes the port on IPv4.
+
 **Create the runtime bindings.** Two kinds of values are needed:
-- The identity settings of your Keycloak realm, as in [Publish a reusable assembly](#publish-a-reusable-assembly).
-  Replace the issuer with your realm's.
+- The identity settings of the Keycloak realm, as in [Publish a reusable assembly](#publish-a-reusable-assembly).
+  For your own Keycloak, use your realm's issuer.
 - The Kotak account alias, and a reference to the secret that will hold its session.
 
 ```powershell
@@ -812,6 +838,73 @@ e2e-compose logs foundry | Select-String 'component.admit'
 `component.admit` fact for each Kotak read, ending in `SUCCEEDED`. Foundry refuses to start if any
 contract, pin or configuration check fails. Stop the package with `e2e-compose down`.
 
+**Turn on authentication.** The package above runs Foundry without authentication. To have Foundry
+check Keycloak's tokens:
+
+1. Export the realm's signing key into Foundry's `identity\keys\` folder, named by its key id.
+2. Switch Foundry to [foundry-kotak-secured-profile.yaml](foundry-kotak-secured-profile.yaml).
+   That is Foundry's secured profile, with the same Kotak bindings and with its token check set to
+   the demo realm and audience `foundry`.
+3. Restart the package with [compose-secured-kotak.yaml](compose-secured-kotak.yaml).
+
+```powershell
+e2e-compose down
+
+$jwk = (Invoke-RestMethod "$keycloak/realms/demo/protocol/openid-connect/certs").keys | Where-Object { $_.use -eq 'sig' -and $_.alg -eq 'RS256' }
+$lines = ($jwk.x5c[0] -split '(.{64})' | Where-Object { $_ }) -join "`n"
+Set-Content -Path "$e2e\keycloak-signing.crt" -Value "-----BEGIN CERTIFICATE-----`n$lines`n-----END CERTIFICATE-----" -Encoding ascii
+& $openssl x509 -in "$e2e\keycloak-signing.crt" -pubkey -noout -out "$work\foundry-deployment\identity\keys\$($jwk.kid).pem"
+Copy-Item "$examples\foundry-kotak-secured-profile.yaml" "$work\foundry-deployment\profiles\"
+
+function e2e-compose-secured {
+    docker compose -p foundry-kotak -f "$e2e\deploy\local-compose\docker-compose.yaml" -f "$examples\compose-development.yaml" -f "$examples\compose-secured-kotak.yaml" @args
+}
+e2e-compose-secured up -d --pull never --wait --wait-timeout 180
+if ($LASTEXITCODE -ne 0) { e2e-compose-secured logs --tail 40; e2e-compose-secured down; throw 'the package did not start' }
+```
+
+Now get a token as Flow's service account and ask Foundry for the tenant's tools. The admin calls
+only read the `flow` client's secret, which Keycloak generated when it imported the realm.
+
+```powershell
+$admin = Invoke-RestMethod -Method Post "$keycloak/realms/master/protocol/openid-connect/token" -Body @{ client_id = 'admin-cli'; username = 'admin'; password = $kcAdminPassword; grant_type = 'password' }
+$adminHeaders = @{ Authorization = "Bearer $($admin.access_token)" }
+$flowClient = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients?clientId=flow" -Headers $adminHeaders)[0]
+$flowSecret = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients/$($flowClient.id)/client-secret" -Headers $adminHeaders).value
+$token = (Invoke-RestMethod -Method Post "$keycloak/realms/demo/protocol/openid-connect/token" -Body @{ grant_type = 'client_credentials'; client_id = 'flow'; client_secret = $flowSecret }).access_token
+
+$tools = Invoke-RestMethod http://127.0.0.1:7979/management/tools -Headers @{ Authorization = "Bearer $token" }
+$tools.bindings | Where-Object bindingType -eq 'dcp-admitted-component' | Select-Object name, binding
+try { Invoke-RestMethod http://127.0.0.1:7979/management/tools | Out-Null } catch { 'without a token: ' + [int]$_.Exception.Response.StatusCode }
+```
+
+```text
+name                        binding
+----                        -------
+gtt.instructions.list       unfurl://component/kotak-neo-adapter@0.1.0
+portfolio.holdings.list     unfurl://component/kotak-neo-adapter@0.1.0
+portfolio.mtf-holdings.list unfurl://component/kotak-neo-adapter@0.1.0
+
+without a token: 401
+```
+
+How Foundry handled each request:
+- **The token:** Foundry checked it offline against the exported key, for the issuer, the `foundry`
+  audience, the `demo` tenant and the `foundry.tool.read` permission, then returned the tenant's
+  tools, the three admitted Kotak reads among them.
+- **Without a token, or with a changed one:** Foundry answers `401`. Its log records
+  `request.authenticate` `DENIED` with `TOKEN_MISSING` or `TOKEN_SIGNATURE`.
+- **Rotation:** the key is loaded at startup, so when Keycloak rotates its key, export it again and
+  restart Foundry.
+- **Flow:** Flow doesn't send tokens yet, so in this mode Flow can't call Foundry.
+
+To stop everything:
+
+```powershell
+e2e-compose-secured down
+docker rm -f unfurl-keycloak
+```
+
 **To make a real Kotak read,** Foundry needs the session that `sessionRef` names. Put the session
 document at `$work\foundry-deployment\secrets\demo\kotak\primary-equity-session`. The adapter's
 [integration guide](../../../../unfurl-adapter-kotak-neo/docs/INTEGRATION.md#mounted-session-document-format)
@@ -826,10 +919,14 @@ images built from the current code (Docker 29.8.2, Compose 5.5.1):
 - Foundry's log showed `component.admit` `SUCCEEDED` for each of the three Kotak contracts.
 - Flow's log had no errors, and Flow reached Foundry at `http://foundry:7979`.
 
+- Keycloak 24.0.5 imported the realm with the issuer bound above.
+- With the secured profile, Foundry accepted the realm's token and listed the three Kotak tools. It
+  answered `401` without a token and with a changed one.
+
 Not covered:
 - **A Kotak read:** it needs a real session.
 - **An agent run:** it needs a model provider.
-- **Keycloak:** it isn't contacted. In development mode identity is bound but not enforced (see
+- **Flow calling a secured Foundry:** Flow doesn't exchange or send tokens yet (see
   [Current limits](#current-limits)).
 
 ## Publish a reusable assembly
