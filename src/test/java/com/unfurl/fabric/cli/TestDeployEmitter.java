@@ -40,18 +40,21 @@ final class TestDeployEmitter implements DeployEmitter {
             appendOption(content, "runtimeBindingPath");
             appendOption(content, "dcpRuntimeBundlePath");
             appendOption(content, "flowWorkflowsPath");
+            appendOption(content, "componentArtifactsPath");
             Files.writeString(path, content.toString(), StandardCharsets.UTF_8);
             EmittedArtifact artifact = new EmittedArtifact(
                     request.outDir().relativize(path),
                     sha256(Files.readAllBytes(path)),
                     ArtifactKind.RUNTIME_PROFILE);
+            List<EmittedArtifact> artifacts = new java.util.ArrayList<>(List.of(artifact));
+            artifacts.addAll(hostedExports(request));
             EmitManifest manifest = new EmitManifest(
                     request.contract().canonicalHash(),
                     config.target().kind(),
-                    List.of(artifact),
+                    artifacts,
                     List.of(),
                     sha256((request.contract().canonicalHash() + "|" + artifact.path()).getBytes(StandardCharsets.UTF_8)));
-            return new EmitResult.Ok(List.of(artifact), manifest);
+            return new EmitResult.Ok(artifacts, manifest);
         } catch (IOException ex) {
             throw new IllegalStateException(ex);
         }
@@ -87,6 +90,31 @@ final class TestDeployEmitter implements DeployEmitter {
                     DeploymentShape.MANAGED_EXTERNAL_ADAPTER);
             default -> EnumSet.noneOf(DeploymentShape.class);
         };
+    }
+
+    /**
+     * Test double of the real emitter's export (HLD-E §4.0b): when Fabric passed {@code componentArtifactsPath}, one
+     * {@code hosted-exports/<slug>/host.json} per host of a hosted entry, so the CLI's operator-delivery lines can be
+     * checked without the real overlay renderer (tested in unfurl-deploy-emitter). The host identity written is the
+     * host's component id, version {@code test}.
+     */
+    private List<EmittedArtifact> hostedExports(EmitRequest request) throws IOException {
+        if (config.target().options().get("componentArtifactsPath") == null || request.contract().contract().bindingPlan() == null) {
+            return List.of();
+        }
+        List<EmittedArtifact> exports = new java.util.ArrayList<>();
+        for (String host : request.contract().contract().bindingPlan().entries().stream()
+                .map(entry -> entry.host()).flatMap(java.util.Optional::stream)
+                .map(host -> host instanceof com.unfurl.deployment.domain.ComponentHost.InternalHost internal
+                        ? internal.componentId() : host.toString())
+                .distinct().sorted().toList()) {
+            Path root = Files.createDirectories(request.outDir().resolve("hosted-exports").resolve(host.replaceAll("[^A-Za-z0-9]+", "-")));
+            Path hostJson = Files.writeString(root.resolve("host.json"),
+                    "{\"claimUri\":\"" + host + "\",\"claimVersion\":\"test\"}", StandardCharsets.UTF_8);
+            exports.add(new EmittedArtifact(request.outDir().relativize(root), sha256(Files.readAllBytes(hostJson)),
+                    ArtifactKind.HOSTED_COMPONENT_EXPORT));
+        }
+        return exports;
     }
 
     private void appendOption(StringBuilder sb, String key) {

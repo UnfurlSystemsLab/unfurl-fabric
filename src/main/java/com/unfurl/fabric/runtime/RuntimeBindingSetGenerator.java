@@ -1,15 +1,5 @@
 package com.unfurl.fabric.runtime;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.MapperFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import com.fasterxml.jackson.dataformat.yaml.YAMLGenerator;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.unfurl.dcp.contract.CompositionContract;
 import com.unfurl.dcp.runtimebinding.ConfigRef;
 import com.unfurl.dcp.runtimebinding.Configuration;
@@ -19,7 +9,9 @@ import com.unfurl.dcp.runtimebinding.DeploymentKind;
 import com.unfurl.dcp.runtimebinding.Lifecycle;
 import com.unfurl.dcp.runtimebinding.ProviderInstance;
 import com.unfurl.dcp.runtimebinding.RuntimeBinding;
+import com.unfurl.dcp.runtimebinding.RuntimeBindingCodec;
 import com.unfurl.dcp.runtimebinding.RuntimeBindingMetadata;
+import com.unfurl.dcp.runtimebinding.RuntimeBindingSet;
 import com.unfurl.dcp.runtimebinding.RuntimeBindingValidator;
 import com.unfurl.dcp.runtimebinding.RuntimePolicy;
 import com.unfurl.dcp.runtimebinding.SecretRef;
@@ -29,14 +21,12 @@ import com.unfurl.dcp.validation.Severity;
 import com.unfurl.deployment.plan.BindingPlan;
 import com.unfurl.fabric.signing.SignedFabricContract;
 
-import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -57,7 +47,6 @@ import java.util.TreeMap;
  */
 public final class RuntimeBindingSetGenerator {
     private final Clock clock;
-    private final ObjectMapper yamlMapper;
 
     /** Production constructor: stamps generated binding sets with the current UTC time. */
     public RuntimeBindingSetGenerator() {
@@ -71,7 +60,6 @@ public final class RuntimeBindingSetGenerator {
      */
     public RuntimeBindingSetGenerator(Clock clock) {
         this.clock = clock == null ? Clock.systemUTC() : clock;
-        this.yamlMapper = yamlMapper();
     }
 
     /**
@@ -98,17 +86,9 @@ public final class RuntimeBindingSetGenerator {
             bindings.add(childBinding(child, signed.contract().bindingPlan(), safe));
         }
         validate(root, bindings, rootContract, childContracts);
-        Map<String, Object> wrapper = new LinkedHashMap<>();
-        wrapper.put("runtime_binding_set", Map.of(
-                "root_binding_id", root.bindingId(),
-                "generated_at", clock.instant(),
-                "source_signed_contract", safe.sourceSignedContract().toString(),
-                "runtime_bindings", bindings));
-        try {
-            return yamlMapper.writeValueAsBytes(wrapper);
-        } catch (IOException ex) {
-            throw new IllegalStateException("unable to write runtime binding set: " + ex.getMessage(), ex);
-        }
+        // DCP owns the document format: its codec writes it, and its set type enforces unique binding and contract ids.
+        return RuntimeBindingCodec.write(new RuntimeBindingSet(root.bindingId(), clock.instant(),
+                safe.sourceSignedContract().toString(), bindings));
     }
 
     /**
@@ -480,27 +460,6 @@ public final class RuntimeBindingSetGenerator {
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 is unavailable", ex);
         }
-    }
-
-    /**
-     * Mapper factory: writes public DCP YAML using snake_case and no document marker. Quotes are minimized, but number-like
-     * strings stay quoted so untyped configuration values (an audience such as {@code "1234"}) are read back as strings by
-     * Flow, Foundry and {@code assembly-bind}'s DCP validation.
-     */
-    private static ObjectMapper yamlMapper() {
-        YAMLFactory factory = new YAMLFactory()
-                .disable(YAMLGenerator.Feature.WRITE_DOC_START_MARKER)
-                .enable(YAMLGenerator.Feature.MINIMIZE_QUOTES)
-                .enable(YAMLGenerator.Feature.ALWAYS_QUOTE_NUMBERS_AS_STRINGS);
-        ObjectMapper mapper = new ObjectMapper(factory);
-        mapper.registerModule(new Jdk8Module());
-        mapper.registerModule(new JavaTimeModule());
-        mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
-        mapper.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        mapper.enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY);
-        mapper.setSerializationInclusion(JsonInclude.Include.NON_NULL);
-        return mapper;
     }
 
     /**

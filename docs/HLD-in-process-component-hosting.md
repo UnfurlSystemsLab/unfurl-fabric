@@ -1,6 +1,6 @@
 # HLD: Composing components hosted in-process by a selected service
 
-Status: **proposed design, not implemented.** This is Fabric's side of DCP's in-process component host
+Status: **implemented in the CLI** (§3 to §10); Studio admission of companion uploads is pending (§3). This is Fabric's side of DCP's in-process component host
 (UnfurlSystemsLab/unfurl-dcp#20: HLD-C §6.1 and the Java LLD *In-Process Component Host*). Foundry's side is
 UnfurlSystemsLab/unfurl-foundry#17. Placement belongs to `unfurl-deployment` (HLD-D §6.2a) and the emitted overlay to
 `unfurl-deploy-emitter` (HLD-E §4.0b); this HLD defines what Fabric needs from them.
@@ -147,7 +147,7 @@ metadata:
 would refuse it as `ARTIFACT_SHADOWS_SHARED_API`, so Fabric reports it at compile time. `verify --catalog` treats a
 companion's hash drift like a component's.
 
-## 6. Runtime bindings for hosted contracts (DCP decision D2)  (implemented; `plan` key listing pending)
+## 6. Runtime bindings for hosted contracts (DCP decision D2)  (implemented)
 
 For a child contract whose provider is hosted, `fabric runtime-bindings` writes a binding for an in-process provider:
 
@@ -198,9 +198,9 @@ leaves `accountRef` and `sessionRef` to each deployment. Fabric's part:
 - `--component-config` is refused for a contract that hosts no component.
 - Hosted bindings are `IN_PROCESS`, with no base URL and no endpoint reference. Their consumer instance is the host,
   with the host's claim slug as instance name.
-- Not yet implemented: `plan` listing each hosted component's deployment keys (§10). Fabric also still writes and
-  parses the binding document with its own mapper. The CLI test reads Fabric's output with DCP's
-  `RuntimeBindingCodec`, so the two stay compatible; Fabric delegating to the codec is a follow-up.
+- `plan` lists each hosted component's deployment keys from its packaged schema (§10).
+- `RuntimeBindingSetGenerator` builds a DCP `RuntimeBindingSet` and writes it with DCP's `RuntimeBindingCodec`, so the
+  document format and its set invariants (unique binding and contract ids) have one owner; Fabric's own mapper is gone.
 
 ## 7. Signed child contracts from the CLI  (implemented)
 
@@ -211,7 +211,14 @@ removes the guide's limit that only Studio can produce the bundle. The bundle in
 claims, so it needs `--catalog`, the catalog the contract was compiled from; every selection must be found there by
 artifact SHA-256.
 
-## 8. Emit: the admitted-component overlay
+## 8. Emit: the admitted-component overlay  (implemented)
+
+`emit` and `deploy` take `--catalog`. When the signed plan has hosted entries it is required and becomes the
+`local-compose` target's `componentArtifactsPath`; for a plan without them it is refused, the emitter's own rule, before
+any target runs. After an emit or a stitched deploy, every `HOSTED_COMPONENT_EXPORT` artifact prints
+`operatorDelivery=<absolute path> host=<claimUri>@<claimVersion> (not mounted or started: deliver it to that host)`,
+read from its `host.json`. Fabric's CLI tests use fake backends for these, so the overlay itself is tested in
+`unfurl-deploy-emitter` (`AdmittedComponentOverlayRendererTest`).
 
 `fabric emit` passes the catalog folder to the emitter as `componentArtifactsPath` when the plan has a hosted
 component. The emitter (HLD-E §4.0b) writes, per hosting service, an overlay from the DCP runtime bundle, the runtime
@@ -247,7 +254,16 @@ a one-off check hashed all 28 claims reachable to the build (Fabric's catalog fi
 `com.unfurl` claim) both ways and found them identical, so no existing pin changes; DCP's `ClaimHashTest` now pins the
 canonical bytes with a golden value.
 
-## 10. Plan, explain and diagnostics
+## 10. Plan, explain and diagnostics  (implemented in the CLI; Studio's audit view pending with §3)
+
+Exact CLI forms: `plan` prints, under a candidate with hosted components, `hosted: <component> by <host>` (an external
+host as `external <claimUri>@<claimVersion>`, `(named by policy)` when the policy chose it) or
+`hosted: placement failed: <code>: <message>`, then `deployment keys: <claimUri> requires <key (type)>…; may change
+<key (tighten|replace)>…`. After the candidates it prints `companions missing: <jar> <detail>` for each hosted jar the
+scan left out. A candidate without hosted components prints exactly as before. `explain-deployment` prints `host=` and
+`companionArtifacts=[coordinates@sha256…]` for every entry (`<none>` and `[]` when not hosted). `verify --catalog`
+checks every companion a child contract pins against the catalog's companion index, in the same `hashDrifts` and
+`missingFromCatalog` counts, and prints a `drift:` or `missing:` line per finding.
 
 - `plan` prints `hosted: <component> by <host>` under each candidate, or the placement failure line, and
   `companions missing:` lines.

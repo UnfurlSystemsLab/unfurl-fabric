@@ -47,6 +47,20 @@ class FabricCliEmitInjectsRuntimePathsTest {
                 .contains(paths.profile().toAbsolutePath().toString())
                 .contains(runtimeBinding.toAbsolutePath().toString())
                 .contains(runtimeBundle.toAbsolutePath().toString())
-                .contains(workflows.toAbsolutePath().toString());
+                .contains(workflows.toAbsolutePath().toString())
+                .doesNotContain("componentArtifactsPath=");
+    }
+
+    /** {@code --catalog} feeds only the admitted-component overlay, so a plan that hosts nothing refuses it. */
+    @Test
+    void refusesACatalogForAPlanThatHostsNothing(@TempDir Path dir) throws Exception {
+        CliTestFixtures.SignedPaths paths = CliTestFixtures.compileAndSign(dir);
+
+        CliTestFixtures.CliRun result = CliTestFixtures.run("emit", "--contract", paths.signed().toString(),
+                "--profile", paths.profile().toString(), "--target", "local", "--trust-keys", paths.trustKeys().toString(),
+                "--out", dir.resolve("deploy").toString(), "--catalog", dir.toString());
+
+        assertThat(result.exitCode()).isNotZero();
+        assertThat(result.stderr()).contains("--catalog is read for hosted in-process components, and the signed plan has none");
     }
 }

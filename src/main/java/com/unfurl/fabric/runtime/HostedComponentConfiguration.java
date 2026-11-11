@@ -60,6 +60,42 @@ public final class HostedComponentConfiguration {
     }
 
     /** Returns the provider claim URIs of the compiled contract's hosted child contracts: those whose plan entry has a host. */
+    /**
+     * Planning view of a hosted component's packaged schema (HLD-in-process-component-hosting §6, §10): the keys each
+     * deployment must supply ({@code source: deployment}, with their types) and the packaged defaults it may change
+     * ({@code tighten} or {@code replace}), as one {@code plan} line. Fixed keys are not listed, because no deployment
+     * can change them.
+     *
+     * @return the line, or empty when the jar packages no {@code META-INF/unfurl-config.yaml}
+     * @throws IllegalArgumentException when the jar cannot be read or its schema is invalid
+     */
+    public static Optional<String> deploymentKeysLine(CatalogEntry entry) {
+        if (entry.localPath() == null) {
+            return Optional.empty();
+        }
+        Optional<ComponentConfigurationSchema> schema;
+        try {
+            schema = packagedSchema(entry.localPath());
+        } catch (IOException ex) {
+            throw new IllegalArgumentException("unable to read " + entry.localPath() + ": " + ex.getMessage(), ex);
+        }
+        return schema.map(s -> {
+            List<String> required = new ArrayList<>();
+            List<String> overridable = new ArrayList<>();
+            new TreeMap<>(s.keys()).values().forEach(key -> {
+                String type = key.type().wireName() + (key.list() ? " list" : "");
+                if (key.source() == ConfigKey.Source.DEPLOYMENT) {
+                    required.add(key.name() + " (" + type + ")");
+                } else if (key.override() != ConfigKey.OverridePolicy.FIXED) {
+                    overridable.add(key.name() + " (" + key.override().name().toLowerCase(java.util.Locale.ROOT) + ")");
+                }
+            });
+            return "deployment keys: " + entry.claimDescriptor().claim().identity().uri()
+                    + " requires " + (required.isEmpty() ? "none" : String.join(", ", required))
+                    + "; may change " + (overridable.isEmpty() ? "none" : String.join(", ", overridable));
+        });
+    }
+
     public static Set<URI> hostedProviders(CompiledContract compiled) {
         Set<URI> providers = new LinkedHashSet<>();
         if (compiled.bindingPlan() == null) return providers;

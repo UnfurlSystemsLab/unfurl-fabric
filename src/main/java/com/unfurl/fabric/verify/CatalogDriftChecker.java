@@ -28,7 +28,8 @@ public final class CatalogDriftChecker {
      * Compare a compiled contract's selected artifacts against the current catalog.
      *
      * <p>Builds a coordinates→entry index of the catalog, then for each selection reports either a
-     * SHA mismatch ({@code DriftEntry}) or absence from the catalog ({@code MissingEntry}). A null
+     * SHA mismatch ({@code DriftEntry}) or absence from the catalog ({@code MissingEntry}). Each companion pinned by a
+     * hosted child contract is checked the same way against the catalog's companion index. A null
      * catalog is treated as "no information" and reported as clean (callers skip the check when no
      * catalog is supplied).
      *
@@ -66,6 +67,23 @@ public final class CatalogDriftChecker {
             String catalogSha = entry.artifact().sha256();
             if (!contractedSha.equals(catalogSha)) {
                 drifts.add(new CatalogDriftReport.DriftEntry(coords, contractedSha, catalogSha));
+            }
+        }
+
+        // Companion drift (HLD-in-process-component-hosting §10): every companion a child contract pins must still be in
+        // the catalog's companion index with the same SHA-256, or the overlay emit and the host would refuse it.
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (var child : contract.childContracts()) {
+            for (var pin : com.unfurl.fabric.compile.HostedComponents.companionPins(child)) {
+                if (!seen.add(pin.coordinates() + "@" + pin.sha256())) {
+                    continue;
+                }
+                var companion = catalog.companions().get(pin.coordinates());
+                if (companion == null) {
+                    missing.add(new CatalogDriftReport.MissingEntry(pin.coordinates(), pin.sha256()));
+                } else if (!companion.sha256().equals(pin.sha256())) {
+                    drifts.add(new CatalogDriftReport.DriftEntry(pin.coordinates(), pin.sha256(), companion.sha256()));
+                }
             }
         }
 

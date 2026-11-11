@@ -13,6 +13,7 @@ import com.unfurl.deployment.domain.DeploymentShape;
 import com.unfurl.deployment.domain.SubstrateShapeSupport;
 import com.unfurl.deployment.plan.BindingPlan;
 import com.unfurl.deployment.plan.DeploymentResolutionException;
+import com.unfurl.fabric.catalog.SkippedEntry;
 import com.unfurl.deployment.plan.DeploymentResolutionReport;
 import com.unfurl.deployment.policy.DeploymentPolicy;
 import com.unfurl.deployment.policy.DeploymentRuntime;
@@ -75,11 +76,41 @@ final class CliSupport {
     }
 
     static Planned planned(CliArgs args) {
-        Catalog catalog = scan(args).catalog();
+        CatalogScanReport report = scan(args);
+        Catalog catalog = report.catalog();
         Need need = loadNeed(args);
         TrustClassification trust = new TrustClassifier().classify(catalog, loadTrustPolicy(args));
         MatchResult result = new StructuralMatcher().match(trust.allowedEntries(), need, trust.rejectedEntries());
-        return new Planned(catalog, need, trust, result);
+        return new Planned(catalog, need, trust, result, report.skippedEntries());
+    }
+
+    /**
+     * Placement preview for {@code plan} (HLD-in-process-component-hosting §10): for a candidate with hosted components,
+     * one {@code hosted: <component> by <host>} line per placement, or the placement failure, then each hosted
+     * component's {@code deployment keys:} line from its packaged schema; nothing for a candidate that hosts nothing, so
+     * such plans print as before. Placement is the same resolver call compile makes.
+     */
+    static List<String> hostingLines(CompositionCandidate candidate, DeploymentPolicy deploymentPolicy) {
+        boolean hosts = candidate.entries().stream()
+                .anyMatch(entry -> com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry).isPresent());
+        if (!hosts) {
+            return List.of();
+        }
+        List<String> lines = new java.util.ArrayList<>();
+        try {
+            ResolverOutcome outcome = new DeploymentShapeResolver().resolve(deploymentComponents(candidate), allShapeSupport(),
+                    deploymentPolicy == null ? defaultDeploymentPolicy() : deploymentPolicy);
+            outcome.report().hostPlacements().forEach(placement -> lines.add("hosted: " + placement.componentId() + " by "
+                    + com.unfurl.fabric.compile.HostedComponents.describe(placement.host())
+                    + (placement.policyNamed() ? " (named by policy)" : "")));
+        } catch (DeploymentResolutionException ex) {
+            lines.add("hosted: placement failed: " + ex.getMessage());
+        }
+        candidate.entries().stream()
+                .filter(entry -> com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry).isPresent())
+                .forEach(entry -> com.unfurl.fabric.runtime.HostedComponentConfiguration.deploymentKeysLine(entry)
+                        .ifPresent(lines::add));
+        return lines;
     }
 
     static DeploymentPolicy loadDeploymentPolicy(CliArgs args) {
@@ -298,7 +329,8 @@ final class CliSupport {
         }
     }
 
-    record Planned(Catalog catalog, Need need, TrustClassification trust, MatchResult result) {
+    /** A match over a scanned catalog; {@code skipped} keeps the scan's skipped jars for diagnostics. */
+    record Planned(Catalog catalog, Need need, TrustClassification trust, MatchResult result, List<SkippedEntry> skipped) {
     }
 
     record CompiledWithProfile(

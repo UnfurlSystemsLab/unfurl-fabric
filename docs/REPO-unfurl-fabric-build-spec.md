@@ -104,9 +104,10 @@ assembly-bind
 assembly-verify-binding
 ```
 
-**Hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands). Implemented: scan, plan/compile
-placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`), `runtime-bindings --component-config` (with
-`--catalog`). Pending: `emit` overlay input, `verify --catalog` companion drift, `explain-deployment` host lines:
+**Hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands). Implemented in the CLI: scan,
+plan/compile placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`), `runtime-bindings --component-config`
+(with `--catalog`), `emit`/`deploy --catalog` overlay input and export lines, `verify --catalog` companion drift,
+`plan` and `explain-deployment` hosting lines. Pending: Studio admission of companion uploads:
 
 - `scan` indexes companion jars by `pom.properties` and reports `companions=N`; identical bytes deduplicate, and
   different bytes under the same coordinates are `CATALOG_COMPANION_CONFLICT`, naming both files.
@@ -116,8 +117,11 @@ placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`), `runtime-bin
 - `scan` reads each jar's packaged `META-INF/unfurl-config.yaml` schema; `runtime-bindings --component-config
   <claimUri>#<key>=<value|config://…|secret://…>` supplies the deployment layer, validated with DCP's schema validator;
   hosted bindings are `IN_PROCESS` with no endpoint.
-- `emit` passes the catalog as `componentArtifactsPath` for the admitted-component overlay.
-- `verify --catalog` checks companion drift; `explain-deployment` prints `host=` and `companionArtifacts=`.
+- `emit`/`deploy --catalog <dir>` pass the catalog as `componentArtifactsPath` (required with hosted entries, refused
+  without) and print `operatorDelivery=` per export.
+- `plan` prints `hosted:`, `deployment keys:` and `companions missing:` lines; `verify --catalog` checks companion drift
+  and prints each finding; `explain-deployment` prints `host=` and `companionArtifacts=`.
+- `runtime-bindings` writes through DCP's `RuntimeBindingCodec`.
 - Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.isExternallyOwned` /
   `ownerOf` (**done**).
 

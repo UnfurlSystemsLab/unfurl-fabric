@@ -44,6 +44,29 @@ public record HostedComponents(Map<String, Placement> placements) {
         placements = placements == null ? Map.of() : java.util.Collections.unmodifiableMap(new TreeMap<>(placements));
     }
 
+    /**
+     * Display form of a placement, shared by {@code plan} and {@code explain-deployment}: an internal host is its
+     * component id, an external host {@code external <claimUri>@<claimVersion>}.
+     */
+    public static String describe(ComponentHost host) {
+        return switch (host) {
+            case ComponentHost.InternalHost internal -> internal.componentId();
+            case ComponentHost.ExternalHost external -> "external " + external.claimUri() + "@" + external.claimVersion();
+        };
+    }
+
+    /**
+     * The companion pins a compiled child contract carries ({@code companionArtifacts}), read with DCP's
+     * {@link com.unfurl.dcp.host.ProviderArtifactPin#fromExtensions} so Fabric reads them exactly as a host requires them.
+     *
+     * @return the companions in contract order; empty when the contract pins no provider artifact or no companions
+     */
+    public static List<com.unfurl.dcp.host.ArtifactPin> companionPins(com.unfurl.dcp.contract.CompositionContract child) {
+        Map<String, Object> extensions = child.metadata() == null ? Map.of() : child.metadata().extensions();
+        return com.unfurl.dcp.host.ProviderArtifactPin.fromExtensions(extensions)
+                .map(com.unfurl.dcp.host.ProviderArtifactPin::companions).orElse(List.of());
+    }
+
     /** No hosted components. */
     public static HostedComponents none() {
         return new HostedComponents(Map.of());

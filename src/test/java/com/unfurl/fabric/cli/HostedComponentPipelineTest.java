@@ -71,11 +71,22 @@ class HostedComponentPipelineTest {
         CompositionContract hostEdge = child(compiled, "agent.run");
         assertThat(hostEdge.parties().consumer()).isNotEqualTo(hosted.parties().consumer());
         assertThat(hostEdge.metadata().extensions()).doesNotContainKey(ContractCompiler.EXT_COMPANION_ARTIFACTS);
+
+        // verify --catalog: a pinned companion rebuilt with other bytes, or removed, is drift (§10).
+        var drift = new com.unfurl.fabric.verify.CatalogDriftChecker();
+        assertThat(drift.check(compiled, scan.catalog()).clean()).isTrue();
+        Files.delete(catalog.resolve("broker-http-copy.jar"));
+        companion("broker-http-1.0.0.jar", COMPANION, Map.of("com/example/http/Client.class", new byte[]{2}));
+        assertThat(drift.check(compiled, new CatalogScanner().scan(catalog).catalog()).hashDrifts())
+                .extracting(com.unfurl.fabric.verify.CatalogDriftReport.DriftEntry::coordinates).containsExactly(COMPANION);
+        Files.delete(catalog.resolve("broker-http-1.0.0.jar"));
+        assertThat(drift.check(compiled, new CatalogScanner().scan(catalog).catalog()).missingFromCatalog())
+                .extracting(com.unfurl.fabric.verify.CatalogDriftReport.MissingEntry::coordinates).contains(COMPANION);
     }
 
     /** Different bytes under one companion's coordinates, or a missing companion, make the hosted entry unselectable. */
     @Test
-    void refusesConflictingAndMissingCompanions() throws Exception {
+    void refusesConflictingAndMissingCompanions(@TempDir Path work) throws Exception {
         writeHost();
         writeHosted(List.of(COMPANION, "com.example:absent:1.0.0"));
         companion("broker-http-a.jar", COMPANION, Map.of("a.txt", new byte[]{1}));
@@ -94,6 +105,13 @@ class HostedComponentPipelineTest {
         Files.delete(catalog.resolve("broker-http-b.jar"));
         assertThat(new CatalogScanner().scan(catalog).skippedEntries()).singleElement()
                 .satisfies(skip -> assertThat(skip.detail()).isEqualTo("CATALOG_COMPANION_MISSING: the catalog has no companion com.example:absent:1.0.0"));
+
+        // plan says why the hosted component is not a candidate (HLD-in-process-component-hosting §10).
+        Path needs = Files.writeString(work.resolve("needs.yaml"),
+                "requiredCapabilities:\n  - capability: agent.run\n    capabilityVersion: ^1\n");
+        var plan = CliTestFixtures.run("plan", "--catalog", catalog.toString(), "--needs", needs.toString());
+        assertThat(plan.stdout()).contains("companions missing: broker-adapter.jar CATALOG_COMPANION_MISSING: the catalog has no "
+                + "companion com.example:absent:1.0.0");
     }
 
     /** A manifest-less jar needs exactly one pom.properties to be a companion candidate. */
@@ -215,7 +233,35 @@ class HostedComponentPipelineTest {
         assertThat(binding.configuration().values()).containsEntry("accountRef", "primary-equity")
                 .containsEntry("sessionRef", "secret://demo/broker/session").containsEntry("maxRows", 50)
                 .doesNotContainKey("region");
+
+        // plan and explain-deployment show the placement (HLD-in-process-component-hosting §10).
+        var plan = CliTestFixtures.run("plan", "--catalog", catalog.toString(), "--needs", needs.toString());
+        assertThat(plan.stdout()).contains("hosted: " + HOSTED + " by " + HOST,
+                "deployment keys: urn:example:broker-adapter requires accountRef (string), sessionRef (secret-ref); "
+                        + "may change maxRows (tighten)");
+        var explained = CliTestFixtures.run("explain-deployment", "--contract", signed.toString());
+        assertThat(explained.stdout()).contains("  host=" + HOST, "  companionArtifacts=[]", "  host=<none>");
+        var verify = CliTestFixtures.run("verify", "--contract", signed.toString(), "--trust-keys", trust.toString(),
+                "--catalog", catalog.toString());
+        assertThat(verify.stdout()).contains("catalogClean=true");
+
+        // emit hands the catalog to the emitter for the admitted-component overlay (§8), and refuses to run without it.
+        Path profile = CliSupport.defaultProfilePath(compiled);
+        Path out = work.resolve("emit");
+        var emitted = CliTestFixtures.run("deploy", "--targets", "local,remote", "--contract", signed.toString(), "--profile",
+                profile.toString(), "--trust-keys", trust.toString(), "--out", out.toString(), "--runtime-binding",
+                bindings.toString(), "--dcp-runtime-bundle", bundle.toString(), "--catalog", catalog.toString());
+        assertExit(0, emitted);
+        assertThat(Files.readString(out.resolve("local-compose/local-compose-artifact.txt")))
+                .contains("componentArtifactsPath=" + catalog.toAbsolutePath());
+        assertThat(emitted.stdout()).contains("operatorDelivery=" + out.resolve("local-compose/hosted-exports/com-example-agent-host-1-0-0")
+                .toAbsolutePath().normalize() + " host=" + HOST + "@test (not mounted or started: deliver it to that host)");
+        var noCatalog = CliTestFixtures.run("emit", "--target", "local", "--contract", signed.toString(), "--profile",
+                profile.toString(), "--trust-keys", trust.toString(), "--out", work.resolve("emit2").toString());
+        assertThat(noCatalog.exitCode()).isNotZero();
+        assertThat(noCatalog.stderr()).contains("--catalog must name the catalog folder");
     }
+
 
     /** Deployment values that break the packaged schema are refused before any binding is written, all at once. */
     @Test
