@@ -389,7 +389,7 @@ services where possible:
   entries validated with DCP's validator. A missing catalog, invalid or missing values, or values
   for a contract that hosts nothing return `GAP` naming the problem; no binding is written.
 - `fabric.foundry-root-assemble` and `fabric.flow-root-assemble` copy only
-  explicit deployment-root inputs and validate required files before returning
+  explicit deployment-root inputs (including the source root's profiles) and validate required files before returning
   PASS. When the signed compiled contract hosts components on Foundry,
   `fabric.foundry-root-assemble` also takes `catalogPath`, `dcpRuntimeBundlePath` and optional
   `trustKeysPath`, and writes the admitted-component overlay into `<root>/admitted/` with the

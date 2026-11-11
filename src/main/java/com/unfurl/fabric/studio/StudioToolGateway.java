@@ -889,7 +889,7 @@ public final class StudioToolGateway {
     }
 
     /**
-     * Foundry root helper: copies an existing deployment root plus explicit category lists.
+     * Foundry root helper: copies an existing deployment root, including its runtime profiles, plus explicit category lists.
      */
     private void copyFoundryDeploymentInputs(Map<String, Object> arguments, Path root) throws IOException {
         String sourceRoot = text(arguments, "foundrySourceRoot", text(arguments, "sourceRoot", ""));
@@ -898,7 +898,7 @@ public final class StudioToolGateway {
             if (!Files.isDirectory(source)) {
                 throw new IllegalArgumentException("foundrySourceRoot must be a directory");
             }
-            for (String subdir : List.of("agents", "prompts", "tools", "providers", "registries")) {
+            for (String subdir : List.of("profiles", "agents", "prompts", "tools", "providers", "registries")) {
                 copyDirectoryContents(source.resolve(subdir), root.resolve(subdir));
             }
         }

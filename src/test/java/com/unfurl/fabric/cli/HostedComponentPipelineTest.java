@@ -324,6 +324,9 @@ class HostedComponentPipelineTest {
         });
 
         Path source = Files.createDirectories(work.resolve("foundry-source"));
+        Files.createDirectories(source.resolve("profiles"));
+        Files.writeString(source.resolve("profiles/foundry-runtime-profile.yaml"),
+                "bindings:\n  - kind: TOOL_REGISTRY_SOURCE\n    adapter: dcp-admitted-components\n    config: {path: admitted}\n");
         Files.createDirectories(source.resolve("agents"));
         Files.createDirectories(source.resolve("prompts"));
         Files.createDirectories(source.resolve("registries"));
@@ -340,6 +343,8 @@ class HostedComponentPipelineTest {
         assertThat(assembled.output()).as(String.valueOf(assembled.output())).containsEntry("status", "PASS");
         assertThat(String.valueOf(assembled.output())).contains("dcp-admitted-components", "urn:unfurl:foundry");
         assertThat(root.resolve("admitted/components/broker-adapter.jar")).exists();
+        assertThat(root.resolve("profiles/foundry-runtime-profile.yaml"))
+                .hasContent(Files.readString(source.resolve("profiles/foundry-runtime-profile.yaml")));
         assertThat(root.resolve("admitted/trust-keys/pub.pem")).exists();
         try (var frozen = Files.list(root.resolve("admitted/contracts/frozen"))) {
             assertThat(frozen.map(path -> path.getFileName().toString())).singleElement()
