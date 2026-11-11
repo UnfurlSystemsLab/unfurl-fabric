@@ -34,8 +34,8 @@ These steps were last run on 2 November 2026 with images built from the latest c
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
 November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo steps were run on 12
 November 2026 through `emit`, and Foundry's admitted-component host loaded the result. The
-command-line end-to-end steps were run the same day, and Foundry and Flow started from the exported
-folders without containers. No agent, model or broker call was made, so a real agent run is not
+command-line end-to-end steps were run the same day: both containers became healthy, and Foundry
+admitted the three Kotak reads. No agent, model or broker call was made, so a real agent run is not
 covered here.
 
 ## Before you start
@@ -818,15 +818,15 @@ document at `$work\foundry-deployment\secrets\demo\kotak\primary-equity-session`
 describes the document. Never commit that file. The reads are then available as tools to Foundry's agents. A
 caller needs each read's permission, which the authorization policy checks.
 
-**What was checked.** On 12 November 2026, every command above through `deploy` was run on the full
-catalog. Then the Foundry and Flow jars, the same code the images package, were started directly
-from the exported folders:
+**What was checked.** On 12 November 2026, every command above was run on the full catalog, with
+images built from the current code (Docker 29.8.2, Compose 5.5.1):
 
-- Foundry admitted the three Kotak reads and reported ready with the admitted source `UP`.
-- Flow started and reported `UP`.
+- Both containers became `healthy`.
+- Foundry's `/health/ready` reported `UP`, with `TOOL_REGISTRY_SOURCE:admitted` `UP`.
+- Foundry's log showed `component.admit` `SUCCEEDED` for each of the three Kotak contracts.
+- Flow's log had no errors, and Flow reached Foundry at `http://foundry:7979`.
 
 Not covered:
-- **Containers:** Docker wasn't available for this check.
 - **A Kotak read:** it needs a real session.
 - **An agent run:** it needs a model provider.
 - **Keycloak:** it isn't contacted. In development mode identity is bound but not enforced (see
