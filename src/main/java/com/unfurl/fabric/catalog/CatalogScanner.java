@@ -115,7 +115,11 @@ public final class CatalogScanner {
         List<CatalogEntry> selectable = new ArrayList<>();
         for (CatalogEntry entry : entries) {
             Optional<String> unresolved = entry.metadata().optionalHostedActivation().flatMap(companions::unresolved);
-            if (unresolved.isPresent()) {
+            Optional<String> invalidConfiguration = invalidConfiguration(entry);
+            if (invalidConfiguration.isPresent()) {
+                skipped.add(new SkippedEntry(entry.localPath(), SkippedEntry.SkipReason.INVALID_COMPONENT_CONFIGURATION,
+                        invalidConfiguration.get()));
+            } else if (unresolved.isPresent()) {
                 skipped.add(new SkippedEntry(entry.localPath(), SkippedEntry.SkipReason.COMPANION_UNRESOLVED, unresolved.get()));
             } else {
                 selectable.add(entry.metadata().optionalHostedActivation().map(companions::resolve).map(entry::withCompanions).orElse(entry));
@@ -161,6 +165,22 @@ public final class CatalogScanner {
         CatalogMetadata metadata = parsed.metadata();
 
         return new CatalogEntry(artifact, claimDescriptor, metadata, parsed.componentShapeProfile(), jarPath);
+    }
+
+    /**
+     * Checks the entry's packaged {@code META-INF/unfurl-config.yaml}, as data, with DCP's schema parser.
+     *
+     * @return empty when the entry packages no configuration or a valid one; otherwise every failure
+     */
+    private static Optional<String> invalidConfiguration(CatalogEntry entry) {
+        try {
+            com.unfurl.fabric.runtime.HostedComponentConfiguration.packagedSchema(entry.localPath());
+            return Optional.empty();
+        } catch (com.unfurl.dcp.componentconfig.ComponentConfigurationException invalid) {
+            return Optional.of(invalid.getMessage());
+        } catch (IOException unreadable) {
+            return Optional.of("the packaged configuration cannot be read: " + unreadable.getMessage());
+        }
     }
 
     /**

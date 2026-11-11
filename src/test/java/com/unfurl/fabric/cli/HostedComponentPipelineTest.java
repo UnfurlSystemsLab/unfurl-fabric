@@ -142,6 +142,122 @@ class HostedComponentPipelineTest {
     }
 
     private static final String CatalogScanner_MANIFEST = "META-INF/unfurl-catalog.yaml";
+    private static final String PACKAGED_CONFIG = """
+            config_version: 1
+            schema:
+              maxRows:    { type: integer, min: 1, max: 1000, source: packaged, override: tighten, stricter: lower }
+              region:     { type: string, source: packaged }
+              accountRef: { type: string, source: deployment }
+              sessionRef: { type: secret-ref, source: deployment }
+            defaults:
+              maxRows: 100
+              region: ap-south
+            """;
+
+    /**
+     * The CLI end to end: compile places and pins, {@code sign --dcp-runtime-bundle} writes verifiable frozen child
+     * contracts, and {@code runtime-bindings --component-config} writes an IN_PROCESS binding consumed by the host that
+     * DCP's strict codec reads back, with the deployment values typed by the packaged schema.
+     */
+    @Test
+    void writesSignedBundleAndInProcessBindingsThroughTheCli(@TempDir Path work) throws Exception {
+        writeHost();
+        writeHosted(List.of(), PACKAGED_CONFIG);
+        Path needs = Files.writeString(work.resolve("needs.yaml"), """
+                requiredCapabilities:
+                  - capability: broker.read
+                    capabilityVersion: ^1
+                  - capability: agent.run
+                    capabilityVersion: ^1
+                """);
+        Path compiled = work.resolve("compiled.yaml");
+        assertExit(0, CliTestFixtures.run("compile", "--catalog", catalog.toString(), "--needs", needs.toString(), "--out", compiled.toString()));
+
+        var keys = com.unfurl.fabric.signing.SigningTestFixtures.generateEcKeyPair();
+        Path privateKey = com.unfurl.fabric.signing.SigningTestFixtures.writePrivateKeyPem(work, "key.pem", keys.getPrivate());
+        Path publicKey = com.unfurl.fabric.signing.SigningTestFixtures.writePublicKeyPem(work, "pub.pem", keys.getPublic());
+        Path signed = work.resolve("signed.yaml");
+        Path bundle = work.resolve("bundle.zip");
+        assertExit(0, CliTestFixtures.run("sign", "--contract", compiled.toString(), "--key", privateKey.toString(),
+                "--public-key", publicKey.toString(), "--out", signed.toString(),
+                "--dcp-runtime-bundle", bundle.toString(), "--catalog", catalog.toString()));
+
+        // The bundle's frozen child contracts verify against the signing key, exactly as a host loads them.
+        Path frozen = Files.createDirectories(work.resolve("frozen"));
+        try (var zip = new java.util.zip.ZipFile(bundle.toFile())) {
+            for (var entry : java.util.Collections.list(zip.entries())) {
+                if (entry.getName().startsWith("contracts/frozen/")) {
+                    Files.write(frozen.resolve(Path.of(entry.getName()).getFileName().toString()), zip.getInputStream(entry).readAllBytes());
+                }
+            }
+            assertThat(zip.getEntry("claims/urn-example-broker-adapter.claim.json")).isNotNull();
+        }
+        Path trust = copyKey(publicKey, Files.createDirectories(work.resolve("trust")));
+        var verified = com.unfurl.dcp.host.VerifiedContracts.loadDirectory(frozen,
+                new com.unfurl.dcp.trust.VerificationKeyPemLoader().loadDirectory(trust));
+        assertThat(verified.all()).hasSize(2);
+        var hostedContract = verified.all().stream().filter(c -> c.contract().binding().providerCapability().equals("broker.read"))
+                .findFirst().orElseThrow();
+        assertThat(hostedContract.contract().parties().consumer().claimUri()).isEqualTo(URI.create("urn:example:agent-host"));
+
+        Path bindings = work.resolve("runtime-binding.yaml");
+        assertExit(0, CliTestFixtures.run("runtime-bindings", "--signed-contract", signed.toString(), "--out", bindings.toString(),
+                "--catalog", catalog.toString(),
+                "--component-config", "urn:example:broker-adapter#accountRef=primary-equity",
+                "--component-config", "urn:example:broker-adapter#sessionRef=secret://demo/broker/session",
+                "--component-config", "urn:example:broker-adapter#maxRows=50"));
+
+        var set = com.unfurl.dcp.runtimebinding.RuntimeBindingCodec.read(Files.readAllBytes(bindings));
+        var binding = set.byContractId().get(hostedContract.contract().contractId());
+        assertThat(binding.providerInstance().deploymentKind()).isEqualTo(com.unfurl.dcp.runtimebinding.DeploymentKind.IN_PROCESS);
+        assertThat(binding.providerInstance().baseUrl()).isNull();
+        assertThat(binding.consumerInstance().componentUri()).isEqualTo(URI.create("urn:example:agent-host"));
+        assertThat(binding.configuration().values()).containsEntry("accountRef", "primary-equity")
+                .containsEntry("sessionRef", "secret://demo/broker/session").containsEntry("maxRows", 50)
+                .doesNotContainKey("region");
+    }
+
+    /** Deployment values that break the packaged schema are refused before any binding is written, all at once. */
+    @Test
+    void refusesComponentConfigurationThePackagedSchemaForbids(@TempDir Path work) throws Exception {
+        writeHost();
+        writeHosted(List.of(), PACKAGED_CONFIG);
+        Path needs = Files.writeString(work.resolve("needs.yaml"),
+                "requiredCapabilities:\n  - capability: broker.read\n    capabilityVersion: ^1\n  - capability: agent.run\n    capabilityVersion: ^1\n");
+        Path compiled = work.resolve("compiled.yaml");
+        assertExit(0, CliTestFixtures.run("compile", "--catalog", catalog.toString(), "--needs", needs.toString(), "--out", compiled.toString()));
+        var keys = com.unfurl.fabric.signing.SigningTestFixtures.generateEcKeyPair();
+        Path signed = work.resolve("signed.yaml");
+        assertExit(0, CliTestFixtures.run("sign", "--contract", compiled.toString(),
+                "--key", com.unfurl.fabric.signing.SigningTestFixtures.writePrivateKeyPem(work, "k.pem", keys.getPrivate()).toString(),
+                "--public-key", com.unfurl.fabric.signing.SigningTestFixtures.writePublicKeyPem(work, "p.pem", keys.getPublic()).toString(),
+                "--out", signed.toString()));
+        Path bindings = work.resolve("runtime-binding.yaml");
+
+        var refused = CliTestFixtures.run("runtime-bindings", "--signed-contract", signed.toString(), "--out", bindings.toString(),
+                "--catalog", catalog.toString(),
+                "--component-config", "urn:example:broker-adapter#sessionRef=hunter2-inline",
+                "--component-config", "urn:example:broker-adapter#maxRows=5000",
+                "--component-config", "urn:example:broker-adapter#region=eu-west",
+                "--component-config", "urn:example:other#x=1");
+        assertThat(refused.exitCode()).isNotZero();
+        assertThat(refused.stderr()).contains("CONFIG_REQUIRED_MISSING [accountRef]", "CONFIG_INVALID [maxRows]",
+                "CONFIG_KEY_FIXED [region]", "CONFIG_SECRET_INLINE [sessionRef]", "names urn:example:other, which is not a hosted component")
+                .doesNotContain("hunter2-inline");
+        assertThat(bindings).doesNotExist();
+
+        var noCatalog = CliTestFixtures.run("runtime-bindings", "--signed-contract", signed.toString(), "--out", bindings.toString());
+        assertThat(noCatalog.stderr()).contains("--catalog is required");
+    }
+
+    private static Path copyKey(Path publicKey, Path directory) throws IOException {
+        Files.copy(publicKey, directory.resolve("pub.pem"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        return directory;
+    }
+
+    private static void assertExit(int expected, CliTestFixtures.CliRun run) {
+        assertThat(run.exitCode()).as(run.stderr()).isEqualTo(expected);
+    }
 
     private void writeHost() throws IOException {
         writeJar(catalog.resolve("agent-host.jar"), Map.of(CatalogScanner_MANIFEST,
@@ -149,10 +265,18 @@ class HostedComponentPipelineTest {
     }
 
     private void writeHosted(List<String> companions) throws IOException {
+        writeHosted(companions, null);
+    }
+
+    /** Writes the hosted component's jar, with a packaged {@code META-INF/unfurl-config.yaml} when one is given. */
+    private void writeHosted(List<String> companions, String packagedConfig) throws IOException {
         String list = companions.isEmpty() ? "[]" : "[" + String.join(", ", companions) + "]";
         String manifest = manifest("urn:example:broker-adapter", HOSTED, "broker.read", "IN_PROCESS",
                 "  hosted_activation:\n    registrar_shapes: [" + SHAPE + "]\n    companions: " + list + "\n");
-        writeJar(catalog.resolve("broker-adapter.jar"), Map.of(CatalogScanner_MANIFEST, manifest.getBytes(StandardCharsets.UTF_8)));
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        entries.put(CatalogScanner_MANIFEST, manifest.getBytes(StandardCharsets.UTF_8));
+        if (packagedConfig != null) entries.put("META-INF/unfurl-config.yaml", packagedConfig.getBytes(StandardCharsets.UTF_8));
+        writeJar(catalog.resolve("broker-adapter.jar"), entries);
     }
 
     private static String hostManifest(String uri, String coordinates, String capability) {

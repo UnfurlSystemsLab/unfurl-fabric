@@ -155,6 +155,9 @@ public final class RuntimeBindingSetGenerator {
         if (IdentityBindingRule.isIdentity(contract)) {
             return identityBinding(contract, plan, options);
         }
+        if (isHosted(contract, plan)) {
+            return hostedBinding(contract, options);
+        }
         String capability = contract.binding().providerCapability();
         URI baseUrl = endpointFor(capability, options);
         return binding(
@@ -381,6 +384,45 @@ public final class RuntimeBindingSetGenerator {
      * Plan lookup: the binding mode of the plan entry for this contract's provider artifact and capability, or null when the
      * plan is absent or has no such entry.
      */
+    /**
+     * Whether a child contract's provider is hosted in-process by another runtime: its binding-plan entry has a host
+     * (HLD-D §6.2a). Such a contract already names that host as consumer (HLD-in-process-component-hosting §4).
+     */
+    private boolean isHosted(CompositionContract contract, BindingPlan plan) {
+        if (plan == null || contract.metadata() == null) return false;
+        Object coordinates = contract.metadata().extensions().get("artifactCoordinates");
+        String capability = contract.binding().providerCapability();
+        return plan.entries().stream().anyMatch(entry -> entry.artifactCoordinates().equals(coordinates)
+                && capability.equals(entry.capability()) && entry.host().isPresent());
+    }
+
+    /**
+     * Leaf assembler for a hosted in-process provider (HLD-in-process-component-hosting §6): {@code IN_PROCESS} with no
+     * base URL and no endpoint reference, consumed by the host (whose instance name is its claim slug), carrying only the
+     * deployment layer of the component's configuration. Packaged defaults stay in the pinned jar, where the host reads
+     * them. The deployment values were validated against the packaged schema before generation.
+     */
+    private RuntimeBinding hostedBinding(CompositionContract contract, Options options) {
+        Configuration deployment = options.componentConfiguration()
+                .getOrDefault(contract.parties().provider().claimUri(), new Configuration(Map.of()));
+        RuntimeBinding binding = binding(
+                childBindingId(contract, options),
+                contract,
+                DeploymentKind.IN_PROCESS,
+                null,
+                null,
+                conventionalCredentialsRef(contract, options),
+                deployment,
+                childMetadata(contract),
+                options);
+        return new RuntimeBinding(binding.bindingId(), binding.contractId(), binding.contractVersion(), binding.targetEnvironment(),
+                binding.providerInstance(),
+                new ConsumerInstance(contract.parties().consumer().claimUri(), contract.parties().consumer().claimVersion(),
+                        slug(contract.parties().consumer().claimUri().toString())),
+                binding.runtimePolicy(), binding.configuration(), binding.deploymentControls(), binding.lifecycle(),
+                binding.metadata());
+    }
+
     private Object planBindingMode(CompositionContract contract, BindingPlan plan) {
         if (plan == null || contract.metadata() == null || contract.metadata().extensions() == null) {
             return null;
@@ -545,8 +587,23 @@ public final class RuntimeBindingSetGenerator {
             String flowBaseUrl,
             String foundryBaseUrl,
             int timeoutMs,
-            IdentityOptions identity
+            IdentityOptions identity,
+            Map<URI, Configuration> componentConfiguration
     ) {
+        /** Validating constructor: the per-component configuration map is copied and never null. */
+        public Options {
+            componentConfiguration = componentConfiguration == null ? Map.of() : Map.copyOf(componentConfiguration);
+        }
+
+        /** Compatibility constructor: no hosted component configuration. */
+        public Options(Path sourceSignedContract, String signedContractSha256, String signedContractCanonicalHash,
+                       String signerKeyFingerprint, String tenant, String environment, String telemetryNamespace,
+                       String bindingIdPrefix, String flowBaseUrl, String foundryBaseUrl, int timeoutMs,
+                       IdentityOptions identity) {
+            this(sourceSignedContract, signedContractSha256, signedContractCanonicalHash, signerKeyFingerprint, tenant,
+                    environment, telemetryNamespace, bindingIdPrefix, flowBaseUrl, foundryBaseUrl, timeoutMs, identity, Map.of());
+        }
+
         /** Default local-dev options used by the Flowfoundry runbook's signed support envelope; no identity inputs. */
         public static Options defaults() {
             return new Options(
@@ -581,7 +638,8 @@ public final class RuntimeBindingSetGenerator {
                     blankToDefault(flowBaseUrl, defaults.flowBaseUrl),
                     blankToDefault(foundryBaseUrl, defaults.foundryBaseUrl),
                     timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs,
-                    identity == null ? IdentityOptions.none() : identity);
+                    identity == null ? IdentityOptions.none() : identity,
+                    componentConfiguration);
         }
 
         private static String blankToDefault(String value, String fallback) {

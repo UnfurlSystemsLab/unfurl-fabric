@@ -43,6 +43,11 @@ public record SkippedEntry(
          * ({@code CATALOG_COMPANION_MISSING}) or several jars hold different bytes under its coordinates
          * ({@code CATALOG_COMPANION_CONFLICT}). The detail starts with the code. The entry is not selectable.
          */
-        COMPANION_UNRESOLVED
+        COMPANION_UNRESOLVED,
+        /**
+         * The packaged {@code META-INF/unfurl-config.yaml} is invalid by DCP's schema rules
+         * (HLD-in-process-component-hosting §6). The detail lists every failure. The entry is not selectable.
+         */
+        INVALID_COMPONENT_CONFIGURATION
     }
 }

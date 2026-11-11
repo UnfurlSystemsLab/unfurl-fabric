@@ -147,7 +147,7 @@ metadata:
 would refuse it as `ARTIFACT_SHADOWS_SHARED_API`, so Fabric reports it at compile time. `verify --catalog` treats a
 companion's hash drift like a component's.
 
-## 6. Runtime bindings for hosted contracts (DCP decision D2)
+## 6. Runtime bindings for hosted contracts (DCP decision D2)  (implemented; `plan` key listing pending)
 
 For a child contract whose provider is hosted, `fabric runtime-bindings` writes a binding for an in-process provider:
 
@@ -188,12 +188,28 @@ leaves `accountRef` and `sessionRef` to each deployment. Fabric's part:
   `deployment-config-resolver`, or a contributed resolver for Vault, Azure App Configuration, the Kubernetes API or
   similar. Either way the jar's schema bounds what it can be.
 
-## 7. Signed child contracts from the CLI
+**Implementation.**
+- Scan refuses an entry whose packaged file is invalid, as `INVALID_COMPONENT_CONFIGURATION` with DCP's failures.
+- `runtime-bindings` takes `--catalog`, required exactly when the contract hosts a component, and reads the packaged
+  schemas there (`runtime/HostedComponentConfiguration`).
+- Each inline `--component-config` value is converted to the key's declared type (`integer`, `boolean`,
+  comma-separated `list<T>`). A value that does not convert stays a string, so DCP's validator refuses it. Nothing is
+  coerced silently.
+- `--component-config` is refused for a contract that hosts no component.
+- Hosted bindings are `IN_PROCESS`, with no base URL and no endpoint reference. Their consumer instance is the host,
+  with the host's claim slug as instance name.
+- Not yet implemented: `plan` listing each hosted component's deployment keys (§10). Fabric also still writes and
+  parses the binding document with its own mapper. The CLI test reads Fabric's output with DCP's
+  `RuntimeBindingCodec`, so the two stay compatible; Fabric delegating to the codec is a follow-up.
+
+## 7. Signed child contracts from the CLI  (implemented)
 
 Studio's `dcpRuntimeBundle` (`claims/` plus one signed `contracts/frozen/*.frozen.json` per child contract, through
 DCP `ContractFreezer`) moves to `compile.DcpRuntimeBundleWriter`. Studio and the CLI both call it.
 `fabric sign --dcp-runtime-bundle <out.zip>` writes the bundle with the same key that signs the contract. This also
-removes the guide's limit that only Studio can produce the bundle.
+removes the guide's limit that only Studio can produce the bundle. The bundle includes the selected providers'
+claims, so it needs `--catalog`, the catalog the contract was compiled from; every selection must be found there by
+artifact SHA-256.
 
 ## 8. Emit: the admitted-component overlay
 

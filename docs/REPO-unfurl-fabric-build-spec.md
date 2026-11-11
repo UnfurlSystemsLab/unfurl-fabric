@@ -104,7 +104,9 @@ assembly-bind
 assembly-verify-binding
 ```
 
-**Proposed: hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands):
+**Hosted in-process components** (`HLD-in-process-component-hosting.md`; no new commands). Implemented: scan, plan/compile
+placement and pins, `sign --dcp-runtime-bundle` (with `--catalog`), `runtime-bindings --component-config` (with
+`--catalog`). Pending: `emit` overlay input, `verify --catalog` companion drift, `explain-deployment` host lines:
 
 - `scan` indexes companion jars by `pom.properties` and reports `companions=N`; identical bytes deduplicate, and
   different bytes under the same coordinates are `CATALOG_COMPANION_CONFLICT`, naming both files.

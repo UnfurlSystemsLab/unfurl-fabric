@@ -36,7 +36,43 @@ final class SignCommand {
         }
         out.println("signed=" + target);
         out.println("fingerprint=" + publicKey.fingerprint());
+        Path bundle = args.optionalPath("dcp-runtime-bundle");
+        if (bundle != null) {
+            writeRuntimeBundle(args, contract, signer, publicKey.fingerprint(), bundle);
+            out.println("dcpRuntimeBundle=" + bundle);
+        }
         return 0;
+    }
+
+    /**
+     * Writes the DCP runtime bundle with the key that signed the contract (HLD-in-process-component-hosting §7). The
+     * bundle carries the selected providers' claims, so {@code --catalog} names the catalog the contract was compiled
+     * from; every selection must be found there by artifact SHA-256, or nothing is written.
+     */
+    private void writeRuntimeBundle(CliArgs args, CompiledContract contract, FabricContractSigner signer,
+                                    String fingerprint, Path bundle) {
+        Path catalog = args.optionalPath("catalog");
+        if (catalog == null) {
+            throw FabricCliException.usage("--dcp-runtime-bundle needs --catalog, which holds the selected providers' claims");
+        }
+        java.util.Map<String, com.unfurl.fabric.catalog.CatalogEntry> bySha = new java.util.HashMap<>();
+        new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog().entries()
+                .forEach(entry -> bySha.put(entry.artifact().sha256(), entry));
+        java.util.List<com.unfurl.fabric.catalog.CatalogEntry> selected = new java.util.ArrayList<>();
+        for (var selection : contract.selections()) {
+            var entry = bySha.get(selection.artifact().sha256());
+            if (entry == null) {
+                throw FabricCliException.usage("--catalog has no jar with the selected artifact " + selection.artifact().coordinates()
+                        + " (sha256 " + selection.artifact().sha256() + ")");
+            }
+            selected.add(entry);
+        }
+        try {
+            createParent(bundle);
+            Files.write(bundle, new com.unfurl.fabric.compile.DcpRuntimeBundleWriter().write(contract, selected, signer, fingerprint));
+        } catch (IOException ex) {
+            throw new FabricSigningException("unable to write DCP runtime bundle " + bundle + ": " + ex.getMessage(), ex);
+        }
     }
 
     private static void createParent(Path target) throws IOException {

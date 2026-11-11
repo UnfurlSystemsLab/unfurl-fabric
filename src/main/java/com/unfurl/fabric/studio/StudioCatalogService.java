@@ -1,7 +1,6 @@
 package com.unfurl.fabric.studio;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.unfurl.dcp.claim.Claim;
 import com.unfurl.dcp.claim.ClaimMetadata;
@@ -139,9 +138,6 @@ public final class StudioCatalogService {
     private final StudioPackageVisualAssets packageVisualAssets = new StudioPackageVisualAssets();
     private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
     private final ObjectMapper jsonMapper = StudioJson.mapper();
-    private final ObjectMapper dcpRuntimeBundleMapper = StudioJson.mapper().copy()
-            .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-            .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
     private final StudioDeploymentService deploymentService = new StudioDeploymentService();
 
     /**
@@ -4218,66 +4214,16 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Bundle builder: writes the broker-consumable DCP runtime artifacts needed by Flow and other
-     * hosts: provider claims plus individually frozen child contracts. The aggregate Fabric
-     * contract remains the environment proof, while these child frozen contracts are the runtime
-     * broker inputs.
+     * Bundle builder: delegates to {@link com.unfurl.fabric.compile.DcpRuntimeBundleWriter}, the one writer Studio and
+     * {@code fabric sign --dcp-runtime-bundle} share (HLD-in-process-component-hosting §7).
      */
     private byte[] dcpRuntimeBundle(
             CompiledContract compiled,
             CompositionCandidate candidate,
             FabricContractSigner signer
     ) {
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try (ZipOutputStream zip = new ZipOutputStream(out, StandardCharsets.UTF_8)) {
-                writeRuntimeBundleClaims(zip, candidate);
-                writeRuntimeBundleFrozenContracts(zip, compiled, signer);
-            }
-            return out.toByteArray();
-        } catch (IOException ex) {
-            throw new IllegalStateException("unable to write DCP runtime bundle", ex);
-        }
-    }
-
-    /**
-     * Bundle section writer: serializes every selected provider claim using public DCP snake_case
-     * JSON so Flow can present claims to the broker without importing Fabric.
-     */
-    private void writeRuntimeBundleClaims(ZipOutputStream zip, CompositionCandidate candidate) throws IOException {
-        List<CatalogEntry> entries = candidate == null ? List.of() : candidate.entries();
-        for (CatalogEntry entry : entries) {
-            Claim claim = entry.claimDescriptor().claim();
-            String name = "claims/" + slug(claim.identity().uri().toString()) + ".claim.json";
-            writeZipEntry(zip, name, dcpRuntimeBundleMapper.writeValueAsBytes(claim));
-        }
-    }
-
-    /**
-     * Bundle section writer: freezes every child DCP contract independently so the runtime broker
-     * can verify and accept a specific provider capability.
-     */
-    private void writeRuntimeBundleFrozenContracts(
-            ZipOutputStream zip,
-            CompiledContract compiled,
-            FabricContractSigner signer
-    ) throws IOException {
-        ContractFreezer freezer = new ContractFreezer(new SigningKeyRef(signer.keyFingerprint()));
-        for (CompositionContract child : compiled.childContracts()) {
-            String capability = child.binding().providerCapability();
-            String suffix = child.contractId().toString().substring(child.contractId().toString().lastIndexOf(':') + 1);
-            String name = "contracts/frozen/" + slug(capability) + "-" + slug(suffix) + ".frozen.json";
-            writeZipEntry(zip, name, freezer.freeze(child, signer).canonicalBytes());
-        }
-    }
-
-    /**
-     * Zip helper: writes one deterministic entry and leaves stream ownership with the caller.
-     */
-    private void writeZipEntry(ZipOutputStream zip, String name, byte[] bytes) throws IOException {
-        zip.putNextEntry(new ZipEntry(name));
-        zip.write(bytes == null ? new byte[0] : bytes);
-        zip.closeEntry();
+        return new com.unfurl.fabric.compile.DcpRuntimeBundleWriter().write(compiled,
+                candidate == null ? List.of() : candidate.entries(), signer, signer.keyFingerprint());
     }
 
     /**
