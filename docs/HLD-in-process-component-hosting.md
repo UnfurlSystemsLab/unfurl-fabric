@@ -80,8 +80,9 @@ it. Fabric uses the declaration only to fail early. The host enforces it at runt
 candidates by the Maven coordinates in their `META-INF/maven/*/*/pom.properties`, and hashed. They are not selectable
 entries, and `scan` reports them as `companions=N`, not as `skipped`. Resolution never depends on scan order:
 
-- **One coordinate set per jar.** A jar with exactly one `pom.properties` is indexed under it. A jar with none, or with
-  several (a shaded jar), is not a companion candidate and is listed with that reason. It can never satisfy a companion
+- **One coordinate set per jar.** A jar with exactly one `pom.properties`, complete with `groupId`, `artifactId` and
+  `version`, is indexed under it. A jar with none, with several (a shaded jar, counting incomplete files too), or whose
+  only one is incomplete, is not a companion candidate and is listed with that reason. It can never satisfy a companion
   by accident.
 - **Identical bytes are one artifact.** Several jars with the same coordinates and the same SHA-256, such as a copy
   under another file name, are deduplicated. The index keeps one entry and lists every path.
@@ -104,7 +105,7 @@ Both diagnostics are shown by `scan`, `plan` and Studio admission and are never 
 
 **Implementation (Studio admission).** Studio admission accepts companion jar uploads by bytes, like component jars,
 and applies the same rules:
-- A `.jar` upload with no `META-INF/unfurl-catalog.yaml` and exactly one `pom.properties` is a companion
+- A `.jar` upload with no `META-INF/unfurl-catalog.yaml` and exactly one `pom.properties`, a complete one, is a companion
   (`StudioClaimAdmissionValidator` returns a companion validation). Any other manifest-less jar is still refused, now
   saying it is neither a component nor a companion candidate.
 - The bytes go to `StudioCompanionStore`, a tenant-scoped, content-addressed, write-once Repository

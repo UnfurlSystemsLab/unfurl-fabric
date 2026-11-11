@@ -158,20 +158,21 @@ final class StudioClaimAdmissionValidator {
      * bytes that were hashed. Any other manifest-less jar is refused, saying it is neither a component nor a companion.
      */
     private static AdmissionValidation companionOrRejected(byte[] artifactBytes, String artifactSha, ManifestSource manifest) {
-        List<String> coordinates;
+        CompanionCoordinates.Identity identity;
         try {
-            coordinates = CompanionCoordinates.read(artifactBytes);
+            identity = CompanionCoordinates.read(artifactBytes);
         } catch (IOException ex) {
             return AdmissionValidation.rejected(List.of(error(ErrorCode.CLAIM_MALFORMED.name(), "artifact",
                     "unable to read JAR artifact: " + ex.getMessage())));
         }
-        if (coordinates.size() != 1) {
+        java.util.Optional<String> coordinates = identity.single();
+        if (coordinates.isEmpty()) {
             // One problem, one diagnostic: the missing manifest, saying why the jar is not a companion either.
             StudioDcpDiagnostic missing = manifest.diagnostics().get(0);
             return AdmissionValidation.rejected(List.of(error(missing.code(), missing.path(), missing.message()
-                    + ", so it is not a component, and it is " + CompanionCoordinates.notACandidate(coordinates.size()))));
+                    + ", so it is not a component, and it is " + identity.refusal())));
         }
-        return AdmissionValidation.companion(coordinates.get(0), artifactSha, artifactBytes);
+        return AdmissionValidation.companion(coordinates.get(), artifactSha, artifactBytes);
     }
 
     /**

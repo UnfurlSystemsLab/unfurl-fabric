@@ -123,12 +123,23 @@ class HostedComponentPipelineTest {
         shaded.put("META-INF/maven/b/two/pom.properties", pom("b", "two", "1").getBytes(StandardCharsets.UTF_8));
         writeJar(catalog.resolve("shaded.jar"), shaded);
 
+        // Incomplete files count too: one complete plus one incomplete is still two, and a lone incomplete one is refused.
+        Map<String, byte[]> halfShaded = new LinkedHashMap<>();
+        halfShaded.put("META-INF/maven/a/one/pom.properties", pom("a", "one", "1").getBytes(StandardCharsets.UTF_8));
+        halfShaded.put("META-INF/maven/b/two/pom.properties", "groupId=b\nartifactId=two\n".getBytes(StandardCharsets.UTF_8));
+        writeJar(catalog.resolve("half-shaded.jar"), halfShaded);
+        writeJar(catalog.resolve("incomplete.jar"), Map.of("META-INF/maven/c/three/pom.properties",
+                "groupId=c\nartifactId=three\nversion=\n".getBytes(StandardCharsets.UTF_8)));
+
         CatalogScanReport scan = new CatalogScanner().scan(catalog);
 
         assertThat(scan.catalog().companions()).isEmpty();
-        assertThat(scan.skippedEntries()).extracting(SkippedEntry::detail)
-                .anySatisfy(detail -> assertThat(detail).contains("it has 0 pom.properties entries"))
-                .anySatisfy(detail -> assertThat(detail).contains("it has 2 pom.properties entries"));
+        assertThat(scan.skippedEntries()).extracting(entry -> entry.jarPath().getFileName() + " " + entry.detail())
+                .anySatisfy(detail -> assertThat(detail).startsWith("plain.jar").contains("it has 0 pom.properties entries"))
+                .anySatisfy(detail -> assertThat(detail).startsWith("shaded.jar").contains("it has 2 pom.properties entries"))
+                .anySatisfy(detail -> assertThat(detail).startsWith("half-shaded.jar").contains("it has 2 pom.properties entries"))
+                .anySatisfy(detail -> assertThat(detail).startsWith("incomplete.jar")
+                        .contains("its pom.properties lacks groupId, artifactId or version"));
     }
 
     /** A pinned jar with classes in a package the host shares is refused at compile, as the host would at startup. */

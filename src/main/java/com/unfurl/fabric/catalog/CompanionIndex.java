@@ -38,19 +38,20 @@ final class CompanionIndex {
      * @return empty when the jar was indexed as a companion candidate; otherwise why it is not one
      */
     Optional<String> offer(Path jar) {
-        List<String> coordinates;
+        CompanionCoordinates.Identity identity;
         byte[] bytes;
         try {
             // One read: the coordinates come from the same bytes that are hashed.
             bytes = Files.readAllBytes(jar);
-            coordinates = CompanionCoordinates.read(bytes);
+            identity = CompanionCoordinates.read(bytes);
         } catch (IOException unreadable) {
             return Optional.of("not a companion candidate: unreadable (" + unreadable.getMessage() + ")");
         }
-        if (coordinates.size() != 1) {
-            return Optional.of(CompanionCoordinates.notACandidate(coordinates.size()));
+        Optional<String> coordinates = identity.single();
+        if (coordinates.isEmpty()) {
+            return Optional.of(identity.refusal());
         }
-        candidates.computeIfAbsent(coordinates.get(0), c -> new TreeMap<>())
+        candidates.computeIfAbsent(coordinates.get(), c -> new TreeMap<>())
                 .computeIfAbsent(sha256(bytes), s -> new ArrayList<>()).add(jar);
         return Optional.empty();
     }
