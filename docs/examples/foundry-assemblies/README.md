@@ -27,12 +27,15 @@ and the other repos.
 | Publish a reusable `flow-foundry`, `flow-only` or `foundry-only` assembly | Works | [Publish](#publish-a-reusable-assembly) |
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
 | Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
-| Run the Kotak Neo reads inside Foundry | Works up to Foundry admitting the adapter; a live read needs your session secret and policy bindings | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
+| Run the Kotak Neo reads inside Foundry | Works up to Foundry admitting the adapter; a live read needs your session secret | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
+| Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works in development mode, without authentication; identity is bound, not enforced | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
 November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo steps were run on 12
-November 2026 through `emit`, and Foundry's admitted-component host loaded the result. No agent, model or broker call was made, so a real agent run is not
+November 2026 through `emit`, and Foundry's admitted-component host loaded the result. The
+command-line end-to-end steps were run the same day, and Foundry and Flow started from the exported
+folders without containers. No agent, model or broker call was made, so a real agent run is not
 covered here.
 
 ## Before you start
@@ -663,6 +666,171 @@ and policy bindings in your Foundry deployment.
 
 For a host that doesn't run Foundry's admitted-component host, the adapter's
 [host connection guide](../../../../unfurl-adapter-kotak-neo/docs/HOST-CONNECTION.md) still applies.
+
+## End to end from the command line: Flow, Foundry, Kotak Neo and Keycloak
+
+This example builds one package from the command line alone, with no Studio. Flow and Foundry run as
+containers, Foundry runs the Kotak Neo adapter inside its own process, and Keycloak is your
+existing Keycloak, bound as the identity provider. It reuses `$work`, `$examples` and the signing
+keys from [Compile and sign](#3-compile-and-sign), and needs the catalog from
+[Create the catalog](#1-create-the-catalog) plus the seven Kotak jars from the
+[Kotak Neo example](#example-add-the-kotak-neo-adapter).
+
+**What you write.** [needs/flow-foundry-kotak-identity.yaml](needs/flow-foundry-kotak-identity.yaml)
+asks for `agent.run`, `workflow.execute`, the three Kotak reads and `identity-context`.
+[deployment-policy-external-keycloak.yaml](deployment-policy-external-keycloak.yaml) keeps Flow and
+Foundry as containers and binds Keycloak to the one you run. The Kotak adapter supports neither
+shape in that policy, so it keeps its own in-process shape, and Fabric places it in Foundry.
+
+```powershell
+$needs = "$examples\needs\flow-foundry-kotak-identity.yaml"
+$policy = "$examples\deployment-policy-external-keycloak.yaml"
+$e2e = "$work\e2e"
+fabric plan --catalog "$work\catalog" --needs $needs
+```
+
+```text
+EXACT
+cand-… entries=com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0,com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT,com.unfurl.flow:unfurl-flow:0.1.0,com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+hosted: com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT by com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+deployment keys: unfurl://component/kotak-neo-adapter requires accountRef (string), sessionRef (secret-ref); may change maxBytes (tighten), maxRows (tighten), timeoutMs (tighten)
+```
+
+**Compile and sign.** `--dcp-runtime-bundle` writes the signed contracts that Flow and Foundry load,
+so this route needs no Studio:
+
+```powershell
+fabric compile --catalog "$work\catalog" --needs $needs --deployment-policy $policy --out "$e2e\compiled.yaml"
+fabric sign --contract "$e2e\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$e2e\signed.yaml" --dcp-runtime-bundle "$e2e\dcp-runtime-bundle.zip" --catalog "$work\catalog"
+fabric verify --contract "$e2e\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"
+```
+
+`compile` prints where each component runs:
+
+```text
+deploymentShapes={com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT=IN_PROCESS_LIBRARY, com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT=CONTAINERIZED_SERVICE, com.unfurl.flow:unfurl-flow:0.1.0=CONTAINERIZED_SERVICE, com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0=MANAGED_EXTERNAL_ADAPTER}
+```
+
+`verify` should end with `overallOk=true`.
+
+**Create the runtime bindings.** Two kinds of values are needed:
+- The identity settings of your Keycloak realm, as in [Publish a reusable assembly](#publish-a-reusable-assembly).
+  Replace the issuer with your realm's.
+- The Kotak account alias, and a reference to the secret that will hold its session.
+
+```powershell
+$identity = @(
+    '--identity-issuer', 'http://localhost:8180/realms/demo'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
+    '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
+    '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
+    '--identity-client-credentials-ref', 'secret://demo/identity/flow-client'
+)
+$kotak = 'unfurl://component/kotak-neo-adapter'
+fabric runtime-bindings --signed-contract "$e2e\signed.yaml" --tenant demo --environment local `
+  --flow-base-url http://flow:8080 --foundry-base-url http://foundry:7979 --out "$e2e\runtime-bindings.yaml" @identity `
+  --catalog "$work\catalog" --component-config "$kotak#accountRef=primary-equity" `
+  --component-config "$kotak#sessionRef=secret://demo/kotak/primary-equity-session"
+```
+
+It prints `bindings=14`, one for each contract.
+
+**Prepare Foundry's deployment folder.** Foundry needs a profile that loads the adapter.
+[foundry-kotak-development-profile.yaml](foundry-kotak-development-profile.yaml) is Foundry's
+development profile with seven more bindings:
+
+- the host services the adapter uses: authorization policy, audit, metrics, read admission, and the
+  development profile's existing secrets;
+- the keys that verify the adapter's contracts;
+- an admitted-component tool source, combined with the deployment's own tools.
+
+Work on a copy, so your checkout stays unchanged:
+
+```powershell
+Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment"
+Copy-Item "$examples\foundry-kotak-development-profile.yaml" "$work\foundry-deployment\profiles\"
+```
+
+**Export.** Flow and Foundry go to Compose, and Keycloak to the `remote` target, so use `deploy` with
+two targets. Pass Flow's inputs, the catalog for the adapter, and the Foundry folder.
+
+```powershell
+fabric deploy --contract "$e2e\signed.yaml" --profile "$e2e\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" `
+  --targets "$examples\target-local-images.yaml,remote" --runtime-binding "$e2e\runtime-bindings.yaml" `
+  --dcp-runtime-bundle "$e2e\dcp-runtime-bundle.zip" --flow-workflows "$examples\workflows" `
+  --foundry-deployment-root "$work\foundry-deployment" --catalog "$work\catalog" --out "$e2e\deploy"
+```
+
+```text
+targets=2
+targetKind=local-compose dir=local-compose ownedShapes=[IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE] subManifestSha256=…
+targetKind=remote dir=remote ownedShapes=[MANAGED_EXTERNAL_ADAPTER] subManifestSha256=…
+```
+
+`deploy\local-compose\` holds:
+- `docker-compose.yaml`;
+- `flow-deployment\`, the Flow folder with the signed contracts, bindings, workflows and trust keys;
+- `foundry-admitted\`, the adapter's seven jars, its three contracts, their bindings and your public
+  key, which Compose mounts read-only into Foundry.
+
+`deploy\remote\` holds Keycloak's binding and a reachability probe for your Keycloak. Its
+`endpointRef` reads `UNBOUND_ENDPOINT_REF`, because the Keycloak adapter's catalog entry names no
+endpoint. The realm that Flow and Foundry use is the issuer you bound with `runtime-bindings`.
+
+`deploy` checks the Foundry folder before writing anything. If no profile in it binds the
+admitted-component source, it stops, so you can't ship an overlay that nothing reads.
+
+**Build the images and start it.** Build both images as in [Export a package that starts](#export-a-package-that-starts),
+from code that includes the in-process hosting changes. Then start the package with one more override.
+[compose-development-kotak.yaml](compose-development-kotak.yaml) selects the Kotak profile. Like
+`compose-development.yaml`, this runs with **no authentication**, on this machine only.
+
+```powershell
+$key = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
+$env:UNFURL_FOUNDRY_CREDENTIAL_KEY = [Convert]::ToBase64String($key)
+
+function e2e-compose {
+    docker compose -p foundry-kotak -f "$e2e\deploy\local-compose\docker-compose.yaml" -f "$examples\compose-development.yaml" -f "$examples\compose-development-kotak.yaml" @args
+}
+
+Assert-PortFree 8080
+Assert-PortFree 7979
+e2e-compose up -d --pull never --wait --wait-timeout 180
+if ($LASTEXITCODE -ne 0) {
+    e2e-compose ps --all
+    e2e-compose logs --tail 40
+    e2e-compose down
+    throw 'the package did not start'
+}
+Invoke-RestMethod http://127.0.0.1:7979/health/ready
+e2e-compose logs foundry | Select-String 'component.admit'
+```
+
+`/health/ready` should report `UP`, including `TOOL_REGISTRY_SOURCE:admitted`. Foundry's log shows a
+`component.admit` fact for each Kotak read, ending in `SUCCEEDED`. Foundry refuses to start if any
+contract, pin or configuration check fails. Stop the package with `e2e-compose down`.
+
+**To make a real Kotak read,** Foundry needs the session that `sessionRef` names. Put the session
+document at `$work\foundry-deployment\secrets\demo\kotak\primary-equity-session`. The adapter's
+[integration guide](../../../../unfurl-adapter-kotak-neo/docs/INTEGRATION.md#mounted-session-document-format)
+describes the document. Never commit that file. The reads are then available as tools to Foundry's agents. A
+caller needs each read's permission, which the authorization policy checks.
+
+**What was checked.** On 12 November 2026, every command above through `deploy` was run on the full
+catalog. Then the Foundry and Flow jars, the same code the images package, were started directly
+from the exported folders:
+
+- Foundry admitted the three Kotak reads and reported ready with the admitted source `UP`.
+- Flow started and reported `UP`.
+
+Not covered:
+- **Containers:** Docker wasn't available for this check.
+- **A Kotak read:** it needs a real session.
+- **An agent run:** it needs a model provider.
+- **Keycloak:** it isn't contacted. In development mode identity is bound but not enforced (see
+  [Current limits](#current-limits)).
 
 ## Publish a reusable assembly
 

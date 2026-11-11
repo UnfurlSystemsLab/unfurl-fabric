@@ -1,0 +1,150 @@
+# Foundry's development profile (unfurl-foundry/deployment/profiles/foundry-runtime-profile.yaml) with the
+# bindings that admit the Kotak Neo adapter in-process: the host services its owner=host needs, the trust keys
+# that verify its contracts, and an admitted-component tool source composed over the deployment's own tools.
+# Authentication stays disabled, as in the development profile: use it on a trusted machine only.
+# The guide copies it into your Foundry deployment folder; compose-development-kotak.yaml selects it.
+apiVersion: unfurl.foundry/v1alpha1
+id: local-durable-kotak
+version: "1.0.0"
+engine: DURABLE
+servedCapabilities:
+  - agent.run
+  - composition.run
+bindings:
+  - kind: SECRET_RESOLVER
+    name: external-secrets
+    adapter: mounted-directory-secrets
+    config:
+      path: secrets
+  - kind: AGENT_RUN_STORE
+    name: agent-runs
+    adapter: file-agent-run-store
+    config:
+      path: .foundry/agent-runs
+  - kind: HARNESS_RUN_STORE
+    name: harness-runs
+    adapter: file-harness-run-store
+    config:
+      path: .foundry/harness-runs
+  - kind: EXTERNAL_CALL_JOURNAL
+    name: external-calls
+    adapter: file-external-call-journal
+    config:
+      path: .foundry/external-calls
+  - kind: COMPOSITION_RUN_STORE
+    name: composition-runs
+    adapter: file-composition-run-store
+    config:
+      path: .foundry/composition-runs
+  - kind: CONTEXT_CHECKPOINT_STORE
+    name: context-checkpoints
+    adapter: file-context-checkpoint-store
+    config:
+      path: .foundry/context-checkpoints
+  - kind: APPROVAL_STORE
+    name: tool-approvals
+    adapter: file-tool-approval-store
+    config:
+      path: .foundry/tool-approvals
+  - kind: PROVIDER_REGISTRY
+    name: providers
+    adapter: credential-reference-provider-registry
+    config:
+      path: registries/providers.yaml
+      secretResolver: external-secrets
+  # The deployment's own tools become one source of the tool registry; the admitted Kotak reads are the other.
+  - kind: TOOL_REGISTRY_SOURCE
+    name: deployment-tools
+    adapter: deployment-tool-registry
+  - kind: SKILL_REGISTRY
+    name: deployment-skills
+    adapter: deployment-skill-registry
+  - kind: PROMPT_TEMPLATE_REGISTRY
+    name: deployment-prompts
+    adapter: directory-prompt-templates
+    config:
+      path: prompts
+      version: 1.0.0
+  - kind: AGENT_DEFINITION_REGISTRY
+    name: deployment-agents
+    adapter: directory-agent-definitions
+    config:
+      path: agents
+  - kind: COMPOSITION_DEFINITION_REGISTRY
+    name: deployment-compositions
+    adapter: directory-composition-definitions
+    config:
+      path: compositions
+  - kind: POLICY_CHAIN
+    name: default-tool-policy
+    adapter: default-tool-policy-chain
+    config:
+      approvalStore: tool-approvals
+  - kind: CONTEXT_RESOURCE_PROVIDER
+    name: no-external-resources
+    adapter: deny-all-context-resources
+  - kind: CONTEXT_SELECTOR
+    name: deterministic
+    adapter: deterministic-context-selector
+    config:
+      resourceProvider: no-external-resources
+  - kind: EVENT_SINK
+    name: runtime-events
+    adapter: noop-event-sink
+  - kind: PERMISSION_BRIDGE
+    name: tool-permissions
+    adapter: execution-context-permissions
+  - kind: AGENT_EVENT_SINK
+    name: engine-events
+    adapter: noop-agent-event-sink
+  # ---- In-process components admitted from the emitted foundry-admitted/ folder ----------------------------
+  # Host services the Kotak Neo adapter's owner=host needs are bound to (Foundry LLD-admitted-component-host).
+  - kind: POLICY_EVALUATOR
+    name: operation-policy
+    adapter: execution-context-permissions-policy
+  - kind: AUDIT
+    name: operation-audit
+    adapter: structured-log-audit
+    config:
+      stream: stdout
+  - kind: METRICS
+    name: operation-metrics
+    adapter: in-process-metrics
+    config:
+      maxSeries: 10000
+  - kind: OPERATION_ADMISSION
+    name: read-admission
+    adapter: bounded-operation-admission
+    config: { ratePerSecond: 2, burst: 4, maxTrackedKeys: 1024 }
+  # The public keys that verify the admitted contracts; emit copies them into admitted/trust-keys.
+  - kind: DCP_TRUST_KEYS
+    name: dcp-keys
+    adapter: pem-directory-trust-keys
+    config:
+      path: admitted/trust-keys
+  - kind: TOOL_REGISTRY_SOURCE
+    name: admitted
+    adapter: dcp-admitted-components
+    config:
+      path: admitted
+      trustKeys: dcp-keys
+      tenant: demo
+      hostPorts: { audit: operation-audit, policy: operation-policy, metrics: operation-metrics, secrets: external-secrets, admission: read-admission }
+  - kind: TOOL_REGISTRY
+    name: tools
+    adapter: admitted-tool-registry
+    config: { admitted: admitted, baseRegistry: deployment-tools }
+metadata:
+  purpose: Reference local durable profile for the checked-in Foundry deployment.
+  server:
+    defaultAgentRef: fabric-authoring@1.0.0
+    promptVersion: 1.0.0
+    agentRunContractId: urn:unfurl:fabric:authoring
+    agentRunContractVersion: 1.0.0
+    # Explicit development mode: no authentication, body-supplied ExecutionContext, no management API.
+    # Production deployments select profiles/foundry-secured-profile.yaml (authentication: required).
+    operations:
+      authentication: disabled
+      drainMillis: 30000
+      maxRequestBytes: 8388608
+      readinessTimeoutMillis: 2000
