@@ -41,6 +41,8 @@ final class TestDeployEmitter implements DeployEmitter {
             appendOption(content, "dcpRuntimeBundlePath");
             appendOption(content, "flowWorkflowsPath");
             appendOption(content, "componentArtifactsPath");
+            appendOption(content, "flowConfigPath");
+            appendOption(content, "flowSecretsPath");
             Files.writeString(path, content.toString(), StandardCharsets.UTF_8);
             EmittedArtifact artifact = new EmittedArtifact(
                     request.outDir().relativize(path),

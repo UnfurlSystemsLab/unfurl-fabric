@@ -51,6 +51,33 @@ class FabricCliEmitInjectsRuntimePathsTest {
                 .doesNotContain("componentArtifactsPath=");
     }
 
+    /**
+     * {@code --flow-config} and {@code --flow-secrets} become {@code flowConfigPath} and {@code flowSecretsPath}, the
+     * operator mounts Flow needs for an identity binding (emitter HLD-E §4.0a).
+     */
+    @Test
+    void localEmitInjectsFlowIdentityMountPaths(@TempDir Path dir) throws Exception {
+        CliTestFixtures.SignedPaths paths = CliTestFixtures.compileAndSign(dir);
+        Path out = dir.resolve("deploy");
+        Path config = Files.createDirectories(dir.resolve("flow-config"));
+        Path secrets = Files.createDirectories(dir.resolve("flow-secrets"));
+
+        CliTestFixtures.CliRun result = CliTestFixtures.run(
+                "emit",
+                "--contract", paths.signed().toString(),
+                "--profile", paths.profile().toString(),
+                "--flow-config", config.toString(),
+                "--flow-secrets", secrets.toString(),
+                "--target", "local",
+                "--trust-keys", paths.trustKeys().toString(),
+                "--out", out.toString());
+
+        assertThat(result.exitCode()).as(result.stderr()).isZero();
+        assertThat(Files.readString(out.resolve("local-compose-artifact.txt")))
+                .contains("flowConfigPath=" + config.toAbsolutePath())
+                .contains("flowSecretsPath=" + secrets.toAbsolutePath());
+    }
+
     /** {@code --catalog} feeds only the admitted-component overlay, so a plan that hosts nothing refuses it. */
     @Test
     void refusesACatalogForAPlanThatHostsNothing(@TempDir Path dir) throws Exception {

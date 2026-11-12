@@ -55,7 +55,9 @@ final class DeployCliSupport {
                 args.optionalPath("flow-workflows"),
                 args.optionalPath("foundry-deployment-root"),
                 componentArtifacts,
-                trustKeysPath);
+                trustKeysPath,
+                args.optionalPath("flow-config"),
+                args.optionalPath("flow-secrets"));
         EmitterConfig config = new EmitterConfig(target, target.options(), true);
         DeployEmitter backend = new EmitterBootstrap().create(config);
         EmitRequest request = new EmitRequest(
@@ -85,7 +87,9 @@ final class DeployCliSupport {
                         args.optionalPath("flow-workflows"),
                         args.optionalPath("foundry-deployment-root"),
                         componentArtifacts,
-                        trustKeysPath))
+                        trustKeysPath,
+                        args.optionalPath("flow-config"),
+                        args.optionalPath("flow-secrets")))
                 .toList();
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(trustKeysPath);
         StitchResult result = new StitchDriver().stitch(new StitchRequest(
@@ -110,6 +114,8 @@ final class DeployCliSupport {
      * deployment root. Public DCP trust keys are also threaded through for Flow runtime
      * verification. Explicit values in the target file win ({@code putIfAbsent}). The catalog folder becomes
      * {@code componentArtifactsPath} for the admitted-component overlay (HLD-in-process-component-hosting §8).
+     * {@code --flow-config} and {@code --flow-secrets} become {@code flowConfigPath} and {@code flowSecretsPath}, the
+     * operator-owned mounts Flow needs for an identity binding (HLD-needs-driven-identity §8; emitter HLD-E §4.0a).
      */
     private static DeploymentTarget withComposeRuntimePaths(
             DeploymentTarget target,
@@ -120,7 +126,9 @@ final class DeployCliSupport {
             Path flowWorkflows,
             Path foundryDeploymentRoot,
             Path componentArtifacts,
-            Path trustKeysPath) {
+            Path trustKeysPath,
+            Path flowConfig,
+            Path flowSecrets) {
         if (!"local-compose".equals(target.kind())) {
             return target;
         }
@@ -133,6 +141,8 @@ final class DeployCliSupport {
         putIfPresent(options, "foundryDeploymentRootPath", foundryDeploymentRoot);
         putIfPresent(options, "componentArtifactsPath", componentArtifacts);
         putIfPresent(options, "trustKeysPath", trustKeysPath);
+        putIfPresent(options, "flowConfigPath", flowConfig);
+        putIfPresent(options, "flowSecretsPath", flowSecrets);
         return new DeploymentTarget(
                 target.kind(),
                 target.environment(),

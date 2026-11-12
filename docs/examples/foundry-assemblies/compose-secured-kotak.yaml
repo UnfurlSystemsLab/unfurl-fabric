@@ -6,8 +6,9 @@
 # request then needs a Bearer token from the example's Keycloak realm, verified against the realm's key
 # that the guide exports to identity/keys/<kid>.pem.
 #
-# Flow doesn't send tokens yet, so with this override Flow can't call Foundry; use it to check Foundry's
-# identity and the admitted Kotak tools.
+# Flow calls Foundry with a token exchanged for its own caller: the caller's Bearer token goes to Keycloak's
+# token endpoint, which Flow reads from the identity folders the emitted file mounts. The guide attaches the
+# Keycloak container to the package's network as `keycloak` so Flow can reach that endpoint.
 
 services:
   foundry:
