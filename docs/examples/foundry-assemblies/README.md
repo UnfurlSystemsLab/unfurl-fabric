@@ -720,8 +720,8 @@ named `demo`. It has a `foundry` client (the token audience) and a confidential 
 service account holds the three Kotak read permissions. Keycloak imports it at startup. If you
 already run a Keycloak with such a realm, skip this step and use its issuer below.
 
-The example uses the `quay.io/keycloak/keycloak:24.0` image. The adapter needs Keycloak 26.2 or
-later only for token exchange, which Flow doesn't do yet.
+The example uses the `quay.io/keycloak/keycloak:26.8.2` image. That is newer than 26.2, the version
+the adapter needs for token exchange, which Flow will use to call a secured Foundry.
 
 ```powershell
 $bytes = New-Object byte[] 18
@@ -729,13 +729,13 @@ $bytes = New-Object byte[] 18
 $kcAdminPassword = [Convert]::ToBase64String($bytes)
 
 Assert-PortFree 8180
-docker run -d --name unfurl-keycloak -p 127.0.0.1:8180:8080 -e KEYCLOAK_ADMIN=admin -e "KEYCLOAK_ADMIN_PASSWORD=$kcAdminPassword" `
-    -v "$((Resolve-Path "$examples\keycloak").Path):/opt/keycloak/data/import:ro" quay.io/keycloak/keycloak:24.0 start-dev --import-realm --hostname-url=http://localhost:8180
+docker run -d --name unfurl-keycloak -p 127.0.0.1:8180:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e "KC_BOOTSTRAP_ADMIN_PASSWORD=$kcAdminPassword" `
+    -v "$((Resolve-Path "$examples\keycloak").Path):/opt/keycloak/data/import:ro" quay.io/keycloak/keycloak:26.8.2 start-dev --import-realm --hostname=http://localhost:8180
 $keycloak = 'http://127.0.0.1:8180'
 (Wait-ForHealth "$keycloak/realms/demo/.well-known/openid-configuration").issuer
 ```
 
-It prints `http://localhost:8180/realms/demo`, the issuer you bind next. `--hostname-url` pins it.
+It prints `http://localhost:8180/realms/demo`, the issuer you bind next. `--hostname` pins it.
 Without it, Keycloak builds the issuer from the address each request uses, and a token fetched from
 `127.0.0.1` wouldn't match. The guide calls `127.0.0.1` because Windows PowerShell tries IPv6 first
 for `localhost`, and Docker publishes the port on IPv4.
@@ -920,8 +920,7 @@ images built from the current code (Docker 29.8.2, Compose 5.5.1):
 - Foundry's `/health/ready` reported `UP`, with `TOOL_REGISTRY_SOURCE:admitted` `UP`.
 - Foundry's log showed `component.admit` `SUCCEEDED` for each of the three Kotak contracts.
 - Flow's log had no errors, and Flow reached Foundry at `http://foundry:7979`.
-
-- Keycloak 24.0.5 imported the realm with the issuer bound above.
+- Keycloak 26.8.2 imported the realm with the issuer bound above.
 - With the secured profile, Foundry accepted the realm's token and listed the three Kotak tools. It
   answered `401` without a token and with a changed one.
 
