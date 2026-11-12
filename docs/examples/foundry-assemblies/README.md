@@ -29,6 +29,7 @@ and the other repos.
 | Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
 | Run the Kotak Neo reads inside Foundry | Works up to Foundry admitting the adapter; a live read needs your session secret | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
 | Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works. Foundry checks Keycloak's tokens, but Flow can't call a secured Foundry yet | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
+| The same package composed and signed in Studio | Works, with the same limits | [End to end with Studio](#end-to-end-with-studio-flow-foundry-kotak-neo-and-keycloak) |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
 package started, and Flow and Foundry both reported healthy. The Foundry-only steps were run on 4
@@ -771,10 +772,11 @@ development profile with seven more bindings:
 - the keys that verify the adapter's contracts;
 - an admitted-component tool source, combined with the deployment's own tools.
 
-Work on a copy, so your checkout stays unchanged:
+Work on a copy, so your checkout stays unchanged. The copy is made once; copying into an existing
+folder would nest a second copy inside it.
 
 ```powershell
-Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment"
+if (-not (Test-Path "$work\foundry-deployment")) { Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment" }
 Copy-Item "$examples\foundry-kotak-development-profile.yaml" "$work\foundry-deployment\profiles\"
 ```
 
@@ -928,6 +930,146 @@ Not covered:
 - **An agent run:** it needs a model provider.
 - **Flow calling a secured Foundry:** Flow doesn't exchange or send tokens yet (see
   [Current limits](#current-limits)).
+
+## End to end with Studio: Flow, Foundry, Kotak Neo and Keycloak
+
+This is the same package as the [command-line example](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak),
+but the composition and signing happen in Studio:
+- Studio admits the jars, including the Kotak adapter's six companions.
+- It places the adapter in Foundry, pins the companions, signs the contract, and writes the runtime
+  bundle and an audit of the hosting.
+
+From the runtime bindings on, the steps are the command-line example's. They run unchanged, because
+the downloads below use the same file names.
+
+**Start Studio.** Run the first block of [Export a package that starts](#export-a-package-that-starts).
+It starts a Studio on port 7879, signing with your keys, and defines `$api`, `$tenant` and `studio`.
+This example uses its own assembly:
+
+```powershell
+$assembly = 'kotak-platform'
+$e2e = "$work\e2e-studio"
+New-Item -ItemType Directory -Force $e2e | Out-Null
+```
+
+**Upload the jars.** Upload the four components and the adapter's six companions. Studio reads the
+claim from each component jar. A jar without a claim and with exactly one `pom.properties` is admitted
+as a companion and stored for this tenant. It doesn't appear in the catalog, because you can't choose
+it on its own.
+
+```powershell
+$jars = 'unfurl-flow-0.1.0-SNAPSHOT.jar', 'unfurl-foundry-0.1.0-SNAPSHOT.jar', 'unfurl-adapter-keycloak-0.1.0-SNAPSHOT.jar',
+        'kotak-neo-core-0.1.0-SNAPSHOT.jar', 'kotak-neo-http-0.1.0-SNAPSHOT.jar', 'kotak-neo-foundry-0.1.0-SNAPSHOT.jar',
+        'jackson-core-2.17.2.jar', 'jackson-databind-2.17.2.jar', 'jackson-annotations-2.17.2.jar', 'jackson-datatype-jsr310-2.17.2.jar'
+$artifacts = foreach ($name in $jars) {
+    $path = "$work\catalog\$name"
+    $sha = 'sha256:' + (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+    '{"fileName":"' + $name + '","sha256":"' + $sha + '","artifactBase64":"' +
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) + '"}'
+}
+$body = '{"assemblyId":"' + $assembly + '","artifacts":[' + ($artifacts -join ',') + ']}'
+$admission = Invoke-RestMethod -Method Post -Uri "$api/studio/tenants/$tenant/catalog/admissions" `
+    -ContentType 'application/json' -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$admission.results | Select-Object fileName, status, catalogEntryId
+```
+
+All ten show `VERIFIED`. The four components get `uploaded:` entries. The companions get
+`companion:<coordinates>`, for example
+`companion:com.unfurl.adapters.kotak:kotak-neo-http:0.1.0-SNAPSHOT`. If you upload a different jar
+under coordinates already admitted, Studio refuses it with `CATALOG_COMPANION_CONFLICT`, naming the
+stored file and its hash.
+
+**Create the assembly and add the components.**
+
+```powershell
+$null = studio "/studio/tenants/$tenant/assemblies" @{ assemblyId = $assembly; targetApplicationName = 'Kotak Platform'; defaultDeploymentTarget = 'containerized-local' }
+$draft = studio "/studio/tenants/$tenant/assemblies/$assembly/sessions" @{ tenantId = $tenant; assemblyId = $assembly; collaboratorId = 'operator'; collaboratorName = 'Operator' }
+$session = $draft.session.sessionId
+$revision = [long]$draft.session.revision
+
+$catalog = Invoke-RestMethod "$api/studio/tenants/$tenant/catalog"
+foreach ($entry in $catalog.entries | Where-Object catalogEntryId -Like 'uploaded:*') {
+    $result = studio "/studio/tenants/$tenant/assemblies/$assembly/sessions/$session/intents" @{
+        tenantId = $tenant; assemblyId = $assembly; sessionId = $session; baseRevision = $revision
+        type = 'ADD_COMPONENT'; collaboratorId = 'operator'; collaboratorName = 'Operator'; catalogEntryId = $entry.catalogEntryId
+    }
+    "$($entry.catalogEntryId): $($result.status)"
+    $revision = [long]$result.newRevision
+}
+```
+
+Each of the four components shows `VALID`. If you uploaded only the components, compile stops later
+with `CATALOG_COMPANION_MISSING`, naming the missing jars. Upload them and compile again.
+
+**Compile and download.** Send the same policy as
+[deployment-policy-external-keycloak.yaml](deployment-policy-external-keycloak.yaml), so Keycloak is
+your existing one. Save the signed contract, profile and bundle under the command-line example's
+names:
+
+```powershell
+$policy = @{
+    preferredShapes = @('MANAGED_EXTERNAL_ADAPTER', 'CONTAINERIZED_SERVICE'); disallowedShapes = @(); requireIsolationForCapabilityPatterns = @()
+    runtime = @{ springBoot = $true; kubernetes = $true; serviceMesh = $true }
+}
+$compile = studio "/studio/tenants/$tenant/assemblies/$assembly/sessions/$session/compile" @{ tenantId = $tenant; assemblyId = $assembly; sessionId = $session; expectedRevision = $revision; sign = $true; deploymentPolicy = $policy }
+$compile.status
+
+function Save-Artifact($artifact, $name) {
+    Invoke-WebRequest "$api$($artifact.url)" -OutFile "$e2e\$name" -UseBasicParsing
+    $hash = 'sha256:' + (Get-FileHash "$e2e\$name" -Algorithm SHA256).Hash.ToLower()
+    if ($hash -ne $artifact.sha256) { throw "hash mismatch: $name" }
+    "saved $name"
+}
+Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'signed-compiled-contract*') 'signed.yaml'
+Save-Artifact $compile.substrateProfileArtifact 'compiled.substrate-profile.yaml'
+Save-Artifact ($compile.supportArtifacts | Where-Object artifactId -Like 'dcp-runtime-bundle*') 'dcp-runtime-bundle.zip'
+Save-Artifact ($compile.diagnosticArtifacts | Where-Object url -Like '*hosted-components.json*') 'hosted-components.json'
+
+$hosted = Get-Content "$e2e\hosted-components.json" -Raw | ConvertFrom-Json
+$hosted | Select-Object capability, host, @{ n = 'companions'; e = { $_.companions.Count } }
+
+& $shutdown --port 7879
+```
+
+`$compile.status` is `COMPILED`. `hosted-components.json` is Studio's audit of the hosting. For each
+hosted read it records the host, the consumer named in the contract, and each companion with its
+SHA-256:
+
+```text
+capability                  host                                             companions
+----------                  ----                                             ----------
+gtt.instructions.list       com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT          6
+portfolio.holdings.list     com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT          6
+portfolio.mtf-holdings.list com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT          6
+```
+
+**Finish with the command-line steps.** Continue in the
+[command-line example](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak). Use
+this `$e2e`, which now holds Studio's files.
+
+1. **Start a Keycloak**, unless it is still running.
+2. **Create the runtime bindings.** Studio signed with your key, so
+   `fabric verify --contract "$e2e\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"`
+   ends with `overallOk=true`.
+3. **Prepare Foundry's deployment folder.**
+4. **Export.**
+5. **Start it**, then **Turn on authentication** if you want Foundry to check Keycloak's tokens.
+
+`runtime-bindings` and `deploy` read the adapter's packaged settings and jars from your local
+catalog, the same files you uploaded. Studio's agent-driven deployment tools apply the same rules
+(`fabric.runtime-binding-generate` and `fabric.foundry-root-assemble`; see the
+[Studio API LLD](../../LLD-fabric-studio-api.md)).
+
+**What was checked.** On 12 November 2026, every block above was run as written, followed by the
+command-line steps:
+- All ten uploads were `VERIFIED`, six of them as companions, and the four components were `VALID`.
+- The compile was `COMPILED`, every download matched its hash, and the audit listed the three reads
+  hosted by Foundry with six companions each.
+- `verify` printed `overallOk=true`, and `runtime-bindings` wrote 14 bindings.
+- After `deploy`, both containers were `healthy`. Foundry reported the admitted source `UP` and logged
+  `component.admit` `SUCCEEDED` for each Kotak contract.
+
+The authentication step was checked on the command-line route; it uses the same files.
 
 ## Publish a reusable assembly
 
