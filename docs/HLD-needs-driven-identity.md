@@ -1,9 +1,10 @@
 # HLD: Identity from the needs
 
 Status: proposed, 2026-11-03; revised 2026-11-04; Flow's token exchange (§8) and the emitter's Flow mounts
-(§7) implemented 2026-11-12. Owners: Fabric (needs rule, identity binding rule,
-runtime bindings), Keycloak adapter (component and provisioner), Deploy Emitter (realization), Flow
-(token exchange), Foundry (verification).
+(§7) implemented 2026-11-12; revised 2026-11-13 for both paths (§2a), Flow verification and authorization
+(§8) and Foundry's service tokens (§9). Owners: Fabric (needs rule, identity binding rule, runtime
+bindings), Keycloak adapter (component and provisioner), Deploy Emitter (realization), Flow (token
+exchange, verification, authorization), Foundry (verification, authorization, service tokens).
 
 A composition has authentication and authorization when its DCP configuration asks for it: its
 needs require the `identity-context` capability. Every capability in the needs is mandatory, so the
@@ -41,8 +42,27 @@ Java `Configuration` record gains the `config_refs` map that the DCP schema (HLD
 | Where the rule lives | Fabric. DCP stays a general protocol with no identity-specific validation. |
 | Identity carried from Flow to Foundry | On-behalf-of: Flow exchanges the workflow caller's token at the IdP for a Foundry-audience token (OAuth 2.0 Token Exchange, RFC 8693). Foundry authorizes the real user. |
 | The Authentication/Authorization component | A DCP adapter for open-source Keycloak (`unfurl-adapter-keycloak`). Keycloak issues the tokens. Two shapes: a Keycloak container that Unfurl deploys (the default), and a Keycloak the customer already runs. Another IdP (Entra ID, Okta, …) federates into Keycloak. |
-| Flow's inbound API | Not verified by Flow. A gateway in front of Flow authenticates users and forwards the user's access token to Flow, which uses it only as the exchange subject. |
+| Flow's inbound API | Verified by Flow, as Foundry verifies its own: offline, against the identity binding's keys, with tenant, user, roles and permissions taken only from the token, and every route authorized by a permission (§8). A gateway in front of Flow signs users in and forwards their access token, which Flow also uses as the exchange subject. |
+| Service-to-service calls | A service calling another as itself, not for a user, uses its own OAuth 2.0 client-credentials token: Foundry calling Flow's tools (§9). The token carries the permissions granted to the calling service's account, and the callee authorizes them like any other. |
+| Without `identity-context` | Everything works without identity (§2a). Absence is never an error. |
 | Issuer transport | `https`, except plain `http` on a loopback host (`localhost`, `127.0.0.1`, `::1`) so a Keycloak container on a developer machine works (the OAuth loopback exception, RFC 8252 §8.3). |
+
+## 2a. The contract decides: both paths
+
+Identity is an optional component, so the engineering rule for optional components applies (root
+`CLAUDE.md`, rule 6): the signed composition contract alone decides, and both paths always work. A
+composition has identity exactly when its contract has an `identity-context` child contract; nothing
+else turns identity on or off, and nothing downgrades it while it is on.
+
+| | `identity-context` in the contract | Not in the contract |
+|---|---|---|
+| Calls into Flow | `Authorization: Bearer` required on every route but health, claim and API docs; verified offline; context from the token only; route permissions enforced (§8) | Unauthenticated, context from the request headers; Flow warns at startup that it runs without authentication |
+| Flow → Foundry `agent.run` | The caller's token exchanged for Foundry's audience (§8) | No token; Flow's context in the body |
+| Foundry → Flow tools | Foundry's client-credentials service token for Flow's audience (§9) | No token |
+| Calls into Foundry | The secured profile (`authentication: required`) is mandatory, and its token settings must equal the identity binding (§9) | The profile must have `authentication: disabled` |
+
+A component that cannot take the identity path while identity is in the contract refuses to start; it
+never runs a weaker mode instead. Every example and test that exercises identity covers both columns.
 
 ## 3. Unmet needs fail with the cause and the fix
 
@@ -103,6 +123,9 @@ Admin REST API. It idempotently ensures, for the bound realm:
 - a confidential client for Flow with standard token exchange enabled;
 - one client per protected service, whose client id is that service's audience in the identity
   binding (`values.audiences`);
+- for each service that calls another as itself (§9), a confidential client with a service account
+  holding the callee permissions that service needs, and an audience mapper for the callee: Foundry's
+  account holds Flow's tool permissions, with `flow` in its tokens' audience;
 - protocol mappers that put tenant, roles and permissions into access tokens under the claim names
   bound in `values.claims`;
 - the realm's active signing public keys, exported as PEM files for Foundry's `identity/keys/`.
@@ -130,11 +153,15 @@ must carry, with no inline secrets:
 | `configuration.config_refs.token_endpoint` | Token endpoint used for the exchange. |
 | `configuration.config_refs.verification_keys` | The IdP's public signing keys as PEM files, so verification stays offline and needs no JWKS fetch. |
 | `provider_instance.credentials_ref` | The host's OAuth 2.0 client credentials at the IdP, which Flow presents when exchanging tokens. |
+| `configuration.values.service_credentials` | Map from the claim URI of each service that calls others as itself (§9) to the `secret://` reference of its client credentials. Empty when no service does. |
 
 **Protected services.** A protected service is a selected component whose claim declares a dependency
 on `identity-context`, at any owner marker: it receives tokens and verifies them, so it needs an
-audience. Foundry is one (`identity-context@v1?…&owner=customer-idp`). The Keycloak adapter, which
-offers the capability, and Flow, which exchanges tokens but does not verify them, are not. The compiler
+audience. Foundry and Flow are both protected services; each claim declares
+`identity-context@v1?transport=in-process&shape=com.unfurl.substrate.policy.ExecutionContext&owner=customer-idp`.
+The `owner=customer-idp` marker keeps the dependency optional: a composition whose needs leave out
+`identity-context` still compiles, and then has no identity (§2a). The Keycloak adapter, which offers
+the capability, is not a protected service. The compiler
 records this as a general fact on every child contract: the metadata extension `neededBy` lists, sorted,
 the claim URIs of the other selected components whose claims depend on that contract's capability. The
 signed identity contract therefore carries the protected services, and generation and admission read
@@ -170,6 +197,7 @@ The environment plays no part.
   | `config_refs.token_endpoint` | `--identity-token-endpoint-ref` | `tokenEndpointRef` |
   | `config_refs.verification_keys` | `--identity-verification-keys-ref` | `verificationKeysRef` |
   | `provider_instance.credentials_ref` | `--identity-client-credentials-ref` | `clientCredentialsRef` |
+  | `values.service_credentials` | `--identity-service-credentials claimUri=secret://…,…`, one per service that calls others as itself | `serviceCredentials` (map) |
 
   Generation fails, before any YAML is written, when:
   - the composition has an `identity-context` contract and any input is missing; the message says the
@@ -178,6 +206,7 @@ The environment plays no part.
     dropped);
   - the issuer is not `https` (or `http` on a loopback host);
   - a protected service (§5) has no audience, or an audience key is not a protected service.
+  - a `service_credentials` key is not a selected component, or a value is not a `secret://` reference.
 
   All problems are reported together in one message.
 
@@ -206,24 +235,48 @@ one is emitted as today.
 - **External shape:** the `remote` target renders the adapter's binding configuration and a
   reachability probe for the customer Keycloak, and the verify-only adapter run (§4) before Flow and
   Foundry start.
-- The emitter mounts the verification keys at Foundry's `identity/keys/`, refuses a Foundry
-  deployment whose selected profile has `authentication: disabled`, and gives Flow its exchange
-  configuration. Flow resolves the binding's `token_endpoint` and `credentials_ref` references from
-  two operator-owned folders, which the emitter mounts read-only (`flowConfigPath`, `flowSecretsPath`;
-  emitter HLD-E §4.0a). It copies nothing from them, and fails emission when either is missing.
-  **Done** for the Flow mounts; the key mounting and the refusal are not yet built.
-- **Consistency:** the selected Foundry profile's `IDENTITY` binding (`signed-jwt-identity` issuer,
-  audience, and tenant/roles/permissions claim names) must equal the identity binding's issuer,
-  Foundry's entry in `audiences`, and `claims`. A mismatch fails emission, because Foundry would
-  reject every exchanged token.
+- The emitter gives Flow its identity configuration. Flow resolves the binding's `token_endpoint`,
+  `verification_keys` and `credentials_ref` references from two operator-owned folders, which the
+  emitter mounts read-only (`flowConfigPath`, `flowSecretsPath`; emitter HLD-E §4.0a). It copies
+  nothing from them, and fails emission when either is missing. **Done.**
+- **Foundry's part of the composition** (emitter HLD-E §4.0c): the folder the emitter mounts into
+  Foundry holds the `agent.run` contracts Foundry serves and, when the contract has identity, the
+  `identity-context` contract, the runtime bindings of those contracts, and the keys that verify them.
+  Foundry reads identity from it (§9), so the refusal of a mismatched profile and the consistency check
+  are Foundry's, at startup, against signed inputs. Foundry resolves its own `service_credentials`
+  entry and the binding's references from its deployment's `secrets/` and config folders.
+- The emitter mounts the verification keys at Foundry's `identity/keys/` (not yet built; the guide
+  exports them by hand).
 
 ## 8. Flow
 
-These apply when Flow's runtime bindings contain an identity binding; without one, Flow calls
-providers as today.
+These apply when Flow's runtime bindings contain an identity binding. Without one, Flow runs
+unauthenticated and calls providers as before (§2a).
 
-- **Subject token:** the gateway forwards the user's access token as `Authorization: Bearer`. Flow
-  holds it only in request memory as a credential. It is never added to `ExecutionContext` attributes
+- **Verification:** every route but `/health`, `/claim`, `/openapi.*` and `/swagger-ui` requires
+  `Authorization: Bearer`. Flow verifies the token offline with the shared verifier
+  (`substrate-host-adapters`, the same code as Foundry's `signed-jwt-identity`): signature against the
+  binding's `verification_keys`, exact issuer, Flow's entry in `audiences`, and expiry. Tenant, user,
+  roles and permissions come only from the token, under the binding's `claims` names. An
+  `X-Unfurl-Tenant` or `X-Unfurl-User` header that disagrees is refused (`400`); a missing or invalid
+  token is `401`.
+- **Authorization:** each route requires one permission, checked by the shared exact-permission policy,
+  and every decision is audited with the route's resource:
+
+  | Route | Permission | Resource |
+  |---|---|---|
+  | `POST /executions`, `POST /contracts/workflow.execute` | `flow.workflow.execute` | the workflow `id@version` |
+  | `POST /resume` | `flow.execution.resume` | the execution |
+  | `POST /cancel` | `flow.execution.cancel` | the execution |
+  | `POST /executions/query` | `flow.execution.read` | the execution |
+  | `POST /workflows` | `flow.workflow.register` | the workflow `id@version` |
+  | `/triggers/*` fire, `/connectors/*` | `flow.trigger.fire`, `flow.connector.manage` | the trigger or connector |
+  | `POST /tools/{name}` | `flow.tool.<name without the flow. prefix>`, for example `flow.tool.workflow-validate` | the tool |
+
+  A missing permission is `403`. The caller may be a user (through a gateway) or a service calling as
+  itself (§9); Flow authorizes both the same way.
+- **Subject token:** the verified access token is also the exchange subject. Flow holds it only in
+  request memory as a credential. It is never added to `ExecutionContext` attributes
   that are checkpointed, journaled, logged or emitted.
 - **Exchange:** `RemoteDcpContractInvocableFactory` obtains a token for the provider's audience
   through Flow's OAuth 2.0 port. It uses a `ConnectorDefinition` with `authType: OAUTH2` derived
@@ -244,11 +297,19 @@ providers as today.
 
 ## 9. Foundry
 
-- Foundry reads its runtime binding (`runtime-binding.yaml` in the Foundry root). When it contains an
-  identity binding, Foundry refuses to start a profile with
-  `metadata.server.operations.authentication: disabled`, so a deployment whose needs required identity
-  cannot run unauthenticated even if the emitter's check (§7) is bypassed. Without an identity
-  binding, every profile is allowed, as today.
+- **The contract decides.** Foundry reads identity from its part of the composition (§7): when it holds
+  an `identity-context` contract, verified with the folder's keys, and its binding, Foundry requires its
+  profile to have `metadata.server.operations.authentication: required` and its `IDENTITY` binding
+  (`signed-jwt-identity` issuer, audience and claim names) to equal the identity binding's issuer,
+  Foundry's entry in `audiences`, and `claims`; otherwise it refuses to start, naming the difference.
+  When the folder has no identity contract, the profile must have `authentication: disabled`. A Foundry
+  started without a composition folder is standalone, and its profile alone decides.
+- **Service tokens for calls as itself.** An HTTP tool whose endpoint is a protected service, such as
+  `flow.workflow-validate` on Flow, is called with Foundry's own OAuth 2.0 client-credentials token for
+  that service's audience: Foundry's `service_credentials` entry, the binding's `token_endpoint`, and
+  the audience from `audiences`. Foundry caches the token in memory until shortly before it expires and
+  never persists it. It sends a service token only to an endpoint whose base address its profile
+  allows. Without identity in the contract the same tool is called without a token.
 - Verification stays offline: `signed-jwt-identity` with keys from `identity/keys/`, plus exact
   issuer and audience checks.
 - Tenant, roles and permissions come only from the token, and the body `context` stays rejected, as
@@ -261,13 +322,17 @@ providers as today.
 2. Keycloak adapter (`unfurl-adapter-keycloak`): the claim with both shapes, catalog-admissible
    (**done**); then the provisioner (Keycloak Admin REST adapter, verify-only and provision modes, PEM
    key export), tested against a real Keycloak container.
-3. Foundry: refuse `authentication: disabled` when the runtime binding contains an identity binding.
+3. Foundry: identity read from its part of the composition, the profile rule and consistency check
+   (§9), and client-credentials service tokens for HTTP tools on protected services.
 4. Flow: subject-token carrier, the RFC 8693 exchange client, the in-memory token cache, and the
-   call shape. **Done.**
+   call shape (**done**); inbound verification and route authorization (§8).
+4a. Shared: the offline JWT verifier and the exact-permission policy move to `substrate-host-adapters`,
+   used by Flow and Foundry.
 5. Deploy Emitter: Keycloak realization for both shapes, key mounting, the disabled-authentication
    refusal, Flow's exchange configuration (**done**), and the identity consistency check.
-6. End to end: a Flow + Foundry package whose needs require identity, with the containerized Keycloak,
-   exercising exchange, offline verification, the refusal paths and a resumed-workflow refusal.
+6. End to end, both paths: a Flow + Foundry package whose needs require identity, exercising
+   verification in both services, exchange, service tokens, the refusal paths and a resumed-workflow
+   refusal; and the same package without identity, which runs unauthenticated.
 
 ## 11. Out of scope
 
@@ -275,7 +340,6 @@ providers as today.
 - Identity validation inside DCP. DCP stays general.
 - Fabric Studio's authoring client (`DcpAuthoringClient`) calling a Foundry that requires tokens needs
   its own token, either an exchange or client credentials. That is a follow-up under the same rule.
-- Flow verifying its own inbound tokens. That is the gateway's job.
 - Online JWKS discovery. Keys stay mounted, to keep Foundry air-gap capable.
 - Adapters for other identity providers. Entra ID, Okta and others federate into Keycloak.
 - The Intelligent Keycloak product (Keycloak plus a reasoning layer); this is the plain adapter.
