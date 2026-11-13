@@ -111,7 +111,8 @@ final class RuntimeBindingsCommand {
                 args.get("identity-permissions-claim"),
                 args.get("identity-token-endpoint-ref"),
                 args.get("identity-verification-keys-ref"),
-                args.get("identity-client-credentials-ref"));
+                args.get("identity-client-credentials-ref"),
+                pairs(args.get("identity-service-credentials"), "--identity-service-credentials", "claimUri=secret://..."));
     }
 
     /**
@@ -119,22 +120,31 @@ final class RuntimeBindingsCommand {
      * {@code ,}, so the split is unambiguous. A malformed or repeated entry is a usage error rather than being skipped.
      */
     private Map<String, String> audiences(String value) {
-        Map<String, String> audiences = new LinkedHashMap<>();
+        return pairs(value, "--identity-audiences", "claimUri=audience");
+    }
+
+    /**
+     * Parser for a {@code claimUri=value,...} flag ({@code --identity-audiences}, {@code --identity-service-credentials}).
+     * Claim URIs and the values ({@code secret://} references, audiences) never contain {@code ,}, and claim URIs never
+     * {@code =}, so splitting at the first {@code =} is unambiguous. A malformed or repeated entry is a usage error.
+     */
+    private Map<String, String> pairs(String value, String flag, String shape) {
+        Map<String, String> pairs = new LinkedHashMap<>();
         if (value == null || value.isBlank()) {
-            return audiences;
+            return pairs;
         }
         for (String entry : value.split(",")) {
             int separator = entry.indexOf('=');
             String service = separator < 0 ? "" : entry.substring(0, separator).trim();
-            String audience = separator < 0 ? "" : entry.substring(separator + 1).trim();
-            if (service.isEmpty() || audience.isEmpty()) {
-                throw FabricCliException.usage("--identity-audiences entries must be claimUri=audience: " + entry.trim());
+            String paired = separator < 0 ? "" : entry.substring(separator + 1).trim();
+            if (service.isEmpty() || paired.isEmpty()) {
+                throw FabricCliException.usage(flag + " entries must be " + shape + ": " + entry.trim());
             }
-            if (audiences.putIfAbsent(service, audience) != null) {
-                throw FabricCliException.usage("--identity-audiences names " + service + " more than once");
+            if (pairs.putIfAbsent(service, paired) != null) {
+                throw FabricCliException.usage(flag + " names " + service + " more than once");
             }
         }
-        return audiences;
+        return pairs;
     }
 
     /** Optional string flag helper. */

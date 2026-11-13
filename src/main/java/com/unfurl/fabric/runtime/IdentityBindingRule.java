@@ -101,6 +101,27 @@ public final class IdentityBindingRule {
     }
 
     /**
+     * Service-credentials check (HLD-needs-driven-identity §5, §6): the binding's {@code configuration.secret_refs} map each service that calls
+     * others as itself to the {@code secret://} reference of its client credentials. Such a service authenticates at the
+     * identity provider, so it is one of the services the compiler recorded as needing identity; any other key is refused, as
+     * is a value that is not a {@code secret://} reference. Empty is allowed: no service calls others as itself.
+     *
+     * @return one problem per bad entry, in key order
+     */
+    public static List<String> serviceCredentialProblems(Map<String, String> serviceCredentials, List<String> protectedServices) {
+        List<String> problems = new ArrayList<>();
+        new java.util.TreeMap<>(serviceCredentials).forEach((service, ref) -> {
+            if (!protectedServices.contains(service)) {
+                problems.add(service + " does not need " + CAPABILITY + ", so it has no service credentials");
+            }
+            if (ref == null || !ref.startsWith("secret://") || ref.length() == "secret://".length()) {
+                problems.add(service + ": service credentials must be a secret:// reference");
+            }
+        });
+        return problems;
+    }
+
+    /**
      * Completeness check of one identity binding: issuer (see {@link #secureIssuer}), audiences covering exactly the
      * protected services of its contract, the tenant/roles/permissions claim names, the token-endpoint and verification-key
      * references, and the host's client-credential reference.
@@ -131,6 +152,15 @@ public final class IdentityBindingRule {
             map.keySet().forEach(key -> keys.add((String) key));
             coverageProblems(keys, protectedServices.get())
                     .forEach(problem -> violations.add("configuration.values.audiences: " + problem));
+        }
+        if (values.containsKey("service_credentials")) {
+            violations.add("configuration.values.service_credentials: service credentials are configuration.secret_refs, never values");
+        }
+        if (binding.configuration() != null && protectedServices.isPresent()) {
+            Map<String, String> entries = new java.util.TreeMap<>();
+            binding.configuration().secretRefs().forEach((key, ref) -> entries.put(key, ref == null ? null : ref.uri()));
+            serviceCredentialProblems(entries, protectedServices.get())
+                    .forEach(problem -> violations.add("configuration.secret_refs: " + problem));
         }
         if (!stringMap(values.get("claims"), CLAIMS, false)) {
             violations.add("configuration.values.claims: required, naming the tenant, roles and permissions claims");

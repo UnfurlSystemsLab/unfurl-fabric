@@ -54,10 +54,18 @@ Identity is an optional component, so the engineering rule for optional componen
 composition has identity exactly when its contract has an `identity-context` child contract; nothing
 else turns identity on or off, and nothing downgrades it while it is on.
 
+**The signed set, not the files present, decides.** A service learns the composition from the DCP runtime
+bundle: the signed aggregate root (`contracts/root.frozen.json`) and the signed children
+(`contracts/frozen/`). It loads them with DCP's `VerifiedComposition`, which verifies every envelope and
+requires the children to be exactly the root's closure. So identity is absent only when the verified
+root names no `identity-context` child. Deleting the identity contract's file, or adding an unsigned one,
+fails the load instead of changing the answer. No service reads a contract's contents before this load.
+
 | | `identity-context` in the contract | Not in the contract |
 |---|---|---|
 | Calls into Flow | `Authorization: Bearer` required on every route but health, claim and API docs; verified offline; context from the token only; route permissions enforced (§8) | Unauthenticated, context from the request headers; Flow warns at startup that it runs without authentication |
 | Flow → Foundry `agent.run` | The caller's token exchanged for Foundry's audience (§8) | No token; Flow's context in the body |
+| Flow → Foundry management (creating Flow's authoring agent) | Flow's client-credentials service token for Foundry's audience (§8) | No token; the tenant and user in `X-Unfurl-Tenant`/`X-Unfurl-User` |
 | Foundry → Flow tools | Foundry's client-credentials service token for Flow's audience (§9) | No token |
 | Calls into Foundry | The secured profile (`authentication: required`) is mandatory, and its token settings must equal the identity binding (§9) | The profile must have `authentication: disabled` |
 
@@ -153,7 +161,7 @@ must carry, with no inline secrets:
 | `configuration.config_refs.token_endpoint` | Token endpoint used for the exchange. |
 | `configuration.config_refs.verification_keys` | The IdP's public signing keys as PEM files, so verification stays offline and needs no JWKS fetch. |
 | `provider_instance.credentials_ref` | The host's OAuth 2.0 client credentials at the IdP, which Flow presents when exchanging tokens. |
-| `configuration.values.service_credentials` | Map from the claim URI of each service that calls others as itself (§9) to the `secret://` reference of its client credentials. Empty when no service does. |
+| `configuration.secret_refs` | One typed `secret://` reference per service that calls others as itself (§8, §9), keyed by its claim URI: its client credentials. Absent when no service does. Never in `values`, which DCP's inline-secret rule refuses. |
 
 **Protected services.** A protected service is a selected component whose claim declares a dependency
 on `identity-context`, at any owner marker: it receives tokens and verifies them, so it needs an
@@ -197,7 +205,7 @@ The environment plays no part.
   | `config_refs.token_endpoint` | `--identity-token-endpoint-ref` | `tokenEndpointRef` |
   | `config_refs.verification_keys` | `--identity-verification-keys-ref` | `verificationKeysRef` |
   | `provider_instance.credentials_ref` | `--identity-client-credentials-ref` | `clientCredentialsRef` |
-  | `values.service_credentials` | `--identity-service-credentials claimUri=secret://…,…`, one per service that calls others as itself | `serviceCredentials` (map) |
+  | `secret_refs` | `--identity-service-credentials claimUri=secret://…,…`, one per service that calls others as itself | `serviceCredentials` (map) |
 
   Generation fails, before any YAML is written, when:
   - the composition has an `identity-context` contract and any input is missing; the message says the
@@ -206,7 +214,8 @@ The environment plays no part.
     dropped);
   - the issuer is not `https` (or `http` on a loopback host);
   - a protected service (§5) has no audience, or an audience key is not a protected service.
-  - a `service_credentials` key is not a selected component, or a value is not a `secret://` reference.
+  - a service-credentials key is not a service that needs identity (one that calls others as itself
+    authenticates at the identity provider, so it always is), or a value is not a `secret://` reference.
 
   All problems are reported together in one message.
 
@@ -240,11 +249,12 @@ one is emitted as today.
   emitter mounts read-only (`flowConfigPath`, `flowSecretsPath`; emitter HLD-E §4.0a). It copies
   nothing from them, and fails emission when either is missing. **Done.**
 - **Foundry's part of the composition** (emitter HLD-E §4.0c): the folder the emitter mounts into
-  Foundry holds the `agent.run` contracts Foundry serves and, when the contract has identity, the
-  `identity-context` contract, the runtime bindings of those contracts, and the keys that verify them.
-  Foundry reads identity from it (§9), so the refusal of a mismatched profile and the consistency check
-  are Foundry's, at startup, against signed inputs. Foundry resolves its own `service_credentials`
-  entry and the binding's references from its deployment's `secrets/` and config folders.
+  Foundry (`UNFURL_FOUNDRY_COMPOSITION`) holds the signed root, all of its children, the runtime bindings
+  and the keys that verify them, so Foundry verifies the set as §2a requires. Foundry serves the
+  `agent.run` children it provides and reads identity from the `identity-context` child (§9); other
+  children are verified and otherwise ignored. So the refusal of a mismatched profile and the
+  consistency check are Foundry's, at startup, against signed inputs. Foundry resolves its own
+  `secret_refs` entry and the binding's references from its deployment's `secrets/` and config folders.
 - The emitter mounts the verification keys at Foundry's `identity/keys/` (not yet built; the guide
   exports them by hand).
 
@@ -295,6 +305,17 @@ unauthenticated and calls providers as before (§2a).
   work; the resuming request must carry a fresh token. An exchange the IdP refuses fails with
   `FLOW_DCP_TOKEN_EXCHANGE_FAILED`, and its response body is never echoed.
 
+- **Flow's authoring agent.** Flow owns `flow-dag-authoring`; Foundry's deployment holds no Flow agent,
+  prompt or tool. When the deployment root has `authoring.yaml` (the tenant Flow authors for and the
+  base URL Foundry reaches Flow at), Flow creates the agent at startup through Foundry's management API
+  (`POST /management/agents`), with its prompt and its authoring tools as HTTP tools on its own
+  `/tools/<name>` endpoints, each naming `protectedService: urn:unfurl:flow:runtime`. Foundry's address
+  is the composition's `agent.run` binding, so authoring needs one. With identity, Flow calls with its
+  own client-credentials token for Foundry's audience (Flow's `secret_refs` entry, required,
+  whose service account holds `foundry.agent.create`), and Foundry answers for the token's tenant,
+  which must be the configured one. Without identity, Flow names the tenant in `X-Unfurl-Tenant`.
+  Creation is idempotent, so Flow creates on every start.
+
 ## 9. Foundry
 
 - **The contract decides.** Foundry reads identity from its part of the composition (§7): when it holds
@@ -306,7 +327,7 @@ unauthenticated and calls providers as before (§2a).
   started without a composition folder is standalone, and its profile alone decides.
 - **Service tokens for calls as itself.** An HTTP tool whose endpoint is a protected service, such as
   `flow.workflow-validate` on Flow, is called with Foundry's own OAuth 2.0 client-credentials token for
-  that service's audience: Foundry's `service_credentials` entry, the binding's `token_endpoint`, and
+  that service's audience: Foundry's `secret_refs` entry, the binding's `token_endpoint`, and
   the audience from `audiences`. Foundry caches the token in memory until shortly before it expires and
   never persists it. It sends a service token only to an endpoint whose base address its profile
   allows. Without identity in the contract the same tool is called without a token.

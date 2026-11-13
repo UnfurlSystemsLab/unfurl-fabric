@@ -238,6 +238,59 @@ class FabricCliRuntimeBindingsIdentityTest {
         assertThat(run.stderr()).contains("urn:unfurl:test:agent.rnu");
     }
 
+    /**
+     * Service credentials (HLD-needs-driven-identity §5, §9): a service that calls others as itself gets a secret:// reference
+     * in values.service_credentials. It must be a service that needs identity, and the value must be a secret:// reference.
+     */
+    @Test
+    void serviceCredentialsAreEmittedForAServiceThatNeedsIdentity(@TempDir Path dir) throws Exception {
+        CliTestFixtures.SignedPaths signed = CliTestFixtures.compileAndSignFoundry(dir, true);
+        Path out = dir.resolve("bindings.yaml");
+        List<String> flags = new ArrayList<>(identityFlags());
+        flags.addAll(List.of("--identity-service-credentials", FOUNDRY_URI + "=secret://acme/identity/foundry-service"));
+
+        assertOk(bindings(signed, out, "production", flags));
+
+        JsonNode values = identityBinding(YAML.readTree(Files.readAllBytes(out)).path("runtime_binding_set")).at("/configuration/values");
+        assertThat(identityBinding(YAML.readTree(Files.readAllBytes(out)).path("runtime_binding_set")).at("/configuration/secret_refs").path(FOUNDRY_URI).path("uri").asText()).isEqualTo("secret://acme/identity/foundry-service");
+        assertThat(values.has("service_credentials")).isFalse();
+    }
+
+    /** Without the flag the binding has no service_credentials value at all. */
+    @Test
+    void serviceCredentialsAreOptional(@TempDir Path dir) throws Exception {
+        CliTestFixtures.SignedPaths signed = CliTestFixtures.compileAndSignFoundry(dir, true);
+        Path out = dir.resolve("bindings.yaml");
+
+        assertOk(bindings(signed, out, "production", identityFlags()));
+
+        assertThat(identityBinding(YAML.readTree(Files.readAllBytes(out)).path("runtime_binding_set"))
+                .at("/configuration/secret_refs").isMissingNode()).isTrue();
+    }
+
+    /** A service that does not need identity, or a value that is not a secret:// reference, is refused. */
+    @Test
+    void serviceCredentialsMustNameAProtectedServiceAndASecret(@TempDir Path dir) throws Exception {
+        CliTestFixtures.SignedPaths signed = CliTestFixtures.compileAndSignFoundry(dir, true);
+        List<String> unknown = new ArrayList<>(identityFlags());
+        unknown.addAll(List.of("--identity-service-credentials", "urn:unfurl:test:nobody=secret://acme/identity/x"));
+        List<String> notSecret = new ArrayList<>(identityFlags());
+        notSecret.addAll(List.of("--identity-service-credentials", FOUNDRY_URI + "=config://acme/identity/x"));
+        List<String> malformed = new ArrayList<>(identityFlags());
+        malformed.addAll(List.of("--identity-service-credentials", FOUNDRY_URI));
+
+        CliTestFixtures.CliRun unknownRun = bindings(signed, dir.resolve("a.yaml"), "production", unknown);
+        CliTestFixtures.CliRun notSecretRun = bindings(signed, dir.resolve("b.yaml"), "production", notSecret);
+        CliTestFixtures.CliRun malformedRun = bindings(signed, dir.resolve("c.yaml"), "production", malformed);
+
+        assertThat(unknownRun.exitCode()).isNotZero();
+        assertThat(unknownRun.stderr()).contains("urn:unfurl:test:nobody does not need identity-context");
+        assertThat(notSecretRun.exitCode()).isNotZero();
+        assertThat(notSecretRun.stderr()).contains("must be a secret:// reference");
+        assertThat(malformedRun.exitCode()).isNotZero();
+        assertThat(malformedRun.stderr()).contains("claimUri=secret://");
+    }
+
     /** A malformed audiences flag is a usage error naming the bad entry. */
     @Test
     void malformedAudiencesFlagIsAUsageError(@TempDir Path dir) throws Exception {
