@@ -13,6 +13,10 @@
     "client": {
       "foundry": [
         {
+          "name": "foundry.agent.run",
+          "description": "Run agents in the tenant"
+        },
+        {
           "name": "foundry.tool.read",
           "description": "List the tenant's tools"
         },
@@ -41,7 +45,7 @@
     },
     {
       "clientId": "flow",
-      "name": "Flow (service account)",
+      "name": "Flow (service account and token exchange)",
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
@@ -101,6 +105,31 @@
             "userinfo.token.claim": "false"
           }
         }
+      ],
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      }
+    },
+    {
+      "clientId": "gateway",
+      "name": "Gateway (stands in for the app that signs users in)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "implicitFlowEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "audience-flow",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "flow",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
       ]
     }
   ],
@@ -119,6 +148,24 @@
           "kotak:portfolio.holdings.list",
           "kotak:portfolio.mtf-holdings.list",
           "kotak:gtt.instructions.list"
+        ]
+      }
+    },
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@demo.invalid",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Demo",
+      "realmRoles": [
+        "default-roles-demo",
+        "agent-operator"
+      ],
+      "clientRoles": {
+        "foundry": [
+          "foundry.agent.run",
+          "foundry.tool.read"
         ]
       }
     }

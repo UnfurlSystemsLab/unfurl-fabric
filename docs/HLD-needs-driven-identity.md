@@ -1,6 +1,7 @@
 # HLD: Identity from the needs
 
-Status: proposed, 2026-11-03; revised 2026-11-04. Owners: Fabric (needs rule, identity binding rule,
+Status: proposed, 2026-11-03; revised 2026-11-04; Flow's token exchange (§8) and the emitter's Flow mounts
+(§7) implemented 2026-11-12. Owners: Fabric (needs rule, identity binding rule,
 runtime bindings), Keycloak adapter (component and provisioner), Deploy Emitter (realization), Flow
 (token exchange), Foundry (verification).
 
@@ -206,8 +207,11 @@ one is emitted as today.
   reachability probe for the customer Keycloak, and the verify-only adapter run (§4) before Flow and
   Foundry start.
 - The emitter mounts the verification keys at Foundry's `identity/keys/`, refuses a Foundry
-  deployment whose selected profile has `authentication: disabled`, and passes Flow its exchange
-  configuration and client-credential secret reference.
+  deployment whose selected profile has `authentication: disabled`, and gives Flow its exchange
+  configuration. Flow resolves the binding's `token_endpoint` and `credentials_ref` references from
+  two operator-owned folders, which the emitter mounts read-only (`flowConfigPath`, `flowSecretsPath`;
+  emitter HLD-E §4.0a). It copies nothing from them, and fails emission when either is missing.
+  **Done** for the Flow mounts; the key mounting and the refusal are not yet built.
 - **Consistency:** the selected Foundry profile's `IDENTITY` binding (`signed-jwt-identity` issuer,
   audience, and tenant/roles/permissions claim names) must equal the identity binding's issuer,
   Foundry's entry in `audiences`, and `claims`. A mismatch fails emission, because Foundry would
@@ -222,11 +226,13 @@ providers as today.
   holds it only in request memory as a credential. It is never added to `ExecutionContext` attributes
   that are checkpointed, journaled, logged or emitted.
 - **Exchange:** `RemoteDcpContractInvocableFactory` obtains a token for the provider's audience
-  through the existing OAuth 2.0 port. It uses a `ConnectorDefinition` with `authType: OAUTH2` derived
-  from the identity binding, a new HTTP `OAuth2TokenClient` implementing the RFC 8693 grant
-  (`subject_token`, `subject_token_type=…:access_token`, `audience`, Flow's client authentication), and
-  `OAuth2Handler`. Exchanged tokens are cached in memory by tenant, user, audience and subject-token
-  digest until shortly before expiry, and are never persisted.
+  through Flow's OAuth 2.0 port. It uses a `ConnectorDefinition` with `authType: OAUTH2` derived
+  from the identity binding, `OAuth2Handler`, and the port's exchange client
+  (`OAuth2TokenExchangeClient`, a sibling of the refresh-oriented `OAuth2TokenClient`). Its HTTP
+  adapter implements the RFC 8693 grant (`subject_token`, `subject_token_type=…:access_token`,
+  `audience`, Flow's client authentication with HTTP Basic). Exchanged tokens are cached in memory by
+  tenant, user, audience and subject-token digest until shortly before expiry, and are never
+  persisted. The Flow build spec, *Identity: calling a provider that needs a token*, has the detail.
 - **Call shape:** a call to a provider with an audience sends `Authorization: Bearer`,
   `X-Correlation-Id` and `traceparent`, and omits the body `context`, which the secured profile
   rejects. Foundry derives the context from the token.
@@ -256,10 +262,10 @@ providers as today.
    (**done**); then the provisioner (Keycloak Admin REST adapter, verify-only and provision modes, PEM
    key export), tested against a real Keycloak container.
 3. Foundry: refuse `authentication: disabled` when the runtime binding contains an identity binding.
-4. Flow: subject-token carrier, the RFC 8693 `OAuth2TokenClient`, the in-memory token cache, and the
-   call shape.
+4. Flow: subject-token carrier, the RFC 8693 exchange client, the in-memory token cache, and the
+   call shape. **Done.**
 5. Deploy Emitter: Keycloak realization for both shapes, key mounting, the disabled-authentication
-   refusal, Flow's exchange configuration, and the identity consistency check.
+   refusal, Flow's exchange configuration (**done**), and the identity consistency check.
 6. End to end: a Flow + Foundry package whose needs require identity, with the containerized Keycloak,
    exercising exchange, offline verification, the refusal paths and a resumed-workflow refusal.
 
