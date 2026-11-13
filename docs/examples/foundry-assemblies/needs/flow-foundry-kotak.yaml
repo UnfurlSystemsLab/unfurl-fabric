@@ -1,0 +1,17 @@
+# Flow and Foundry with the Kotak Neo read adapter hosted by Foundry, without an identity provider.
+#
+# The same needs as flow-foundry-kotak-identity.yaml without identity-context, so the signed contract
+# has no identity: Flow and Foundry run unauthenticated, on a trusted network, and each prints a
+# startup warning saying so. Add identity-context to the needs to turn authentication on.
+
+requiredCapabilities:
+  - capability: agent.run
+    capabilityVersion: ^0.1
+  - capability: workflow.execute
+    capabilityVersion: ^0.1
+  - capability: portfolio.holdings.list
+    capabilityVersion: ^0.1
+  - capability: portfolio.mtf-holdings.list
+    capabilityVersion: ^0.1
+  - capability: gtt.instructions.list
+    capabilityVersion: ^0.1

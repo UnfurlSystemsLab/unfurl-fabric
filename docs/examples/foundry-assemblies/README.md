@@ -672,62 +672,220 @@ For a host that doesn't run Foundry's admitted-component host, the adapter's
 ## End to end from the command line: Flow, Foundry, Kotak Neo and Keycloak
 
 This example builds one package from the command line alone, with no Studio. Flow and Foundry run as
-containers, Foundry runs the Kotak Neo adapter inside its own process, and Keycloak is an existing
-Keycloak bound as the identity provider. A local Keycloak container stands in for yours, so you can
-check that Foundry accepts its tokens. It reuses `$work`, `$examples` and the signing
-keys from [Compile and sign](#3-compile-and-sign), and needs the catalog from
-[Create the catalog](#1-create-the-catalog) plus the seven Kotak jars from the
+containers, and Foundry runs the Kotak Neo adapter inside its own process. It reuses `$work`,
+`$examples` and the signing keys from [Compile and sign](#3-compile-and-sign), and needs the catalog
+from [Create the catalog](#1-create-the-catalog) plus the seven Kotak jars from the
 [Kotak Neo example](#example-add-the-kotak-neo-adapter).
 
-**What you write.** [needs/flow-foundry-kotak-identity.yaml](needs/flow-foundry-kotak-identity.yaml)
-asks for `agent.run`, `workflow.execute`, the three Kotak reads and `identity-context`.
-[deployment-policy-external-keycloak.yaml](deployment-policy-external-keycloak.yaml) keeps Flow and
-Foundry as containers and binds Keycloak to the one you run. The Kotak adapter supports neither
-shape in that policy, so it keeps its own in-process shape, and Fabric places it in Foundry.
+Keycloak is optional, so the example shows both paths. The signed contract alone decides which one a
+package takes: it has identity exactly when its needs ask for `identity-context`.
+
+| | Without an identity provider | With Keycloak |
+|---|---|---|
+| Needs | [needs/flow-foundry-kotak.yaml](needs/flow-foundry-kotak.yaml) | [needs/flow-foundry-kotak-identity.yaml](needs/flow-foundry-kotak-identity.yaml) |
+| Calls into Flow and Foundry | Unauthenticated, on a trusted network. Both print a startup warning saying so | `Authorization: Bearer` with a token from the realm, checked offline |
+| Who the caller is | `X-Unfurl-Tenant` and `X-Unfurl-User` | The token only |
+| Flow → Foundry | No token | The caller's token, exchanged for Foundry's audience |
+| Foundry's profile | Must have `authentication: disabled` | Must have `authentication: required`, matching the realm |
+
+Nothing else switches between them: not an environment, a flag or whether Keycloak is reachable. A
+package with identity refuses to start if anything it needs for identity is missing; it never falls
+back to running without it.
+
+Both paths share Foundry's deployment folder. Foundry needs a profile that loads the adapter, and the
+example's own agent. Work on a copy, so your checkout stays unchanged. The copy is made once; copying
+into an existing folder would nest a second copy inside it.
 
 ```powershell
-$needs = "$examples\needs\flow-foundry-kotak-identity.yaml"
-$policy = "$examples\deployment-policy-external-keycloak.yaml"
-$e2e = "$work\e2e"
+if (-not (Test-Path "$work\foundry-deployment")) { Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment" }
+Copy-Item "$examples\foundry-kotak-development-profile.yaml", "$examples\foundry-kotak-secured-profile.yaml" "$work\foundry-deployment\profiles\"
+Copy-Item "$examples\foundry-agents\agents\portfolio-assistant.agent.yaml" "$work\foundry-deployment\agents\"
+Copy-Item "$examples\foundry-agents\prompts\portfolio-assistant.md" "$work\foundry-deployment\prompts\"
+```
+
+- [foundry-kotak-development-profile.yaml](foundry-kotak-development-profile.yaml) is Foundry's
+  development profile (`authentication: disabled`) with seven more bindings: the host services the
+  adapter uses (authorization policy, audit, metrics, read admission and the existing secrets), the
+  keys that verify the adapter's contracts, and an admitted-component tool source combined with the
+  deployment's own tools.
+- [foundry-kotak-secured-profile.yaml](foundry-kotak-secured-profile.yaml) is the same with
+  `authentication: required`, checking tokens from the example's realm for audience `foundry`.
+- The workflow runs an agent of the example's own, `portfolio-assistant@1.0.0`, which answers
+  questions with the Kotak reads. Agents are Foundry's configuration: adding one is adding its
+  definition to `agents\` and its prompt to `prompts\`. The contracts Fabric signs only let Flow use
+  Foundry's `agent.run`; they never list agents.
+
+Build both images as in [Export a package that starts](#export-a-package-that-starts), from the
+current code, and set Foundry's credential key for this session:
+
+```powershell
+docker build -t unfurl-flow:assembly-guide unfurl-flow
+docker build -t unfurl-foundry:assembly-guide unfurl-foundry
+$key = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
+$env:UNFURL_FOUNDRY_CREDENTIAL_KEY = [Convert]::ToBase64String($key)
+```
+
+### Without an identity provider
+
+**Plan, compile and sign.** `--dcp-runtime-bundle` writes the signed contracts that Flow and Foundry
+load: every child contract, and the signed root that pins them.
+
+```powershell
+$open = "$work\open"
+$needs = "$examples\needs\flow-foundry-kotak.yaml"
 fabric plan --catalog "$work\catalog" --needs $needs
+fabric compile --catalog "$work\catalog" --needs $needs --out "$open\compiled.yaml"
+fabric sign --contract "$open\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$open\signed.yaml" --dcp-runtime-bundle "$open\dcp-runtime-bundle.zip" --catalog "$work\catalog"
+fabric verify --contract "$open\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"
 ```
 
 ```text
 EXACT
-cand-… entries=com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0,com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT,com.unfurl.flow:unfurl-flow:0.1.0,com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+cand-… entries=com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT,com.unfurl.flow:unfurl-flow:0.1.0,com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
 hosted: com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT by com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
 deployment keys: unfurl://component/kotak-neo-adapter requires accountRef (string), sessionRef (secret-ref); may change maxBytes (tighten), maxRows (tighten), timeoutMs (tighten)
 ```
 
-**Compile and sign.** `--dcp-runtime-bundle` writes the signed contracts that Flow and Foundry load,
-so this route needs no Studio:
+`plan` selects Flow, Foundry and the adapter, and no identity provider. The `hosted:` line says
+Foundry runs the adapter inside its own process.
+
+`verify` should end with `overallOk=true`.
+
+**Create the runtime bindings.** Only the Kotak account alias and a reference to the secret that will
+hold its session; there are no identity settings, and `runtime-bindings` refuses them for a contract
+without identity.
 
 ```powershell
+$kotak = 'unfurl://component/kotak-neo-adapter'
+fabric runtime-bindings --signed-contract "$open\signed.yaml" --tenant demo --environment local `
+  --flow-base-url http://flow:8080 --foundry-base-url http://foundry:7979 --out "$open\runtime-bindings.yaml" `
+  --catalog "$work\catalog" --component-config "$kotak#accountRef=primary-equity" `
+  --component-config "$kotak#sessionRef=secret://demo/kotak/primary-equity-session"
+```
+
+It prints `bindings=13`: one for each child contract, and one for the signed root.
+
+**Export.**
+
+```powershell
+fabric deploy --contract "$open\signed.yaml" --profile "$open\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" `
+  --targets "$examples\target-local-images.yaml" --runtime-binding "$open\runtime-bindings.yaml" `
+  --dcp-runtime-bundle "$open\dcp-runtime-bundle.zip" --flow-workflows "$examples\workflows" `
+  --foundry-deployment-root "$work\foundry-deployment" --catalog "$work\catalog" --out "$open\deploy"
+```
+
+`deploy\local-compose\` holds:
+- `docker-compose.yaml`;
+- `flow-deployment\`, Flow's folder: the signed root and contracts, the bindings, the workflows and
+  your public key;
+- `foundry-admitted\`, the adapter's seven jars, its three contracts, their bindings and your public
+  key, mounted read-only into Foundry;
+- `foundry-composition\`, Foundry's part of the composition: the signed root, every child contract,
+  the bindings and your public key. Compose mounts it into Foundry and sets
+  `UNFURL_FOUNDRY_COMPOSITION`. From it Foundry learns which `agent.run` contracts it serves, so it
+  accepts Flow's calls, and that the composition has no identity.
+
+`deploy` stops before writing anything if no profile in the Foundry folder binds the admitted-component
+source, so you can't ship an overlay that nothing reads.
+
+**Start it.** [compose-development-kotak.yaml](compose-development-kotak.yaml) selects the development
+Kotak profile. Like `compose-development.yaml`, it runs on this machine only.
+
+```powershell
+function open-compose {
+    docker compose -p foundry-kotak -f "$open\deploy\local-compose\docker-compose.yaml" -f "$examples\compose-development.yaml" -f "$examples\compose-development-kotak.yaml" @args
+}
+
+Assert-PortFree 8080
+Assert-PortFree 7979
+open-compose up -d --pull never --wait --wait-timeout 180
+if ($LASTEXITCODE -ne 0) { open-compose ps --all; open-compose logs --tail 40; open-compose down; throw 'the package did not start' }
+(Invoke-RestMethod http://127.0.0.1:7979/health/ready).status
+open-compose logs foundry flow | Select-String 'authentication is disabled'
+```
+
+```text
+UP
+foundry-1  | WARNING: Foundry authentication is disabled: the signed composition has no identity-context; trusted network only.
+flow-1  | WARNING: Flow authentication is disabled: the signed composition has no identity-context; trusted network only.
+```
+
+`/health/ready` reports `UP`, including `TOOL_REGISTRY_SOURCE:admitted`. Each service says it runs
+without authentication, and why: the signed composition has no `identity-context`. Foundry refuses
+to start if any contract, pin or configuration check fails.
+
+**Run the workflow.** The caller names itself:
+
+```powershell
+$start = @{ workflowId = 'agent-smoke'; workflowVersion = '1.0.0'; input = @{} } | ConvertTo-Json
+$asAlice = @{ 'X-Unfurl-Tenant' = 'demo'; 'X-Unfurl-User' = 'alice'; 'X-Correlation-Id' = 'guide-open-1' }
+$run = Invoke-RestMethod -Method Post http://127.0.0.1:8080/executions -Headers $asAlice -ContentType 'application/json' -Body $start
+$run.nodes.'ask-agent' | Select-Object status, failureCode
+open-compose down
+```
+
+```text
+status failureCode
+------ -----------
+FAILED PROVIDER_MISSING
+```
+
+Flow called Foundry's `agent.run` under the composition's signed contract, naming the agent in
+`agentRef` (the workflow's `config.agentRef`, [workflows/workflow.yaml](workflows/workflow.yaml)).
+Foundry ran `portfolio-assistant@1.0.0` up to its model call, which stops with `PROVIDER_MISSING`
+because this package binds no model provider (`customer-configured`). With a provider bound, the run
+continues. A name Foundry doesn't know fails with `AGENT_NOT_FOUND`; Foundry never runs its default
+agent instead.
+
+### With Keycloak
+
+The same package with `identity-context` in its needs. Keycloak is an existing Keycloak bound as the
+identity provider; a local container stands in for yours.
+[deployment-policy-external-keycloak.yaml](deployment-policy-external-keycloak.yaml) keeps Flow and
+Foundry as containers and binds Keycloak to the one you run. The Kotak adapter supports neither shape
+in that policy, so it keeps its own in-process shape, and Fabric places it in Foundry.
+
+**Plan, compile and sign.**
+
+```powershell
+$e2e = "$work\e2e"
+$needs = "$examples\needs\flow-foundry-kotak-identity.yaml"
+$policy = "$examples\deployment-policy-external-keycloak.yaml"
+fabric plan --catalog "$work\catalog" --needs $needs
 fabric compile --catalog "$work\catalog" --needs $needs --deployment-policy $policy --out "$e2e\compiled.yaml"
 fabric sign --contract "$e2e\compiled.yaml" --key "$work\keys\private.pem" --public-key "$work\keys\public.pem" --out "$e2e\signed.yaml" --dcp-runtime-bundle "$e2e\dcp-runtime-bundle.zip" --catalog "$work\catalog"
 fabric verify --contract "$e2e\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"
 ```
 
+```text
+EXACT
+cand-… entries=com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0,com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT,com.unfurl.flow:unfurl-flow:0.1.0,com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT
+```
+
 `compile` prints where each component runs:
 
 ```text
-deploymentShapes={com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT=IN_PROCESS_LIBRARY, com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT=CONTAINERIZED_SERVICE, com.unfurl.flow:unfurl-flow:0.1.0=CONTAINERIZED_SERVICE, com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0=MANAGED_EXTERNAL_ADAPTER}
+deploymentShapes={com.unfurl.adapters.keycloak:unfurl-adapter-keycloak:0.1.0=MANAGED_EXTERNAL_ADAPTER, com.unfurl.flow:unfurl-flow:0.1.0=CONTAINERIZED_SERVICE, com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT=CONTAINERIZED_SERVICE, com.unfurl.adapters.kotak:kotak-neo-core:0.1.0-SNAPSHOT=IN_PROCESS_LIBRARY}
 ```
 
 `verify` should end with `overallOk=true`.
 
 **Start a Keycloak.** [keycloak/demo-realm.json](keycloak/demo-realm.json) is a development realm
-named `demo`. Keycloak imports it at startup. It has:
-- a `foundry` client, the token audience;
+named `demo`. Keycloak imports it at startup. Every token it issues carries the `tenant` claim
+`demo`, the realm roles in `roles`, and the permissions in `permissions` (the `foundry` client's
+roles, which hold the realm's permissions for both Foundry and Flow). It has:
+- a `foundry` client, Foundry's token audience;
 - a confidential `flow` client, allowed to exchange tokens, whose service account holds the three
-  Kotak read permissions;
-- a public `gateway` client that stands in for the app your users sign in to;
-- a user `alice`, allowed to run agents.
+  Kotak read permissions and `foundry.tool.read`;
+- a public `gateway` client that stands in for the app your users sign in to. Its tokens name `flow`
+  as their audience;
+- a user `alice`, allowed to start Flow workflows (`flow.workflow.execute`) and run Foundry agents
+  (`foundry.agent.run`).
 
-If you already run a Keycloak with such a realm, skip this step and use its issuer below.
-
-The example uses the `quay.io/keycloak/keycloak:26.8.2` image. Flow calls a secured Foundry by
-exchanging the caller's token, which needs Keycloak 26.2 or later.
+If you already run a Keycloak with such a realm, skip this step and use its issuer below. The example
+uses the `quay.io/keycloak/keycloak:26.8.2` image. Flow calls a secured Foundry by exchanging the
+caller's token, which needs Keycloak 26.2 or later.
 
 ```powershell
 $bytes = New-Object byte[] 18
@@ -746,26 +904,40 @@ Without it, Keycloak builds the issuer from the address each request uses, and a
 `127.0.0.1` wouldn't match. The guide calls `127.0.0.1` because Windows PowerShell tries IPv6 first
 for `localhost`, and Docker publishes the port on IPv4.
 
-**Give Flow its identity settings.** The needs ask for `identity-context`, so Flow calls Foundry
-with a token exchanged for each caller, and refuses to start without the settings for that exchange.
-The identity binding names them by reference: the token endpoint as
-`config://demo/identity/token-endpoint`, Flow's client credentials as
-`secret://demo/identity/flow-client`. Flow reads them from two folders laid out as
-`<folder>\<tenant>\<path>`, which you pass to `deploy` below.
+**Give Flow and Foundry their identity settings.** The identity binding names Flow's settings by
+reference, and Flow reads them from two folders laid out as `<folder>\<tenant>\<path>`, which you pass
+to `deploy` below:
 
-The block reads the `flow` client's secret, which Keycloak generated on import, and writes it to the
-secrets folder. It also gives `alice` a random password. Keep `$e2e\flow-secrets` out of version
-control.
+| Reference | What it is | Where |
+|---|---|---|
+| `config://demo/identity/token-endpoint` | Keycloak's token endpoint, for the exchange | `flow-config\demo\identity\token-endpoint` |
+| `config://demo/identity/verification-keys` | The realm's public keys, `<kid>.pem`, which Flow checks callers' tokens against | `flow-config\demo\identity\verification-keys\` |
+| `secret://demo/identity/flow-client` | Flow's client credentials | `flow-secrets\demo\identity\flow-client` |
+
+Foundry checks tokens against the same key, in its deployment's `identity\keys\`. Both read keys at
+startup, so when Keycloak rotates its key, export it again and restart them.
+
+The block reads the `flow` client's secret, which Keycloak generated on import, exports the realm's
+signing key for both services, and gives `alice` a random password. Keep `$e2e\flow-secrets` out of
+version control.
 
 ```powershell
+$openssl = "$env:ProgramFiles\Git\mingw64\bin\openssl.exe"
 $admin = Invoke-RestMethod -Method Post "$keycloak/realms/master/protocol/openid-connect/token" -Body @{ client_id = 'admin-cli'; username = 'admin'; password = $kcAdminPassword; grant_type = 'password' }
 $adminHeaders = @{ Authorization = "Bearer $($admin.access_token)" }
 $flowClient = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients?clientId=flow" -Headers $adminHeaders)[0]
 $flowSecret = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients/$($flowClient.id)/client-secret" -Headers $adminHeaders).value
 
-New-Item -ItemType Directory -Force "$e2e\flow-config\demo\identity", "$e2e\flow-secrets\demo\identity" | Out-Null
+New-Item -ItemType Directory -Force "$e2e\flow-config\demo\identity\verification-keys", "$e2e\flow-secrets\demo\identity" | Out-Null
 Set-Content "$e2e\flow-config\demo\identity\token-endpoint" 'http://keycloak:8080/realms/demo/protocol/openid-connect/token' -Encoding ascii -NoNewline
 Set-Content "$e2e\flow-secrets\demo\identity\flow-client" (@{ clientId = 'flow'; clientSecret = $flowSecret } | ConvertTo-Json -Compress) -Encoding ascii -NoNewline
+
+$jwk = (Invoke-RestMethod "$keycloak/realms/demo/protocol/openid-connect/certs").keys | Where-Object { $_.use -eq 'sig' -and $_.alg -eq 'RS256' }
+$lines = ($jwk.x5c[0] -split '(.{64})' | Where-Object { $_ }) -join "`n"
+Set-Content -Path "$e2e\keycloak-signing.crt" -Value "-----BEGIN CERTIFICATE-----`n$lines`n-----END CERTIFICATE-----" -Encoding ascii
+& $openssl x509 -in "$e2e\keycloak-signing.crt" -pubkey -noout -out "$e2e\flow-config\demo\identity\verification-keys\$($jwk.kid).pem"
+New-Item -ItemType Directory -Force "$work\foundry-deployment\identity\keys" | Out-Null
+Copy-Item "$e2e\flow-config\demo\identity\verification-keys\$($jwk.kid).pem" "$work\foundry-deployment\identity\keys\"
 
 $bytes = New-Object byte[] 18
 [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -776,18 +948,17 @@ Invoke-RestMethod -Method Put "$keycloak/admin/realms/demo/users/$($alice.id)/re
 ```
 
 The token endpoint uses the host name `keycloak`, because Flow reaches Keycloak from inside the
-package's network. [Have Flow call the secured Foundry](#have-flow-call-the-secured-foundry)
-attaches the Keycloak container to that network under that name.
+package's network. [Run the workflow as alice](#run-the-workflow-as-alice) attaches the Keycloak
+container to that network under that name.
 
-**Create the runtime bindings.** Two kinds of values are needed:
-- The identity settings of the Keycloak realm, as in [Publish a reusable assembly](#publish-a-reusable-assembly).
-  For your own Keycloak, use your realm's issuer.
-- The Kotak account alias, and a reference to the secret that will hold its session.
+**Create the runtime bindings.** The identity settings of the realm, and the Kotak values as before.
+The audiences must name every service that needs identity, exactly: Foundry and Flow, since both
+check their callers' tokens. For your own Keycloak, use your realm's issuer.
 
 ```powershell
 $identity = @(
     '--identity-issuer', 'http://localhost:8180/realms/demo'
-    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry,urn:unfurl:flow:runtime=flow'
     '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
     '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
     '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
@@ -800,35 +971,13 @@ fabric runtime-bindings --signed-contract "$e2e\signed.yaml" --tenant demo --env
   --component-config "$kotak#sessionRef=secret://demo/kotak/primary-equity-session"
 ```
 
-It prints `bindings=14`, one for each contract.
+It prints `bindings=14`, one more than before: the identity binding.
 
-**Prepare Foundry's deployment folder.** Foundry needs a profile that loads the adapter.
-[foundry-kotak-development-profile.yaml](foundry-kotak-development-profile.yaml) is Foundry's
-development profile with seven more bindings:
+If the audiences leave out a service that needs identity, or name one that doesn't, the command stops
+and names it.
 
-- the host services the adapter uses: authorization policy, audit, metrics, read admission, and the
-  development profile's existing secrets;
-- the keys that verify the adapter's contracts;
-- an admitted-component tool source, combined with the deployment's own tools.
-
-Work on a copy, so your checkout stays unchanged. The copy is made once; copying into an existing
-folder would nest a second copy inside it.
-
-The example's workflow runs an agent of its own, `portfolio-assistant@1.0.0`, which answers questions
-with the Kotak reads. Agents are Foundry's configuration: adding one is adding its definition to the
-deployment's `agents\` folder and its prompt to `prompts\`. The contracts Fabric signs only let Flow
-use Foundry's `agent.run`; they never list agents.
-
-```powershell
-if (-not (Test-Path "$work\foundry-deployment")) { Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment" }
-Copy-Item "$examples\foundry-kotak-development-profile.yaml" "$work\foundry-deployment\profiles\"
-Copy-Item "$examples\foundry-agents\agents\portfolio-assistant.agent.yaml" "$work\foundry-deployment\agents\"
-Copy-Item "$examples\foundry-agents\prompts\portfolio-assistant.md" "$work\foundry-deployment\prompts\"
-```
-
-**Export.** Flow and Foundry go to Compose, and Keycloak to the `remote` target, so use `deploy` with
-two targets. Pass Flow's inputs, its two identity folders, the catalog for the adapter, and the
-Foundry folder.
+**Export.** Flow and Foundry go to Compose, and Keycloak to the `remote` target, so use two targets.
+Also pass Flow's two identity folders.
 
 ```powershell
 fabric deploy --contract "$e2e\signed.yaml" --profile "$e2e\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" `
@@ -838,103 +987,33 @@ fabric deploy --contract "$e2e\signed.yaml" --profile "$e2e\compiled.substrate-p
   --foundry-deployment-root "$work\foundry-deployment" --catalog "$work\catalog" --out "$e2e\deploy"
 ```
 
-```text
-targets=2
-targetKind=local-compose dir=local-compose ownedShapes=[IN_PROCESS_LIBRARY, CONTAINERIZED_SERVICE] subManifestSha256=…
-targetKind=remote dir=remote ownedShapes=[MANAGED_EXTERNAL_ADAPTER] subManifestSha256=…
-```
+`deploy\local-compose\` holds the same folders as before. The compose file also mounts the two
+identity folders read-only into Flow, and `foundry-composition\` now includes the identity contract.
+`deploy\remote\` holds Keycloak's binding and a reachability probe for your Keycloak. If the bundle has
+the identity contract and either identity folder is missing, `deploy` stops and names the flag. It
+copies nothing from those folders: the secret stays where you put it.
 
-`deploy\local-compose\` holds:
-- `docker-compose.yaml`, which mounts the two identity folders read-only into Flow, at
-  `/opt/unfurl/flow-config` and `/opt/unfurl/flow-secrets`;
-- `flow-deployment\`, the Flow folder with the signed contracts, bindings, workflows and trust keys;
-- `foundry-admitted\`, the adapter's seven jars, its three contracts, their bindings and your public
-  key, which Compose mounts read-only into Foundry;
-- `foundry-served\`, the signed `agent.run` contract for the Flow → Foundry edge and your public key.
-  Compose mounts it into Foundry and sets `UNFURL_FOUNDRY_SERVED_CONTRACTS`, so Foundry accepts Flow's
-  calls under that contract. The contract lets Flow use Foundry's `agent.run`; it doesn't choose the
-  agent. The workflow does that, as [Have Flow call the secured Foundry](#have-flow-call-the-secured-foundry)
-  shows.
-
-`deploy\remote\` holds Keycloak's binding and a reachability probe for your Keycloak. Its
-`endpointRef` reads `UNBOUND_ENDPOINT_REF`, because the Keycloak adapter's catalog entry names no
-endpoint. The realm that Flow and Foundry use is the issuer you bound with `runtime-bindings`.
-
-`deploy` checks two things before writing anything:
-- If no profile in the Foundry folder binds the admitted-component source, it stops, so you can't
-  ship an overlay that nothing reads.
-- If the bundle has the identity contract and either identity folder is missing, it stops and names
-  the flag. It copies nothing from those folders: the secret stays where you put it.
-
-**Build the images and start it.** Build both images as in [Export a package that starts](#export-a-package-that-starts),
-from code that includes the in-process hosting changes. Then start the package with one more override.
-[compose-development-kotak.yaml](compose-development-kotak.yaml) selects the Kotak profile. Like
-`compose-development.yaml`, this runs with **no authentication**, on this machine only.
+**Start it, secured.** [compose-secured-kotak.yaml](compose-secured-kotak.yaml) selects the secured
+Kotak profile. Foundry checks it against the composition at startup: with identity in the contract,
+its profile must require authentication with the realm's issuer, its own audience and the realm's
+claim names, or Foundry refuses to start.
 
 ```powershell
-$key = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($key)
-$env:UNFURL_FOUNDRY_CREDENTIAL_KEY = [Convert]::ToBase64String($key)
-
 function e2e-compose {
-    docker compose -p foundry-kotak -f "$e2e\deploy\local-compose\docker-compose.yaml" -f "$examples\compose-development.yaml" -f "$examples\compose-development-kotak.yaml" @args
-}
-
-Assert-PortFree 8080
-Assert-PortFree 7979
-e2e-compose up -d --pull never --wait --wait-timeout 180
-if ($LASTEXITCODE -ne 0) {
-    e2e-compose ps --all
-    e2e-compose logs --tail 40
-    e2e-compose down
-    throw 'the package did not start'
-}
-Invoke-RestMethod http://127.0.0.1:7979/health/ready
-e2e-compose logs foundry | Select-String 'component.admit'
-```
-
-`/health/ready` should report `UP`, including `TOOL_REGISTRY_SOURCE:admitted`. Foundry's log shows a
-`component.admit` fact for each Kotak read, ending in `SUCCEEDED`. Foundry refuses to start if any
-contract, pin or configuration check fails. Stop the package with `e2e-compose down`.
-
-**Turn on authentication.** The package above runs Foundry without authentication. To have Foundry
-check Keycloak's tokens:
-
-1. Export the realm's signing key into Foundry's `identity\keys\` folder, named by its key id.
-2. Switch Foundry to [foundry-kotak-secured-profile.yaml](foundry-kotak-secured-profile.yaml).
-   That is Foundry's secured profile, with the same Kotak bindings and with its token check set to
-   the demo realm and audience `foundry`.
-3. Restart the package with [compose-secured-kotak.yaml](compose-secured-kotak.yaml).
-
-```powershell
-e2e-compose down
-
-$jwk = (Invoke-RestMethod "$keycloak/realms/demo/protocol/openid-connect/certs").keys | Where-Object { $_.use -eq 'sig' -and $_.alg -eq 'RS256' }
-$lines = ($jwk.x5c[0] -split '(.{64})' | Where-Object { $_ }) -join "`n"
-Set-Content -Path "$e2e\keycloak-signing.crt" -Value "-----BEGIN CERTIFICATE-----`n$lines`n-----END CERTIFICATE-----" -Encoding ascii
-& $openssl x509 -in "$e2e\keycloak-signing.crt" -pubkey -noout -out "$work\foundry-deployment\identity\keys\$($jwk.kid).pem"
-Copy-Item "$examples\foundry-kotak-secured-profile.yaml" "$work\foundry-deployment\profiles\"
-
-function e2e-compose-secured {
     docker compose -p foundry-kotak -f "$e2e\deploy\local-compose\docker-compose.yaml" -f "$examples\compose-development.yaml" -f "$examples\compose-secured-kotak.yaml" @args
 }
-e2e-compose-secured up -d --pull never --wait --wait-timeout 180
-if ($LASTEXITCODE -ne 0) { e2e-compose-secured logs --tail 40; e2e-compose-secured down; throw 'the package did not start' }
+e2e-compose up -d --pull never --wait --wait-timeout 180
+if ($LASTEXITCODE -ne 0) { e2e-compose ps --all; e2e-compose logs --tail 40; e2e-compose down; throw 'the package did not start' }
+docker network connect --alias keycloak foundry-kotak_default unfurl-keycloak
 ```
 
-Now get a token as Flow's service account and ask Foundry for the tenant's tools. The admin calls
-only read the `flow` client's secret, which Keycloak generated when it imported the realm.
+**Ask Foundry for the tenant's tools.** Get a token as Flow's service account:
 
 ```powershell
-$admin = Invoke-RestMethod -Method Post "$keycloak/realms/master/protocol/openid-connect/token" -Body @{ client_id = 'admin-cli'; username = 'admin'; password = $kcAdminPassword; grant_type = 'password' }
-$adminHeaders = @{ Authorization = "Bearer $($admin.access_token)" }
-$flowClient = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients?clientId=flow" -Headers $adminHeaders)[0]
-$flowSecret = (Invoke-RestMethod "$keycloak/admin/realms/demo/clients/$($flowClient.id)/client-secret" -Headers $adminHeaders).value
 $token = (Invoke-RestMethod -Method Post "$keycloak/realms/demo/protocol/openid-connect/token" -Body @{ grant_type = 'client_credentials'; client_id = 'flow'; client_secret = $flowSecret }).access_token
-
 $tools = Invoke-RestMethod http://127.0.0.1:7979/management/tools -Headers @{ Authorization = "Bearer $token" }
 $tools.bindings | Where-Object bindingType -eq 'dcp-admitted-component' | Select-Object name, binding
-try { Invoke-RestMethod http://127.0.0.1:7979/management/tools | Out-Null } catch { 'without a token: ' + [int]$_.Exception.Response.StatusCode }
+try { Invoke-RestMethod http://127.0.0.1:7979/management/tools | Out-Null } catch { 'Foundry without a token: ' + [int]$_.Exception.Response.StatusCode }
 ```
 
 ```text
@@ -944,116 +1023,107 @@ gtt.instructions.list       unfurl://component/kotak-neo-adapter@0.1.0
 portfolio.holdings.list     unfurl://component/kotak-neo-adapter@0.1.0
 portfolio.mtf-holdings.list unfurl://component/kotak-neo-adapter@0.1.0
 
-without a token: 401
+Foundry without a token: 401
 ```
 
-How Foundry handled each request:
-- **The token:** Foundry checked it offline against the exported key, for the issuer, the `foundry`
-  audience, the `demo` tenant and the `foundry.tool.read` permission, then returned the tenant's
-  tools, the three admitted Kotak reads among them.
-- **Without a token, or with a changed one:** Foundry answers `401`. Its log records
-  `request.authenticate` `DENIED` with `TOKEN_MISSING` or `TOKEN_SIGNATURE`.
-- **Rotation:** the key is loaded at startup, so when Keycloak rotates its key, export it again and
-  restart Foundry.
-### Have Flow call the secured Foundry
+Foundry checked the token offline against the exported key, for the issuer, the `foundry` audience,
+the `demo` tenant and the `foundry.tool.read` permission. Without a token, or with a changed one,
+it answers `401`, and its log records `request.authenticate` `DENIED` with `TOKEN_MISSING` or
+`TOKEN_SIGNATURE`.
 
-Flow calls Foundry on behalf of whoever calls Flow. Flow takes the caller's token from
-`Authorization: Bearer`, exchanges it at Keycloak for a token for Foundry, and calls Foundry with
-that one. Here `alice` signs in through the `gateway` client, whose tokens name `flow` as an
-audience, as Keycloak requires before Flow may exchange them.
+#### Run the workflow as alice
 
-The workflow's node names the agent in `config.agentRef`
-([workflows/workflow.yaml](workflows/workflow.yaml)). Flow sends it to Foundry as the `agentRef` input
-of `agent.run`, and Foundry resolves it from its own agents.
-
-First attach the Keycloak container to the package's network as `keycloak`, the host name in Flow's
-token endpoint:
+Flow now checks its callers too, so the call needs alice's token. Flow takes who she is, her tenant
+and her permissions from the token only: send no `X-Unfurl-Tenant` or `X-Unfurl-User` header, or one
+that agrees with the token. Her user id in the token is Keycloak's id for her, not `alice`, so an
+`X-Unfurl-User: alice` header is refused with `400`.
 
 ```powershell
-docker network connect --alias keycloak foundry-kotak_default unfurl-keycloak
+$start = @{ workflowId = 'agent-smoke'; workflowVersion = '1.0.0'; input = @{} } | ConvertTo-Json
+try { Invoke-RestMethod -Method Post http://127.0.0.1:8080/executions -ContentType 'application/json' -Body $start | Out-Null } catch { 'Flow without a token: ' + [int]$_.Exception.Response.StatusCode }
 
 $aliceToken = (Invoke-RestMethod -Method Post "$keycloak/realms/demo/protocol/openid-connect/token" -Body @{ grant_type = 'password'; client_id = 'gateway'; username = 'alice'; password = $alicePassword; scope = 'openid' }).access_token
-$start = @{ workflowId = 'agent-smoke'; workflowVersion = '1.0.0'; input = @{} } | ConvertTo-Json
-$asAlice = @{ Authorization = "Bearer $aliceToken"; 'X-Unfurl-Tenant' = 'demo'; 'X-Unfurl-User' = 'alice'; 'X-Correlation-Id' = 'guide-run-1' }
-
+$asAlice = @{ Authorization = "Bearer $aliceToken"; 'X-Correlation-Id' = 'guide-run-1' }
 $run = Invoke-RestMethod -Method Post http://127.0.0.1:8080/executions -Headers $asAlice -ContentType 'application/json' -Body $start
 $run.nodes.'ask-agent' | Select-Object status, failureCode
-e2e-compose-secured logs foundry | Select-String '"operation":"agent.run"' | Select-Object -Last 2
+e2e-compose logs foundry | Select-String '"operation":"agent.run"' | Select-Object -Last 2
 ```
 
 ```text
+Flow without a token: 401
+
 status failureCode
 ------ -----------
 FAILED PROVIDER_MISSING
 
-foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"REQUESTED","resource":"urn:unfurl:foundry:agent:cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA","tenantId":"demo","userId":"616c35a6-…","correlationId":"guide-run-1",…}
-foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"FAILED","resource":"urn:unfurl:foundry:agent:cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA","failureCode":"PROVIDER_MISSING","tenantId":"demo",…}
+foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"FAILED","resource":"urn:unfurl:foundry:agent:cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA","failureCode":"PROVIDER_MISSING","tenantId":"demo","userId":"46a9df06-…","correlationId":"guide-run-1",…}
 ```
+
+Flow's log records the same request: `request.authenticate` `DENIED` with `TOKEN_MISSING` for the
+call without a token, then `flow.workflow.execute` `REQUESTED` for alice, with her tenant and user id
+from the token.
 
 What happened:
-- **The exchange:** Flow exchanged `alice`'s token for one with the `foundry` audience, using its
-  client credentials from the secrets folder. It sent Foundry only that token, the correlation id
-  and the trace context, not its own idea of who the caller is.
-- **The contract:** Flow called under the composition's signed `agent.run` contract. Foundry accepted
-  it because `deploy` delivered that contract in `foundry-served\` and Foundry verified it at startup.
-- **The agent:** Foundry resolved `portfolio-assistant@1.0.0` from its `agents\` folder. The audit
-  resource is that agent (`cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA` is `portfolio-assistant@1.0.0` in
-  base64url), so a policy can allow or deny it per agent. Foundry checked `alice`'s
-  `foundry.agent.run` permission against it.
-- **The run:** the agent ran until it needed a model and stopped with `PROVIDER_MISSING`, because this
-  package binds no model provider (`customer-configured`). With a provider bound, the run continues.
-- **A name Foundry doesn't know** fails with `AGENT_NOT_FOUND`; Foundry never runs its default agent
-  instead. Without `agentRef`, Foundry runs its configured default agent.
-- **The `X-Unfurl-Tenant` header** names the tenant whose settings Flow reads, so it must be `demo`,
-  the tenant in the binding's references.
-
-Without a token, Flow doesn't call Foundry at all:
-
-```powershell
-$noToken = Invoke-RestMethod -Method Post http://127.0.0.1:8080/executions -Headers @{ 'X-Unfurl-Tenant' = 'demo'; 'X-Unfurl-User' = 'alice' } -ContentType 'application/json' -Body $start
-$noToken.nodes.'ask-agent' | Select-Object status, failureCode
-```
-
-```text
-status failureCode
------- -----------
-FAILED FLOW_DCP_SUBJECT_TOKEN_UNAVAILABLE
-```
+- **Flow checked alice's token** offline against the realm's key, for the issuer, the `flow`
+  audience, and her `flow.workflow.execute` permission for this workflow. Without a token Flow
+  answers `401`; without the permission, `403`.
+- **The exchange:** Flow exchanged her token at Keycloak for one with the `foundry` audience, using
+  its client credentials from the secrets folder, and sent Foundry only that token, the correlation
+  id and the trace context.
+- **The contract and the agent:** Foundry accepted the call under the composition's signed `agent.run`
+  contract, resolved `portfolio-assistant@1.0.0` from its `agents\` folder and checked alice's
+  `foundry.agent.run` permission against it. The audit resource is that agent, so a policy can allow
+  or deny it per agent. The run stopped at its model call with `PROVIDER_MISSING`, as before.
 
 Flow holds the caller's token in memory for the length of that one request. A workflow resumed
-later, or run by a timer, has no caller token, and fails the same way rather than calling without
-one. If Keycloak refuses the exchange, the node fails with `FLOW_DCP_TOKEN_EXCHANGE_FAILED`.
+later, or run by a timer, has no caller token, and its call to Foundry fails with
+`FLOW_DCP_SUBJECT_TOKEN_UNAVAILABLE` rather than going out without one. If Keycloak refuses the
+exchange, the node fails with `FLOW_DCP_TOKEN_EXCHANGE_FAILED`.
 
-To stop everything:
+**Identity can't be removed by deleting files.** Both services verify the composition as a set: the
+signed root names every child contract, so a deployment missing the identity contract doesn't start
+without authentication, it doesn't start at all:
 
 ```powershell
 docker network disconnect foundry-kotak_default unfurl-keycloak
-e2e-compose-secured down
-docker rm -f unfurl-keycloak
+e2e-compose down
+$identityContract = Get-ChildItem "$e2e\deploy\local-compose\foundry-composition\contracts\frozen" | Where-Object Name -Like 'identity-context*'
+Move-Item $identityContract.FullName "$e2e\identity-contract.removed"
+e2e-compose up -d --pull never --wait --wait-timeout 60
+e2e-compose logs foundry | Select-String 'missing'
+e2e-compose down
+Move-Item "$e2e\identity-contract.removed" $identityContract.FullName
 ```
+
+```text
+foundry-1  | Exception in thread "main" java.lang.IllegalArgumentException: the composition's contracts could not be verified: CONTRACT_UNVERIFIED [root.frozen.json]: the signed composition names children that are missing: urn:unfurl:fabric:contract:child:…
+```
+
+Flow checks its own folder the same way, before it reads anything from a contract. A changed
+signature on any contract is refused too.
+
+To stop everything: `e2e-compose down`, then `docker rm -f unfurl-keycloak`.
 
 **To make a real Kotak read,** Foundry needs the session that `sessionRef` names. Put the session
 document at `$work\foundry-deployment\secrets\demo\kotak\primary-equity-session`. The adapter's
 [integration guide](../../../../unfurl-adapter-kotak-neo/docs/INTEGRATION.md#mounted-session-document-format)
-describes the document. Never commit that file. The reads are then available as tools to Foundry's agents. A
-caller needs each read's permission, which the authorization policy checks.
+describes the document. Never commit that file. The reads are then available as tools to Foundry's
+agents. A caller needs each read's permission, which the authorization policy checks.
 
-**What was checked.** On 12 November 2026, every command above was run on the full catalog, with
-images built from the current code (Docker 29.8.2, Compose 5.5.1):
+**What was checked.** On 13 November 2026, every command above was run from scratch in a new work
+folder, on the full catalog, with images built from the current code (Docker 29.8.2, Keycloak
+26.8.2):
 
-- Both containers became `healthy`.
-- Foundry's `/health/ready` reported `UP`, with `TOOL_REGISTRY_SOURCE:admitted` `UP`.
-- Foundry's log showed `component.admit` `SUCCEEDED` for each of the three Kotak contracts.
-- Flow's log had no errors, and Flow reached Foundry at `http://foundry:7979`.
-- Keycloak 26.8.2 imported the realm with the issuer bound above.
-- With the secured profile, Foundry accepted the realm's token and listed the three Kotak tools. It
-  answered `401` without a token and with a changed one.
-- Flow exchanged `alice`'s token at Keycloak, and Foundry accepted the call under the composition's
-  `agent.run` contract from `foundry-served\`. It ran `portfolio-assistant@1.0.0`, audited for tenant
-  `demo` and her user id, up to the model call, which ended in `PROVIDER_MISSING`. Without a token,
-  Flow failed the node with `FLOW_DCP_SUBJECT_TOKEN_UNAVAILABLE` and made no call.
-
-These steps were run from scratch on 13 November 2026, in a new work folder, from the catalog onwards.
+- **Without an identity provider:** both containers became `healthy`, Foundry's `/health/ready`
+  reported `UP`, and both services printed the authentication-disabled warning. The workflow ran as
+  `alice` named in headers, and Foundry ran `portfolio-assistant@1.0.0` for tenant `demo` up to its
+  model call, which ended in `PROVIDER_MISSING`.
+- **With Keycloak:** Foundry started with the secured profile, matched against the composition's
+  identity binding. It listed the three Kotak tools for Flow's service-account token and answered
+  `401` without one. Flow answered `401` without a token, verified `alice`'s token (tenant `demo`, her
+  Keycloak user id), exchanged it, and Foundry ran the agent for her up to `PROVIDER_MISSING`.
+- **Tampering:** with the identity contract's file removed from `foundry-composition\`, Foundry
+  refused to start, naming the missing contract.
 
 Not covered:
 - **A Kotak read:** it needs a real session.
@@ -1171,18 +1241,17 @@ portfolio.holdings.list     com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT    
 portfolio.mtf-holdings.list com.unfurl.foundry:unfurl-foundry:0.1.0-SNAPSHOT          6
 ```
 
-**Finish with the command-line steps.** Continue in the
-[command-line example](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak). Use
-this `$e2e`, which now holds Studio's files.
+**Finish with the command-line steps.** Continue in the command-line example's
+[With Keycloak](#with-keycloak) path, after its compile. Use this `$e2e`, which now holds Studio's
+files.
 
-1. **Start a Keycloak**, unless it is still running, and **Give Flow its identity settings**.
+1. **Start a Keycloak**, unless it is still running, and **Give Flow and Foundry their identity
+   settings**.
 2. **Create the runtime bindings.** Studio signed with your key, so
    `fabric verify --contract "$e2e\signed.yaml" --trust-keys "$work\keys\trust" --catalog "$work\catalog"`
    ends with `overallOk=true`.
-3. **Prepare Foundry's deployment folder.**
-4. **Export.**
-5. **Start it**, then **Turn on authentication** if you want Foundry to check Keycloak's tokens,
-   and **Have Flow call the secured Foundry**.
+3. **Export**, with Foundry's deployment folder prepared as at the start of the command-line example.
+4. **Start it, secured**, then **Run the workflow as alice**.
 
 `runtime-bindings` and `deploy` read the adapter's packaged settings and jars from your local
 catalog, the same files you uploaded. Studio's agent-driven deployment tools apply the same rules
@@ -1226,7 +1295,7 @@ fabric assembly-verify --repository "$a\releases" --uri $uri --version 1.0.0 --t
 
 $identityLocal = @(
     '--identity-issuer', 'http://localhost:8080/realms/demo'
-    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry,urn:unfurl:flow:runtime=flow'
     '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
     '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
     '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
@@ -1247,7 +1316,7 @@ are names your deployment resolves; they never contain the keys or secrets thems
 ```powershell
 $identity = @(
     '--identity-issuer', 'https://idp.example.com/realms/demo'
-    '--identity-audiences', 'urn:unfurl:foundry=foundry'
+    '--identity-audiences', 'urn:unfurl:foundry=foundry,urn:unfurl:flow:runtime=flow'
     '--identity-tenant-claim', 'tenant', '--identity-roles-claim', 'roles', '--identity-permissions-claim', 'permissions'
     '--identity-token-endpoint-ref', 'config://demo/identity/token-endpoint'
     '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
@@ -1261,11 +1330,12 @@ fabric assembly-verify-binding --repository "$a\releases" --deployment-repositor
 | Setting | Meaning |
 |---|---|
 | `--identity-issuer` | Your identity provider's issuer. It must be `https`, except on `localhost`. |
-| `--identity-audiences` | `claimUri=audience` pairs, separated by commas: exactly one for each component whose claim needs `identity-context`, and none for anything else. With Flow and Foundry that is Foundry alone, `urn:unfurl:foundry`. |
+| `--identity-audiences` | `claimUri=audience` pairs, separated by commas: exactly one for each component whose claim needs `identity-context`, and none for anything else. With Flow and Foundry that is both, `urn:unfurl:foundry` and `urn:unfurl:flow:runtime`, since each checks its callers' tokens. |
 | `--identity-tenant-claim`, `--identity-roles-claim`, `--identity-permissions-claim` | The token claims that hold the tenant, roles and permissions. |
 | `--identity-token-endpoint-ref` | Reference to the token endpoint that Flow uses to exchange tokens. |
-| `--identity-verification-keys-ref` | Reference to the identity provider's public signing keys, which Foundry checks tokens against. |
+| `--identity-verification-keys-ref` | Reference to the identity provider's public signing keys, which Flow checks tokens against (Foundry reads the same keys from its `identity\keys\`). |
 | `--identity-client-credentials-ref` | Secret reference to Flow's client credentials at the identity provider. |
+| `--identity-service-credentials` | Optional `claimUri=secret://…` pairs, one per service that calls others as itself, for example Foundry calling a tool on Flow. Each must be a service that needs identity. Written as the binding's typed `secret_refs`. |
 
 Releases can't be changed. If the source or output changes, publish a new version. If only the
 bindings change, use a new revision.
@@ -1294,7 +1364,7 @@ compiled contract that includes Flow into this family fails, because the family 
 | Studio's `needs/extract` results can't compile | It asks for `^1`, but the components are `0.1.0`, so compile returns `NO_MATCH` | Leave `needsId` out of the session, as this guide does. Compile then checks the selected components' dependencies, not a needs list |
 | A package with the Keycloak container can't start | The emitter writes a placeholder Keycloak service; it doesn't yet set the Keycloak image or run the adapter's realm provisioning | Leave `identity-context` out of the needs for local runs, or bind an existing Keycloak with `deployment-policy-external-keycloak.yaml` |
 | An agent run stops at `PROVIDER_MISSING` | The example binds no model provider for `customer-configured` | Bind a model provider in the Foundry profile and its credential, then run again |
-| Foundry's `flow-dag-authoring` agent can't run in this package | Its terminal validator needs Flow's `flow.workflow-validate` tool, which this Foundry doesn't have; the lookup reaches the admitted Kotak tools, which refuse it with `DENIED` | Name an agent whose tools this Foundry has, such as the example's `portfolio-assistant` |
+| Foundry has no `flow-dag-authoring` agent in this package | The agent is Flow's: Flow creates it in Foundry at startup when its deployment root has `authoring.yaml` (Flow build spec, *Authoring agent*), which this example doesn't write | Run the example's `portfolio-assistant`, or give Flow an `authoring.yaml` and Foundry an agent store and tool allowlist |
 | An agent other than Foundry's default runs in `simple` mode only | Harness mode and the `DISTRIBUTED` engine are assembled for the default agent at startup | Make the agent Foundry's default, or run it in `simple` mode |
 
 **These are easy to trip over:**
