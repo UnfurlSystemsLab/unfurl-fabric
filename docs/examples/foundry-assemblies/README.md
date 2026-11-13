@@ -28,7 +28,7 @@ and the other repos.
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
 | Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
 | Run the Kotak Neo reads inside Foundry | Works up to Foundry admitting the adapter; a live read needs your session secret | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
-| Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works. Foundry checks Keycloak's tokens, and Flow calls it with a token exchanged for the caller | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
+| Export Flow + Foundry + Kotak Neo + Keycloak from the command line | Works. Flow calls the secured Foundry with a token exchanged for the caller, and Foundry runs the agent the workflow names, up to the model call | [End to end](#end-to-end-from-the-command-line-flow-foundry-kotak-neo-and-keycloak) |
 | The same package composed and signed in Studio | Works, with the same limits | [End to end with Studio](#end-to-end-with-studio-flow-foundry-kotak-neo-and-keycloak) |
 
 These steps were last run on 2 November 2026 with images built from the latest code. The exported
@@ -37,7 +37,8 @@ November 2026, and Foundry on its own reported healthy and ready. The Kotak Neo 
 November 2026 through `emit`, and Foundry's admitted-component host loaded the result. The
 command-line end-to-end steps were run the same day: both containers became healthy, Foundry
 admitted the three Kotak reads, and Flow called the secured Foundry with a token exchanged for a
-signed-in user. No model or broker call was made, so a real agent run is not covered here.
+signed-in user; Foundry ran the agent the workflow named until it needed a model. No model or broker
+call was made, so a complete agent run is not covered here.
 
 ## Before you start
 
@@ -813,9 +814,16 @@ development profile with seven more bindings:
 Work on a copy, so your checkout stays unchanged. The copy is made once; copying into an existing
 folder would nest a second copy inside it.
 
+The example's workflow runs an agent of its own, `portfolio-assistant@1.0.0`, which answers questions
+with the Kotak reads. Agents are Foundry's configuration: adding one is adding its definition to the
+deployment's `agents\` folder and its prompt to `prompts\`. The contracts Fabric signs only let Flow
+use Foundry's `agent.run`; they never list agents.
+
 ```powershell
 if (-not (Test-Path "$work\foundry-deployment")) { Copy-Item -Recurse unfurl-foundry\deployment "$work\foundry-deployment" }
 Copy-Item "$examples\foundry-kotak-development-profile.yaml" "$work\foundry-deployment\profiles\"
+Copy-Item "$examples\foundry-agents\agents\portfolio-assistant.agent.yaml" "$work\foundry-deployment\agents\"
+Copy-Item "$examples\foundry-agents\prompts\portfolio-assistant.md" "$work\foundry-deployment\prompts\"
 ```
 
 **Export.** Flow and Foundry go to Compose, and Keycloak to the `remote` target, so use `deploy` with
@@ -841,7 +849,12 @@ targetKind=remote dir=remote ownedShapes=[MANAGED_EXTERNAL_ADAPTER] subManifestS
   `/opt/unfurl/flow-config` and `/opt/unfurl/flow-secrets`;
 - `flow-deployment\`, the Flow folder with the signed contracts, bindings, workflows and trust keys;
 - `foundry-admitted\`, the adapter's seven jars, its three contracts, their bindings and your public
-  key, which Compose mounts read-only into Foundry.
+  key, which Compose mounts read-only into Foundry;
+- `foundry-served\`, the signed `agent.run` contract for the Flow → Foundry edge and your public key.
+  Compose mounts it into Foundry and sets `UNFURL_FOUNDRY_SERVED_CONTRACTS`, so Foundry accepts Flow's
+  calls under that contract. The contract lets Flow use Foundry's `agent.run`; it doesn't choose the
+  agent. The workflow does that, as [Have Flow call the secured Foundry](#have-flow-call-the-secured-foundry)
+  shows.
 
 `deploy\remote\` holds Keycloak's binding and a reachability probe for your Keycloak. Its
 `endpointRef` reads `UNBOUND_ENDPOINT_REF`, because the Keycloak adapter's catalog entry names no
@@ -949,6 +962,10 @@ Flow calls Foundry on behalf of whoever calls Flow. Flow takes the caller's toke
 that one. Here `alice` signs in through the `gateway` client, whose tokens name `flow` as an
 audience, as Keycloak requires before Flow may exchange them.
 
+The workflow's node names the agent in `config.agentRef`
+([workflows/workflow.yaml](workflows/workflow.yaml)). Flow sends it to Foundry as the `agentRef` input
+of `agent.run`, and Foundry resolves it from its own agents.
+
 First attach the Keycloak container to the package's network as `keycloak`, the host name in Flow's
 token endpoint:
 
@@ -967,20 +984,26 @@ e2e-compose-secured logs foundry | Select-String '"operation":"agent.run"' | Sel
 ```text
 status failureCode
 ------ -----------
-FAILED AGENT_CONTRACT_MISMATCH
+FAILED PROVIDER_MISSING
 
-foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"REQUESTED",…,"tenantId":"demo","userId":"945bd317-…","correlationId":"guide-run-1",…}
-foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"FAILED",…,"failureCode":"AGENT_CONTRACT_MISMATCH","tenantId":"demo","userId":"945bd317-…",…}
+foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"REQUESTED","resource":"urn:unfurl:foundry:agent:cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA","tenantId":"demo","userId":"616c35a6-…","correlationId":"guide-run-1",…}
+foundry-1  | {"type":"foundry.audit",…,"operation":"agent.run","outcome":"FAILED","resource":"urn:unfurl:foundry:agent:cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA","failureCode":"PROVIDER_MISSING","tenantId":"demo",…}
 ```
 
 What happened:
 - **The exchange:** Flow exchanged `alice`'s token for one with the `foundry` audience, using its
   client credentials from the secrets folder. It sent Foundry only that token, the correlation id
   and the trace context, not its own idea of who the caller is.
-- **Foundry:** it verified the exchanged token offline, and recorded `agent.run` as `REQUESTED` for
-  tenant `demo` and `alice`'s user id, after checking her `foundry.agent.run` permission.
-- **The run:** Foundry then refused it with `AGENT_CONTRACT_MISMATCH`. This has nothing to do with
-  identity: see [Current limits](#current-limits).
+- **The contract:** Flow called under the composition's signed `agent.run` contract. Foundry accepted
+  it because `deploy` delivered that contract in `foundry-served\` and Foundry verified it at startup.
+- **The agent:** Foundry resolved `portfolio-assistant@1.0.0` from its `agents\` folder. The audit
+  resource is that agent (`cG9ydGZvbGlvLWFzc2lzdGFudEAxLjAuMA` is `portfolio-assistant@1.0.0` in
+  base64url), so a policy can allow or deny it per agent. Foundry checked `alice`'s
+  `foundry.agent.run` permission against it.
+- **The run:** the agent ran until it needed a model and stopped with `PROVIDER_MISSING`, because this
+  package binds no model provider (`customer-configured`). With a provider bound, the run continues.
+- **A name Foundry doesn't know** fails with `AGENT_NOT_FOUND`; Foundry never runs its default agent
+  instead. Without `agentRef`, Foundry runs its configured default agent.
 - **The `X-Unfurl-Tenant` header** names the tenant whose settings Flow reads, so it must be `demo`,
   the tenant in the binding's references.
 
@@ -1025,14 +1048,16 @@ images built from the current code (Docker 29.8.2, Compose 5.5.1):
 - Keycloak 26.8.2 imported the realm with the issuer bound above.
 - With the secured profile, Foundry accepted the realm's token and listed the three Kotak tools. It
   answered `401` without a token and with a changed one.
-- Flow exchanged `alice`'s token at Keycloak, and Foundry recorded `agent.run` for tenant `demo` and
-  her user id. Without a token, Flow failed the node with `FLOW_DCP_SUBJECT_TOKEN_UNAVAILABLE` and
-  made no call.
+- Flow exchanged `alice`'s token at Keycloak, and Foundry accepted the call under the composition's
+  `agent.run` contract from `foundry-served\`. It ran `portfolio-assistant@1.0.0`, audited for tenant
+  `demo` and her user id, up to the model call, which ended in `PROVIDER_MISSING`. Without a token,
+  Flow failed the node with `FLOW_DCP_SUBJECT_TOKEN_UNAVAILABLE` and made no call.
+
+These steps were run from scratch on 13 November 2026, in a new work folder, from the catalog onwards.
 
 Not covered:
 - **A Kotak read:** it needs a real session.
-- **An agent run:** Foundry refuses the composition's `agent.run` contract (see
-  [Current limits](#current-limits)), and a run would also need a model provider.
+- **A complete agent run:** it needs a model provider bound for `customer-configured`.
 
 ## End to end with Studio: Flow, Foundry, Kotak Neo and Keycloak
 
@@ -1268,7 +1293,9 @@ compiled contract that includes Flow into this family fails, because the family 
 |---|---|---|
 | Studio's `needs/extract` results can't compile | It asks for `^1`, but the components are `0.1.0`, so compile returns `NO_MATCH` | Leave `needsId` out of the session, as this guide does. Compile then checks the selected components' dependencies, not a needs list |
 | A package with the Keycloak container can't start | The emitter writes a placeholder Keycloak service; it doesn't yet set the Keycloak image or run the adapter's realm provisioning | Leave `identity-context` out of the needs for local runs, or bind an existing Keycloak with `deployment-policy-external-keycloak.yaml` |
-| Flow's `agent.run` is refused by Foundry with `AGENT_CONTRACT_MISMATCH` | Foundry's `/dcp/agent.run` serves its own agent contract, not the composition's `agent.run` child contract that Flow calls | None yet. The caller's identity reaches Foundry; the run itself doesn't start |
+| An agent run stops at `PROVIDER_MISSING` | The example binds no model provider for `customer-configured` | Bind a model provider in the Foundry profile and its credential, then run again |
+| Foundry's `flow-dag-authoring` agent can't run in this package | Its terminal validator needs Flow's `flow.workflow-validate` tool, which this Foundry doesn't have; the lookup reaches the admitted Kotak tools, which refuse it with `DENIED` | Name an agent whose tools this Foundry has, such as the example's `portfolio-assistant` |
+| An agent other than Foundry's default runs in `simple` mode only | Harness mode and the `DISTRIBUTED` engine are assembled for the default agent at startup | Make the agent Foundry's default, or run it in `simple` mode |
 
 **These are easy to trip over:**
 

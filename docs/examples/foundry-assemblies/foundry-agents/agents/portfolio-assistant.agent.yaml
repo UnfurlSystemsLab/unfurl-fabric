@@ -1,0 +1,34 @@
+# Example agent for the end-to-end guide: answers portfolio questions with the admitted Kotak Neo reads.
+#
+# Agents are Foundry configuration, not part of any DCP contract. The guide copies this file into the Foundry
+# deployment's agents/ folder and its prompt into prompts/; a caller then names it in the agent.run input as
+# agentRef: portfolio-assistant@1.0.0, and Foundry's governance decides whether that caller may run it.
+#
+# It runs in simple mode, the mode Foundry runs every agent in other than its configured default.
+id: portfolio-assistant
+version: "1.0.0"
+metadata:
+  contextPolicy:
+    tokenAllocation: 8192
+    retainToolResults: false
+    retainProvenance: true
+  promptTemplateRefs: [portfolio-assistant]
+  execution_modes: [simple]
+  default_execution_mode: simple
+defaultModelRef: customer-configured
+toolRefs:
+  - portfolio.holdings.list
+  - portfolio.mtf-holdings.list
+  - gtt.instructions.list
+inputSchema:
+  type: object
+  properties:
+    userMessage: { type: string }
+    tenantId: { type: string }
+phases:
+  - id: answer
+    promptTemplateRef: portfolio-assistant
+    modelRef: customer-configured
+    allowedToolRefs: [portfolio.holdings.list, portfolio.mtf-holdings.list, gtt.instructions.list]
+    input:
+      userMessage: $.agent.input.userMessage
