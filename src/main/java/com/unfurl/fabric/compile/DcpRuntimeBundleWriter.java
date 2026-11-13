@@ -27,10 +27,14 @@ import java.util.zip.ZipOutputStream;
  * Builder of the DCP runtime bundle (HLD-in-process-component-hosting §7): the broker-consumable artifacts a runtime
  * needs, namely every selected provider's claim ({@code claims/*.claim.json}, public DCP snake_case JSON) and one
  * individually signed frozen contract per child contract ({@code contracts/frozen/*.frozen.json}, through DCP's
- * {@link ContractFreezer}). The aggregate Fabric contract stays the environment proof; these are the runtime broker's
+ * {@link ContractFreezer}), plus the aggregate root frozen and signed the same way ({@value #ROOT_ENTRY}), whose
+ * containment metadata pins the children so a host can verify the set with DCP's {@code VerifiedComposition} and decide
+ * optional components from it. The aggregate Fabric contract stays the environment proof; these are the runtime broker's
  * inputs. Studio and {@code fabric sign --dcp-runtime-bundle} both write it here, so the two never differ.
  */
 public final class DcpRuntimeBundleWriter {
+    /** The bundle entry of the frozen, signed aggregate root, beside {@code contracts/frozen/}. */
+    public static final String ROOT_ENTRY = "contracts/root.frozen.json";
     private final ObjectMapper claims = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .registerModule(new Jdk8Module())
@@ -57,6 +61,7 @@ public final class DcpRuntimeBundleWriter {
                     entry(zip, "claims/" + slug(claim.identity().uri().toString()) + ".claim.json", claims.writeValueAsBytes(claim));
                 }
                 ContractFreezer freezer = new ContractFreezer(new SigningKeyRef(keyFingerprint));
+                entry(zip, ROOT_ENTRY, freezer.freeze(compiled.contract(), signer).canonicalBytes());
                 for (CompositionContract child : compiled.childContracts()) {
                     String capability = child.binding().providerCapability();
                     String id = child.contractId().toString();

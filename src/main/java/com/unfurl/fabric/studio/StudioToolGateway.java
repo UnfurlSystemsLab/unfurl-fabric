@@ -320,12 +320,16 @@ public final class StudioToolGateway {
 
     /**
      * Argument adapter: maps the step's {@code identity} object (HLD-needs-driven-identity §6) to the generator's identity
-     * options field for field, with no defaults. {@code audiences} is a JSON object from service claim URI to audience.
+     * options field for field, with no defaults. {@code audiences} is a JSON object from service claim URI to audience, and
+     * {@code serviceCredentials} one from service claim URI to the {@code secret://} reference of its client credentials.
      */
     private RuntimeBindingSetGenerator.IdentityOptions identityOptions(Map<String, Object> identity) {
         Map<String, String> audiences = new LinkedHashMap<>();
         asMap(identity.get("audiences")).forEach((service, audience) ->
                 audiences.put(service, audience == null ? null : String.valueOf(audience)));
+        Map<String, String> serviceCredentials = new LinkedHashMap<>();
+        asMap(identity.get("serviceCredentials")).forEach((service, ref) ->
+                serviceCredentials.put(service, ref == null ? null : String.valueOf(ref)));
         return new RuntimeBindingSetGenerator.IdentityOptions(
                 text(identity, "issuer", null),
                 audiences,
@@ -334,7 +338,8 @@ public final class StudioToolGateway {
                 text(identity, "permissionsClaim", null),
                 text(identity, "tokenEndpointRef", null),
                 text(identity, "verificationKeysRef", null),
-                text(identity, "clientCredentialsRef", null));
+                text(identity, "clientCredentialsRef", null),
+                serviceCredentials);
     }
 
     /**

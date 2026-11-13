@@ -31,6 +31,22 @@
         {
           "name": "kotak:gtt.instructions.list",
           "description": "Read Kotak Neo GTT instructions"
+        },
+        {
+          "name": "flow.workflow.execute",
+          "description": "Start Flow workflows"
+        },
+        {
+          "name": "flow.execution.read",
+          "description": "Read Flow executions"
+        },
+        {
+          "name": "foundry.agent.create",
+          "description": "Create agents in Foundry (Flow's authoring agent)"
+        },
+        {
+          "name": "foundry.agent.discover",
+          "description": "List Foundry's agents"
         }
       ]
     }
@@ -129,6 +145,46 @@
             "access.token.claim": "true",
             "id.token.claim": "false"
           }
+        },
+        {
+          "name": "tenant",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "tenant",
+            "claim.value": "demo",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        },
+        {
+          "name": "permissions",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "usermodel.clientRoleMapping.clientId": "foundry",
+            "claim.name": "permissions",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
         }
       ]
     }
@@ -147,7 +203,9 @@
           "foundry.tool.read",
           "kotak:portfolio.holdings.list",
           "kotak:portfolio.mtf-holdings.list",
-          "kotak:gtt.instructions.list"
+          "kotak:gtt.instructions.list",
+          "foundry.agent.create",
+          "foundry.agent.discover"
         ]
       }
     },
@@ -165,7 +223,10 @@
       "clientRoles": {
         "foundry": [
           "foundry.agent.run",
-          "foundry.tool.read"
+          "foundry.tool.read",
+          "flow.workflow.execute",
+          "flow.execution.read",
+          "foundry.agent.discover"
         ]
       }
     }

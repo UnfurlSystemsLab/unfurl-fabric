@@ -233,6 +233,12 @@ removes the guide's limit that only Studio can produce the bundle. The bundle in
 claims, so it needs `--catalog`, the catalog the contract was compiled from; every selection must be found there by
 artifact SHA-256.
 
+The bundle also carries the signed aggregate root, `contracts/root.frozen.json`, frozen and signed the same way. Its
+`contains` metadata pins the children, so a host verifies the set with DCP's `VerifiedComposition`: the children it
+receives must be exactly the root's closure. That is what lets a host decide an optional component (for example
+`identity-context`) from the signed composition: deleting a child's file fails the load instead of removing the
+component. The root sits beside `contracts/frozen/`, not in it, so readers of the children are unchanged.
+
 ## 8. Emit: the admitted-component overlay  (implemented)
 
 `emit` and `deploy` take `--catalog`. When the signed plan has hosted entries it is required and becomes the

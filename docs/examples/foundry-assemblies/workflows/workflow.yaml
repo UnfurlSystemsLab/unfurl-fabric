@@ -3,6 +3,13 @@
 # Flow refuses to start if a workflow uses a capability it cannot bind, so this
 # proves agent.run was hydrated from the frozen contract. It is a boot check only:
 # replace it with your own workflow before running anything.
+#
+# agent.run is a capability. The frozen contract lets Flow use it; it never names
+# an agent. The node names the agent it wants in config.agentRef, an exact
+# <id>@<version>, and Flow sends it to Foundry as the agentRef input. Foundry's own
+# catalog decides whether that agent exists and whether the caller may run it.
+# Leave agentRef out to run Foundry's configured default agent. portfolio-assistant is
+# the example agent the guide adds to Foundry's deployment folder (foundry-agents/).
 
 id: agent-smoke
 version: "1.0.0"
@@ -14,3 +21,7 @@ nodes:
     type: ACTION
     uses: agent.run
     name: Ask agent
+    config:
+      agentRef: portfolio-assistant@1.0.0
+    input:
+      userMessage: Which stocks do I hold?

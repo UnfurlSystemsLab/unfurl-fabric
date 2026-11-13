@@ -157,7 +157,8 @@ public final class RuntimeBindingSetGenerator {
     /**
      * Leaf assembler for the identity-provider binding (HLD-needs-driven-identity §5, §6). It carries the operator's issuer,
      * audiences and claim names as values, the token endpoint and verification keys as typed config references, the token
-     * endpoint as the provider endpoint reference, and the host's client credentials as the credentials reference. The inputs
+     * endpoint as the provider endpoint reference, the host's client credentials as the credentials reference, and each
+ * service-credentials input as a {@code configuration.secret_refs} entry keyed by the service's claim URI. The inputs
      * are complete here, because {@link #requireIdentityInputs} refuses the run otherwise. It never has a base URL: the
      * identity provider is reached only through references.
      */
@@ -172,6 +173,9 @@ public final class RuntimeBindingSetGenerator {
         claims.put("roles", identity.rolesClaim());
         claims.put("permissions", identity.permissionsClaim());
         values.put("claims", claims);
+        // Each service that calls others as itself: its client credentials, a typed secret reference (HLD-C2 secret_refs).
+        Map<String, SecretRef> secretRefs = new LinkedHashMap<>();
+        identity.serviceCredentials().forEach((service, ref) -> secretRefs.put(service, new SecretRef(ref)));
         ConfigRef endpointRef = new ConfigRef(identity.tokenEndpointRef());
         Map<String, ConfigRef> refs = new LinkedHashMap<>();
         refs.put("token_endpoint", endpointRef);
@@ -183,7 +187,7 @@ public final class RuntimeBindingSetGenerator {
                 null,
                 endpointRef,
                 new SecretRef(identity.clientCredentialsRef()),
-                new Configuration(values, refs),
+                new Configuration(values, refs, secretRefs),
                 childMetadata(contract),
                 options);
     }
@@ -225,6 +229,8 @@ public final class RuntimeBindingSetGenerator {
             } else {
                 IdentityBindingRule.coverageProblems(identity.audiences().keySet(), protectedServices.get())
                         .forEach(problem -> problems.add("audiences: " + problem));
+                IdentityBindingRule.serviceCredentialProblems(identity.serviceCredentials(), protectedServices.get())
+                        .forEach(problem -> problems.add("service credentials: " + problem));
             }
         }
         if (!problems.isEmpty()) {
@@ -466,7 +472,9 @@ public final class RuntimeBindingSetGenerator {
      * Value Object: the operator-supplied settings of the identity-provider binding (HLD-needs-driven-identity §5, §6).
      * Fabric never defaults or derives any of them. Every field is required when the composition has an
      * {@code identity-context} contract, and none may be given when it has not. Audiences map each protected service's
-     * claim URI to its token audience and are kept sorted by key so generated YAML is deterministic.
+     * claim URI to its token audience and are kept sorted by key so generated YAML is deterministic. Service credentials map
+     * each service that calls others as itself (Foundry calling Flow's tools, Flow creating its authoring agent in Foundry) to
+     * the {@code secret://} reference of its client credentials; they are optional, sorted the same way.
      */
     public record IdentityOptions(
             String issuer,
@@ -476,7 +484,8 @@ public final class RuntimeBindingSetGenerator {
             String permissionsClaim,
             String tokenEndpointRef,
             String verificationKeysRef,
-            String clientCredentialsRef
+            String clientCredentialsRef,
+            Map<String, String> serviceCredentials
     ) {
         /** Canonicalizes: trims text, drops blank audience entries, and freezes audiences in key order. */
         public IdentityOptions {
@@ -496,11 +505,20 @@ public final class RuntimeBindingSetGenerator {
                 });
             }
             audiences = Collections.unmodifiableMap(sorted);
+            Map<String, String> credentials = new TreeMap<>();
+            if (serviceCredentials != null) {
+                serviceCredentials.forEach((service, ref) -> {
+                    if (trimmed(service) != null && trimmed(ref) != null) {
+                        credentials.put(service.trim(), ref.trim());
+                    }
+                });
+            }
+            serviceCredentials = Collections.unmodifiableMap(credentials);
         }
 
         /** Null Object: no identity input supplied (the default; valid only for a composition without identity). */
         public static IdentityOptions none() {
-            return new IdentityOptions(null, Map.of(), null, null, null, null, null, null);
+            return new IdentityOptions(null, Map.of(), null, null, null, null, null, null, Map.of());
         }
 
         /**
@@ -522,7 +540,7 @@ public final class RuntimeBindingSetGenerator {
 
         /** True when no identity input at all is present, audiences included. */
         public boolean absent() {
-            return missing().size() == 7 && audiences.isEmpty();
+            return missing().size() == 7 && audiences.isEmpty() && serviceCredentials.isEmpty();
         }
 
         /** Text helper: trims, mapping blank to null so "supplied" means non-blank. */

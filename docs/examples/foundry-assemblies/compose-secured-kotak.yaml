@@ -6,9 +6,13 @@
 # request then needs a Bearer token from the example's Keycloak realm, verified against the realm's key
 # that the guide exports to identity/keys/<kid>.pem.
 #
-# Flow calls Foundry with a token exchanged for its own caller: the caller's Bearer token goes to Keycloak's
-# token endpoint, which Flow reads from the identity folders the emitted file mounts. The guide attaches the
-# Keycloak container to the package's network as `keycloak` so Flow can reach that endpoint.
+# Use it only for a package whose needs include identity-context: Foundry checks its profile against the
+# composition at startup, and the secured profile is required exactly when the composition has identity.
+#
+# Flow needs no override: the composition's identity binding turns its checks on. It verifies each caller's
+# Bearer token against the realm's key in its config folder's identity/verification-keys/, and calls Foundry
+# with a token exchanged for that caller at Keycloak's token endpoint, read from the same mounted folders.
+# The guide attaches the Keycloak container to the package's network as `keycloak` so Flow can reach it.
 
 services:
   foundry:

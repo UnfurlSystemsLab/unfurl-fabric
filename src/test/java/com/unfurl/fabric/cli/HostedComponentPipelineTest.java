@@ -220,11 +220,18 @@ class HostedComponentPipelineTest {
                 }
             }
             assertThat(zip.getEntry("claims/urn-example-broker-adapter.claim.json")).isNotNull();
+            Files.write(work.resolve("root.frozen.json"),
+                    zip.getInputStream(zip.getEntry(com.unfurl.fabric.compile.DcpRuntimeBundleWriter.ROOT_ENTRY)).readAllBytes());
         }
         Path trust = copyKey(publicKey, Files.createDirectories(work.resolve("trust")));
         var verified = com.unfurl.dcp.host.VerifiedContracts.loadDirectory(frozen,
                 new com.unfurl.dcp.trust.VerificationKeyPemLoader().loadDirectory(trust));
         assertThat(verified.all()).hasSize(2);
+        // The signed root pins exactly these children, so a host can verify the set, not only each contract.
+        var composition = com.unfurl.dcp.host.VerifiedComposition.loadDirectory(work.resolve("root.frozen.json"), frozen,
+                new com.unfurl.dcp.trust.VerificationKeyPemLoader().loadDirectory(trust));
+        assertThat(composition.children().all()).hasSize(2);
+        assertThat(composition.childrenFor("agent.run")).hasSize(1);
         var hostedContract = verified.all().stream().filter(c -> c.contract().binding().providerCapability().equals("broker.read"))
                 .findFirst().orElseThrow();
         assertThat(hostedContract.contract().parties().consumer().claimUri()).isEqualTo(URI.create("urn:example:agent-host"));
