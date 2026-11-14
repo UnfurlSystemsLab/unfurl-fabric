@@ -22,8 +22,8 @@ and the other repos.
 |---|---|---|
 | Compile and sign any combination below | Works | [Command line](#1-create-the-catalog) |
 | Review deployment files for a combination | Works | [Command line](#5-export) |
-| Export a Flow + Foundry package that starts | Works in development mode, without authentication | [Studio API](#export-a-package-that-starts) |
-| Export a Foundry-only package that starts | Works in development mode, without authentication | [Command line](#start-a-foundry-only-package) |
+| Export a Flow + Foundry package that starts | Works, without an identity provider (no authentication, trusted network only) | [Studio API](#export-a-package-that-starts) |
+| Export a Foundry-only package that starts | Works, without an identity provider (no authentication, trusted network only) | [Command line](#start-a-foundry-only-package) |
 | Publish a reusable `flow-foundry`, `flow-only` or `foundry-only` assembly | Works | [Publish](#publish-a-reusable-assembly) |
 | Generate a runnable app for an embedded combination | **Not provided** | Fabric gives you the contract; your app hosts the substrates |
 | Compile and sign Foundry with the Kotak Neo adapter | Works | [Kotak Neo example](#example-add-the-kotak-neo-adapter) |
@@ -328,8 +328,11 @@ fabric emit --contract "$out\signed.yaml" --profile "$out\compiled.substrate-pro
 Leave out `--runtime-binding`, `--dcp-runtime-bundle` and `--flow-workflows`. They build Flow's
 deployment folder, and `emit` refuses them for a composition without Flow.
 
-Build the Foundry image if you haven't already, then start it. `compose-development-foundry-only.yaml`
-runs Foundry in development mode with **no authentication**, on this machine only. Don't use
+Build the Foundry image if you haven't already, then start it. This package has no identity
+provider, so Foundry runs with **no authentication**. `emit` gave it no composition folder here, so
+Foundry is standalone and its profile alone decides: `compose-development-foundry-only.yaml` selects
+Foundry's profile without authentication (`foundry-runtime-profile.yaml`) and publishes the port on
+this machine only. Foundry prints a warning saying it runs without authentication. Don't use
 `compose-development.yaml` here: it also configures a Flow service, which this package doesn't have.
 
 ```powershell
@@ -487,9 +490,14 @@ foreach ($name in 'unfurl-foundry', 'unfurl-flow') {
 }
 ```
 
-**Start it.** The exported file uses Foundry's secured profile, which needs JWT keys, and Flow can't
-send JWTs yet. `compose-development.yaml` therefore runs Foundry in development mode with **no
-authentication**, publishes both ports on this machine only, and adds health checks for both services. Foundry also needs a key for encrypting stored credentials.
+**Start it.** This package has no identity provider: its contract has no `identity-context`, so Flow
+and Foundry run with **no authentication**, and each prints a startup warning saying so. The exported
+file selects Foundry's secured profile, the image's default, and Foundry checks its profile against
+the composition at startup: a composition without identity needs a profile without authentication,
+so with the secured profile Foundry would refuse to start. `compose-development.yaml` selects
+Foundry's profile without authentication (`foundry-runtime-profile.yaml`), publishes both ports on
+this machine only, and adds health checks for both services. Foundry also needs a key for encrypting
+stored credentials.
 
 Before starting anything, the block checks that the package from **Build the deployment package**
 exists and that every image it names has been built, and says which step to run if not.
@@ -704,7 +712,7 @@ Copy-Item "$examples\foundry-agents\prompts\portfolio-assistant.md" "$work\found
 ```
 
 - [foundry-kotak-development-profile.yaml](foundry-kotak-development-profile.yaml) is Foundry's
-  development profile (`authentication: disabled`) with seven more bindings: the host services the
+  profile without authentication (`authentication: disabled`) with seven more bindings: the host services the
   adapter uses (authorization policy, audit, metrics, read admission and the existing secrets), the
   keys that verify the adapter's contracts, and an admitted-component tool source combined with the
   deployment's own tools.
@@ -1376,17 +1384,18 @@ compiled contract that includes Flow into this family fails, because the family 
   `agent-platform.definition.yaml`, which has every required section.
 - The exported `docker-compose.yaml` contains the full path to your Foundry deployment folder, so it
   won't work unchanged on another machine.
-- The exported `docker-compose.yaml` uses Foundry's secured profile, the image default. On its own it
-  needs JWT verification keys in the deployment's `identity/keys/`. Add `compose-development.yaml`
-  for local use.
-- With `identity-context` in the needs, every call from Flow to Foundry needs a caller token, in
-  development mode too. Flow takes the tenant whose settings it reads from the `X-Unfurl-Tenant`
-  header, which your gateway sets.
+- The exported `docker-compose.yaml` uses Foundry's secured profile, the image default. Foundry
+  accepts it only when the composition has identity, and then needs the realm's keys in the
+  deployment's `identity/keys/`. For a package without an identity provider, add
+  `compose-development.yaml`, which selects the profile without authentication.
+- With `identity-context` in the needs, Flow and Foundry always require a caller token; there is no
+  way to run that package without them. Flow takes the caller's tenant, user and permissions from the
+  token only, and calls Foundry with a token exchanged for that caller.
 
 **Before production:**
 
-- This package runs Flow and Foundry without authentication. It isn't safe to expose beyond your own
-  machine.
+- A package without an identity provider runs Flow and Foundry without authentication. It isn't safe
+  to expose beyond a trusted network. To require authentication, add `identity-context` to the needs.
 - Generated bindings contain development defaults. Review them and supply real endpoints and secret
   references.
 - Provider, audit and secret bindings aren't covered by this guide. The emitter doesn't yet mount
