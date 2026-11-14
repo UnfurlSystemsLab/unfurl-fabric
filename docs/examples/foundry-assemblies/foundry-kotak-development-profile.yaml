@@ -1,7 +1,8 @@
-# Foundry's development profile (unfurl-foundry/deployment/profiles/foundry-runtime-profile.yaml) with the
+# Foundry's profile without authentication (unfurl-foundry/deployment/profiles/foundry-runtime-profile.yaml) with the
 # bindings that admit the Kotak Neo adapter in-process: the host services its owner=host needs, the trust keys
 # that verify its contracts, and an admitted-component tool source composed over the deployment's own tools.
-# Authentication stays disabled, as in the development profile: use it on a trusted machine only.
+# Authentication stays disabled, as in that profile: it is for a composition without identity-context, which Foundry
+# checks at startup, and for a trusted network only.
 # The guide copies it into your Foundry deployment folder; compose-development-kotak.yaml selects it.
 apiVersion: unfurl.foundry/v1alpha1
 id: local-durable-kotak
@@ -141,8 +142,9 @@ metadata:
     promptVersion: 1.0.0
     agentRunContractId: urn:unfurl:fabric:authoring
     agentRunContractVersion: 1.0.0
-    # Explicit development mode: no authentication, body-supplied ExecutionContext, no management API.
-    # Production deployments select profiles/foundry-secured-profile.yaml (authentication: required).
+    # No identity provider: no authentication, the body-supplied ExecutionContext on DCP routes, and the management
+    # API on a trusted network with the caller named by X-Unfurl-Tenant/X-Unfurl-User. A composition with
+    # identity-context needs foundry-kotak-secured-profile.yaml (authentication: required) instead.
     operations:
       authentication: disabled
       drainMillis: 30000

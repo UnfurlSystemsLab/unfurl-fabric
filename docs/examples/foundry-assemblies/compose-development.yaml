@@ -1,10 +1,12 @@
-# Development settings for an exported Flow + Foundry package.
+# Settings for an exported Flow + Foundry package without an identity provider.
 #
 # Apply this after the emitted docker-compose.yaml. The emitted file follows the Foundry image's
 # layout: read-only deployment folders plus a writable state volume, with the image's default
-# secured profile. That profile needs JWT verification keys, and Flow doesn't send JWTs yet, so this
-# file selects the development profile, which has no authentication. Both ports are limited to this
-# machine for that reason.
+# secured profile. A composition without identity-context needs a Foundry profile without
+# authentication, and Foundry refuses the secured profile for it at startup, so this file selects
+# foundry-runtime-profile.yaml, which has no authentication. Both ports are limited to this machine
+# for that reason. Flow needs no setting: the composition has no identity, so it runs without
+# authentication too. Both print a startup warning saying so.
 
 services:
   flow:
@@ -22,7 +24,7 @@ services:
       - "127.0.0.1:7979:7979"
     environment:
       UNFURL_FOUNDRY_PROFILE: profiles/foundry-runtime-profile.yaml
-    # The development profile keeps its state in .foundry/, which the image creates writable for this volume.
+    # The profile without authentication keeps its state in .foundry/, which the image creates writable for this volume.
     volumes:
       - foundry-dev-state:/opt/unfurl/foundry/.foundry
 
