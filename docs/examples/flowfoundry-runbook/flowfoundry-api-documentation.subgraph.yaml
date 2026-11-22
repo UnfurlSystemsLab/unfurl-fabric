@@ -1,34 +1,33 @@
 id: flowfoundry-api-documentation
 version: "1.0.0"
 metadata:
-  name: Flowfoundry API Documentation Phase
+  name: Flowfoundry API Documentation Check Phase
   steps: "18"
   owner: flow
 nodes:
-  - id: step-18-swagger-ui-generate
+  # Step 18 verifies the export can be documented (HLD-api-documentation-artifacts §6); the API catalog
+  # component serves the documentation at runtime.
+  - id: step-18-documentation-check
     type: ACTION
     uses: function.local
-    name: Step 18 Swagger UI Generate
+    name: Step 18 Documentation Check
     config:
-      functionName: fabric.swagger-ui-generate
+      functionName: fabric.documentation-check
     input:
       downloadManifestPath: $.workflow.input.artifactPaths.step13
       runtimeBindingPath: $.workflow.input.artifactPaths.step14
-      deploymentResolvePath: $.workflow.input.artifactPaths.step11
-      deploymentImageReportPath: $.workflow.input.artifactPaths.step17
-      swaggerOutputDir: $.workflow.input.swaggerOutputDir
-      serverUrls: $.workflow.input.serverUrls
+      documentationVisibilityPath: $.workflow.input.documentationVisibilityPath
       outputPath: $.workflow.input.artifactPaths.step18
 
-  - id: gate-step-18-swagger-ui-generate
+  - id: gate-step-18-documentation-check
     type: ACTION
     uses: tool.result.gate
     dependencies:
-      - step-18-swagger-ui-generate
+      - step-18-documentation-check
     config:
       expectedStatus: PASS
     input:
-      result: $.nodes.step-18-swagger-ui-generate.output
+      result: $.nodes.step-18-documentation-check.output
 edges:
-  - from: step-18-swagger-ui-generate
-    to: gate-step-18-swagger-ui-generate
+  - from: step-18-documentation-check
+    to: gate-step-18-documentation-check

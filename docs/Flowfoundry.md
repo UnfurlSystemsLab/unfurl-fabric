@@ -751,7 +751,21 @@ Container expectations:
 
 ## Phase 5: API Documentation
 
-## Step 18: Generate OpenAPI And Swagger UI
+## Step 18: Check API Documentation (`fabric.documentation-check`)
+
+**Redefined** by `docs/HLD-api-documentation-artifacts.md` §6. API documentation is projected at runtime by the API
+catalog component (`unfurl-api-catalog`) in the deployed composition, because DCP requires proof that a capability is
+registered in a running host (HLD-C2 G.1), and an export cannot have that proof. Step 18 now verifies, before deployment,
+that the export *can* be documented:
+- every component's shipped schemas and API documents are present and hash-verified;
+- the visibility policy leaves no documentation gap.
+
+Its output is `target/flowfoundry-run/step-18-documentation-check-report.json`. It blocks on any artifact failure or gap.
+
+The rest of this section records the original static-export design for history. Where it conflicts with the paragraph
+above, the paragraph above governs.
+
+### Original design (superseded)
 
 Generate API documentation from the frozen export, not from conversation state or hand-written endpoint lists. This
 phase documents the API surface that operators and clients will use after deployment:

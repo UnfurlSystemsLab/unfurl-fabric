@@ -20,7 +20,7 @@ Files:
 - `flowfoundry-assembly.subgraph.yaml`: Steps 4-11 as executable Flow nodes.
 - `flowfoundry-export.subgraph.yaml`: Steps 12-14, with deployment-runner hooks for download aggregation and runtime binding generation.
 - `flowfoundry-deployment.subgraph.yaml`: Steps 15-17 deployment-root and image assembly hooks.
-- `flowfoundry-api-documentation.subgraph.yaml`: Step 18 Swagger/OpenAPI generation hook.
+- `flowfoundry-api-documentation.subgraph.yaml`: Step 18 documentation check (artifacts and gaps; the API catalog serves the docs at runtime).
 - `flowfoundry-runbook-profile.yaml`: local runtime profile with the required Flow components enabled.
 
 The embedding host must register the catalog phase definition under `flowfoundry-catalog-creation@1.0.0` and provide a
@@ -38,6 +38,6 @@ Required deployment-runner function handlers:
 | `fabric.foundry-root-assemble` | 15 | Assemble the Foundry deployment root. |
 | `fabric.flow-root-assemble` | 16 | Assemble the Flow deployment root. |
 | `fabric.container-image-build` | 17 | Build and validate local runtime images. |
-| `fabric.swagger-ui-generate` | 18 | Generate OpenAPI documents and a static Swagger UI bundle. |
+| `fabric.documentation-check` | 18 | Verify shipped documentation artifacts and the documentation gap gate (HLD-api-documentation-artifacts §6). |
 
 Steps 2-6 and 8-12 call the local Studio backend at `http://127.0.0.1:7878`.
