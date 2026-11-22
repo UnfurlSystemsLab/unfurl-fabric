@@ -158,7 +158,7 @@ it is not the Flowfoundry product deployment path.
 | `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed root contract, runtime binding, support envelope, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
 | `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from signed root contract, workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
 | `fabric.container-image-build` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint builds Flow and Foundry images from deployment roots. | `step-17-container-image-validation.json` |
-| `fabric.swagger-ui-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint projects OpenAPI from the signed contract, runtime binding, substrate profile, service route descriptors, and Foundry tool schemas, then emits a static Swagger UI bundle. | `step-18-swagger-ui-generation-report.json`, OpenAPI files, Swagger UI directory |
+| `fabric.documentation-check` | `pluginJar` or HTTP tool | Verifies every exported component's shipped documentation artifacts (hash and document checks) and runs the documentation gap gate against the visibility policy (HLD-api-documentation-artifacts §6). The API catalog serves the documentation at runtime. | `step-18-documentation-check-report.json` |
 
 All tool bindings must return structured status: `PASS`, `GAP`, or `ERROR`. `GAP` means the runbook should stop and the
 agent should ask the operator or engineer for a design decision. `ERROR` means the binding failed unexpectedly and
@@ -296,7 +296,7 @@ Ask these before generating OpenAPI and Swagger UI:
 
 | Step | Tool call | Input artifact | Output artifact | Stop condition |
 |---:|---|---|---|---|
-| 18 | `fabric.swagger-ui-generate` | signed contract + runtime binding + substrate profile + deployment resolution + route/tool schemas | `step-18-swagger-ui-generation-report.json`, OpenAPI files, Swagger UI directory | Missing endpoint/schema metadata, unresolved OpenAPI refs, inline secrets, sensitive examples, or docs that describe endpoints absent from the signed handoff. |
+| 18 | `fabric.documentation-check` | signed contract + runtime binding + bundled claims and `artifacts/sha256/` + visibility policy | `step-18-documentation-check-report.json` | A missing or hash-mismatched artifact, an invalid schema or API document, or a documentation gap. |
 
 The Phase 5 exit artifact is a hash-pinned API documentation bundle. Runtime execution should continue with Step 19
 only after the generation report passes.
@@ -389,7 +389,7 @@ DCP-hydrated `tool.call` bindings with permission scopes that match their author
 | `fabric.needs.propose` | `fabric.needs-emitter`, `fabric.needs-extract` |
 | `fabric.export.write` | `fabric.candidate-compile`, `fabric.export-download-all`, `fabric.runtime-binding-generate` |
 | `fabric.deployment.write` | `fabric.foundry-root-assemble`, `fabric.flow-root-assemble`, `fabric.container-image-build` |
-| `fabric.documentation.write` | `fabric.swagger-ui-generate` |
+| `fabric.documentation.write` | `fabric.documentation-check` |
 
 Flow/DCP runtime policy must enforce these permission scopes for runbook execution; Fabric should revalidate every
 write through Studio/API checks even after Flow or Foundry orchestration succeeds.

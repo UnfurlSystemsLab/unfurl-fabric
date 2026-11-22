@@ -275,13 +275,15 @@ unauthenticated and calls providers as before (§2a).
 
   | Route | Permission | Resource |
   |---|---|---|
-  | `POST /executions`, `POST /contracts/workflow.execute` | `flow.workflow.execute` | the workflow `id@version` |
+  | `POST /executions`, `POST /dcp/workflow.execute` | `flow.workflow.execute` | the workflow `id@version` |
   | `POST /resume` | `flow.execution.resume` | the execution |
   | `POST /cancel` | `flow.execution.cancel` | the execution |
   | `POST /executions/query` | `flow.execution.read` | the execution |
   | `POST /workflows` | `flow.workflow.register` | the workflow `id@version` |
   | `/triggers/*` fire, `/connectors/*` | `flow.trigger.fire`, `flow.connector.manage` | the trigger or connector |
   | `POST /tools/{name}` | `flow.tool.<name without the flow. prefix>`, for example `flow.tool.workflow-validate` | the tool |
+  | `GET /components` | `flow.component.read` | the component surface |
+  | `GET /dcp/registrations` | `dcp.registrations.read` | the registration report |
 
   A missing permission is `403`. The caller may be a user (through a gateway) or a service calling as
   itself (§9); Flow authorizes both the same way.

@@ -133,6 +133,25 @@ audit:
 - Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.isExternallyOwned` /
   `ownerOf` (**done**).
 
+**API documentation artifacts** (`HLD-api-documentation-artifacts.md`; designed, not implemented; no new commands
+except options on existing ones):
+
+- `scan` verifies each claim's `artifact_ref`s with DCP's `ClaimArtifactValidator` over
+  `PackagedArtifactStore.fromArchive(jar)`. A failure is the skip reason `DOCUMENTATION_ARTIFACT_INVALID`, whose detail
+  starts with the DCP code. `CLAIM_DOCUMENTATION_HINT_ONLY` prints as a warning.
+- `sign --dcp-runtime-bundle` also writes `artifacts/sha256/<sha256>` for every referenced artifact. Bytes are copied
+  unchanged, and a different file under the same hash is `BUNDLE_ARTIFACT_CONFLICT`.
+- `runtime-bindings` gives every HTTP-served provider an endpoint of `<base>/dcp/<capability>`.
+  - `<base>` is `--service-base-url <claimUri>=<url>`, otherwise the catalog block's `binding.service_name` and
+    `service_port`; with neither the run fails with `SERVICE_BASE_URL_MISSING`.
+  - `--flow-base-url` and `--foundry-base-url` remain as aliases.
+- With a `documentation.catalog` provider in the closure, `runtime-bindings` also writes `documentation_visibility` and
+  `observation` into that provider's binding. The values come from `--documentation-visibility <file>`,
+  `--documentation-visibility-default`, `--catalog-observation-interval-ms` and `--catalog-observation-max-backoff-ms`.
+  It first runs DCP's gap gate and fails with `DOCUMENTATION_GAP`, listing every gap.
+- Studio's `fabric.documentation-check` tool (Flowfoundry Step 18) runs the artifact checks and the gap gate on an
+  export.
+
 ## Build Outputs
 
 Typical contract flow outputs:
