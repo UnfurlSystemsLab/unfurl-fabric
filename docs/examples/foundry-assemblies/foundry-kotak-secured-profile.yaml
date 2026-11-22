@@ -158,6 +158,10 @@ metadata:
     promptVersion: 1.0.0
     agentRunContractId: urn:unfurl:fabric:authoring
     agentRunContractVersion: 1.0.0
+    # The profile's own composition.run contract: /dcp/composition.run callers send this contractId (Foundry LLD,
+    # composition.run: served contracts).
+    compositionRunContractId: urn:unfurl:foundry:compositions
+    compositionRunContractVersion: 1.0.0
     operations:
       authentication: required
       drainMillis: 30000

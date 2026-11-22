@@ -142,6 +142,10 @@ metadata:
     promptVersion: 1.0.0
     agentRunContractId: urn:unfurl:fabric:authoring
     agentRunContractVersion: 1.0.0
+    # The profile's own composition.run contract: /dcp/composition.run callers send this contractId (Foundry LLD,
+    # composition.run: served contracts).
+    compositionRunContractId: urn:unfurl:foundry:compositions
+    compositionRunContractVersion: 1.0.0
     # No identity provider: no authentication, the body-supplied ExecutionContext on DCP routes, and the management
     # API on a trusted network with the caller named by X-Unfurl-Tenant/X-Unfurl-User. A composition with
     # identity-context needs foundry-kotak-secured-profile.yaml (authentication: required) instead.
