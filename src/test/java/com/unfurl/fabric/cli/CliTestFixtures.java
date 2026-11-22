@@ -192,6 +192,10 @@ final class CliTestFixtures {
                     - capability: identity-context
                       description: Authenticated subject plus authorization claims.
                       consumer_access: ANY
+                      offer_interface:
+                        interface_kind: EXTERNAL_PROTOCOL
+                        details:
+                          protocol: oauth2
                       stability: STABLE
                       version: 1.0.0
                       metered: false

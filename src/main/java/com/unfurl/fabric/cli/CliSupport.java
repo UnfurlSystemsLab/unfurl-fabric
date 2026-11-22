@@ -265,7 +265,9 @@ final class CliSupport {
                         entry.optionalComponentShapeProfile().orElseGet(() -> inferredShapeProfile(entry)),
                         // Host placement inputs (HLD-D §6.2a), copied from the catalog block.
                         com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry),
-                        com.unfurl.fabric.compile.HostedComponents.componentHost(entry)))
+                        com.unfurl.fabric.compile.HostedComponents.componentHost(entry),
+                        // Where it listens as its own service (HLD-D §6.2b): bindings and emitted services read it from the plan.
+                        entry.metadata().binding().serviceEndpoint()))
                 .toList();
     }
 

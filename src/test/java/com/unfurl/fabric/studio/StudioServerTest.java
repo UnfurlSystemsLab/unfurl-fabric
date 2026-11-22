@@ -1046,14 +1046,42 @@ class StudioServerTest {
             assertThat(substrateProfile).isRegularFile();
 
             Path runtimeBinding = dir.resolve("step-14-runtime-binding.yaml");
+            // Flow's base URL is given explicitly; Foundry's comes from the service its catalog block declares (§4.1).
+            Path catalog = dir.resolve("catalog");
+            Map<String, Object> flowBase = Map.of("urn:unfurl:test:flow", "http://flow:8080");
+            StudioToolCallResult missingCatalog = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", runtimeBinding.toString(),
+                    "serviceBaseUrls", flowBase)));
+            assertThat(missingCatalog.output()).containsEntry("status", "GAP");
+            assertThat(String.valueOf(missingCatalog.output())).contains("catalogPath");
             StudioToolCallResult bindingResult = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
                     "signedCompiledContractPath", signedCompiled.toString(),
                     "runtimeBindingPath", runtimeBinding.toString(),
-                    "flowBaseUrl", "http://flow:8080",
-                    "foundryBaseUrl", "http://foundry:7979")));
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase)));
             assertThat(bindingResult.output()).containsEntry("status", "PASS");
             assertThat(runtimeBinding).isRegularFile();
-            assertThat(Files.readString(runtimeBinding)).contains("runtime_binding_set");
+            assertThat(Files.readString(runtimeBinding)).contains("runtime_binding_set",
+                    "http://flow:8080/dcp/workflow.execute", "http://foundry:7979/dcp/agent.run");
+            // Step 18 (HLD-api-documentation-artifacts §6): the fixtures ship no schemas, so the check names both gaps;
+            // marking everything private passes. It writes its report and no binding.
+            Path checkReport = dir.resolve("step-18-documentation-check-report.json");
+            StudioToolCallResult check = gateway.execute(toolRequest("fabric.documentation-check", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
+                    "reportPath", checkReport.toString())));
+            assertThat(check.output()).containsEntry("status", "GAP");
+            assertThat(String.valueOf(check.output())).contains("workflow.execute", "agent.run");
+            assertThat(Files.readString(checkReport)).contains("\"status\" : \"GAP\"");
+            StudioToolCallResult privateCheck = gateway.execute(toolRequest("fabric.documentation-check", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
+                    "documentationVisibilityDefault", "private",
+                    "reportPath", checkReport.toString())));
+            assertThat(privateCheck.output()).containsEntry("status", "PASS");
             // HLD-needs-driven-identity §6: identity follows the needs, not the environment. This composition's needs do not
             // require identity-context, so a production binding needs no identity, and an identity object is refused rather
             // than silently dropped.
@@ -1061,6 +1089,8 @@ class StudioServerTest {
             StudioToolCallResult productionResult = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
                     "signedCompiledContractPath", signedCompiled.toString(),
                     "runtimeBindingPath", productionBinding.toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
                     "environment", "production")));
             assertThat(productionResult.output()).containsEntry("status", "PASS");
             assertThat(productionBinding).isRegularFile();
@@ -1068,6 +1098,8 @@ class StudioServerTest {
             StudioToolCallResult strayIdentity = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
                     "signedCompiledContractPath", signedCompiled.toString(),
                     "runtimeBindingPath", strayBinding.toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
                     "identity", Map.of("issuer", "https://idp.example.com/realms/tenant-a"))));
             assertThat(strayIdentity.output()).containsEntry("status", "GAP");
             assertThat(String.valueOf(strayIdentity.output())).contains("no identity-context contract");
@@ -1186,6 +1218,13 @@ class StudioServerTest {
      */
     private static StudioCatalogService flowfoundrySessionService(Path dir) throws Exception {
         StudioCatalogService service = new StudioCatalogService();
+        // The uploaded jars are also the catalog the binding tool reads (HLD-api-documentation-artifacts §4.0): the same
+        // bytes, so the selections resolve by their SHA-256.
+        String flowJar = jarBase64(manifest("flow", "workflow.execute"));
+        String foundryJar = jarBase64(foundryManifest("foundry", "agent.run"));
+        Path catalog = Files.createDirectories(dir.resolve("catalog"));
+        Files.write(catalog.resolve("flow.jar"), Base64.getDecoder().decode(flowJar));
+        Files.write(catalog.resolve("foundry.jar"), Base64.getDecoder().decode(foundryJar));
         StudioCatalogAdmissionResponse admission = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-flow",
                 List.of(
@@ -1193,12 +1232,12 @@ class StudioServerTest {
                                 "flow.jar",
                                 "",
                                 "",
-                                jarBase64(manifest("flow", "workflow.execute"))),
+                                flowJar),
                         new StudioComponentArtifactDraft(
                                 "foundry.jar",
                                 "",
                                 "",
-                                jarBase64(foundryManifest("foundry", "agent.run"))))));
+                                foundryJar))));
         assertThat(admission.status()).as("fixture admission results: %s", admission.results())
                 .isEqualTo("VERIFIED");
         service.extractNeeds(
@@ -1525,6 +1564,8 @@ class StudioServerTest {
                   binding:
                     default_mode: REMOTE_HTTP
                     supported_modes: [REMOTE_HTTP]
+                    service_name: foundry
+                    service_port: 7979
                   component_shape_profile:
                     default_shape: CONTAINERIZED_SERVICE
                     supported_shapes: [CONTAINERIZED_SERVICE]

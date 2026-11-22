@@ -89,7 +89,7 @@ class FabricCliAssemblyStorageTest {
             Path bindings = dir.resolve(env + ".yaml");
             // The fixture's needs require identity-context, so both environments need the identity inputs.
             List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
-                    "--out", bindings.toString(), "--tenant", "acme", "--environment", env));
+                    "--catalog", fixture.catalog().toString(), "--out", bindings.toString(), "--tenant", "acme", "--environment", env));
             argv.addAll(IDENTITY_FLAGS);
             assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
             assertOk(bind(fixture, bindings, env));
@@ -120,7 +120,7 @@ class FabricCliAssemblyStorageTest {
         assertOk(publish(fixture));
         Path bindings = dir.resolve("prod.yaml");
         assertOk(CliTestFixtures.run("runtime-bindings", "--signed-contract", fixture.signed().toString(),
-                "--out", bindings.toString(), "--tenant", "acme", "--environment", "prod"));
+                "--catalog", fixture.catalog().toString(), "--out", bindings.toString(), "--tenant", "acme", "--environment", "prod"));
         assertOk(bind(fixture, bindings, "prod"));
     }
 
@@ -133,7 +133,7 @@ class FabricCliAssemblyStorageTest {
         assertOk(publish(fixture));
         Path bindings = dir.resolve("dev.yaml");
         List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
-                "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
+                "--catalog", fixture.catalog().toString(), "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
         argv.addAll(IDENTITY_FLAGS);
         assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
         ObjectNode wrapper = (ObjectNode) YAML.readTree(Files.readAllBytes(bindings));
@@ -159,7 +159,7 @@ class FabricCliAssemblyStorageTest {
         assertOk(publish(fixture));
         Path bindings = dir.resolve("dev.yaml");
         List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", fixture.signed().toString(),
-                "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
+                "--catalog", fixture.catalog().toString(), "--out", bindings.toString(), "--tenant", "acme", "--environment", "dev"));
         argv.addAll(IDENTITY_FLAGS);
         assertOk(CliTestFixtures.run(argv.toArray(String[]::new)));
         ObjectNode wrapper = (ObjectNode) YAML.readTree(Files.readAllBytes(bindings));

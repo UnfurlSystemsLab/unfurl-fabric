@@ -46,8 +46,9 @@ final class SignCommand {
 
     /**
      * Writes the DCP runtime bundle with the key that signed the contract (HLD-in-process-component-hosting §7). The
-     * bundle carries the selected providers' claims, so {@code --catalog} names the catalog the contract was compiled
-     * from; every selection must be found there by artifact SHA-256, or nothing is written.
+     * bundle carries the selected providers' claims and their documentation artifacts, so {@code --catalog} names the
+     * catalog the contract was compiled from; every selection must be found there with its pinned claim
+     * ({@link com.unfurl.fabric.catalog.SelectedCatalogEntries}), or nothing is written.
      */
     private void writeRuntimeBundle(CliArgs args, CompiledContract contract, FabricContractSigner signer,
                                     String fingerprint, Path bundle) {
@@ -55,17 +56,12 @@ final class SignCommand {
         if (catalog == null) {
             throw FabricCliException.usage("--dcp-runtime-bundle needs --catalog, which holds the selected providers' claims");
         }
-        java.util.Map<String, com.unfurl.fabric.catalog.CatalogEntry> bySha = new java.util.HashMap<>();
-        new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog().entries()
-                .forEach(entry -> bySha.put(entry.artifact().sha256(), entry));
-        java.util.List<com.unfurl.fabric.catalog.CatalogEntry> selected = new java.util.ArrayList<>();
-        for (var selection : contract.selections()) {
-            var entry = bySha.get(selection.artifact().sha256());
-            if (entry == null) {
-                throw FabricCliException.usage("--catalog has no jar with the selected artifact " + selection.artifact().coordinates()
-                        + " (sha256 " + selection.artifact().sha256() + ")");
-            }
-            selected.add(entry);
+        java.util.List<com.unfurl.fabric.catalog.CatalogEntry> selected;
+        try {
+            selected = com.unfurl.fabric.catalog.SelectedCatalogEntries.resolve(contract,
+                    new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog()).entries();
+        } catch (com.unfurl.fabric.catalog.SelectedCatalogEntries.Refusal refusal) {
+            throw FabricCliException.usage("--catalog does not hold the contract's selections: " + refusal.getMessage());
         }
         try {
             createParent(bundle);

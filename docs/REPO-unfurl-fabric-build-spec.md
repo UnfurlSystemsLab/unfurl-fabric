@@ -133,24 +133,39 @@ audit:
 - Claim hash and `owner=` parsing delegate to DCP `ClaimHash.canonical` and `Dependencies.isExternallyOwned` /
   `ownerOf` (**done**).
 
-**API documentation artifacts** (`HLD-api-documentation-artifacts.md`; designed, not implemented; no new commands
-except options on existing ones):
+**API documentation artifacts** (`HLD-api-documentation-artifacts.md`; **implemented**, Phase 3 of the API catalog
+plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI binding tests):
 
-- `scan` verifies each claim's `artifact_ref`s with DCP's `ClaimArtifactValidator` over
-  `PackagedArtifactStore.fromArchive(jar)`. A failure is the skip reason `DOCUMENTATION_ARTIFACT_INVALID`, whose detail
-  starts with the DCP code. `CLAIM_DOCUMENTATION_HINT_ONLY` prints as a warning.
-- `sign --dcp-runtime-bundle` also writes `artifacts/sha256/<sha256>` for every referenced artifact. Bytes are copied
-  unchanged, and a different file under the same hash is `BUNDLE_ARTIFACT_CONFLICT`.
+- `scan` verifies each claim's documentation shape with DCP's `ClaimValidator` (documentation codes only) and each
+  `artifact_ref` with DCP's `ClaimArtifactValidator` over `PackagedArtifactStore.fromArchiveBytes`, the exact jar bytes it
+  hashed. A failure is the skip reason `DOCUMENTATION_ARTIFACT_INVALID`, whose detail starts with the DCP code.
+  `CLAIM_DOCUMENTATION_HINT_ONLY` is a scan-report warning; `fabric scan` prints every skip and warning.
+- `sign --dcp-runtime-bundle` also writes `artifacts/sha256/<sha256>` for every referenced artifact, read again from the
+  provider's jar and re-hashed (`BUNDLE_ARTIFACT_UNAVAILABLE` otherwise). Bytes are copied unchanged; a shared file is
+  written once.
+- `runtime-bindings` and `sign --dcp-runtime-bundle` resolve the contract's selections in `--catalog` with
+  `SelectedCatalogEntries` (`CATALOG_ENTRY_MISSING`, `CATALOG_CLAIM_MISMATCH`). `runtime-bindings` always requires
+  `--catalog`.
 - `runtime-bindings` gives every HTTP-served provider an endpoint of `<base>/dcp/<capability>`.
-  - `<base>` is `--service-base-url <claimUri>=<url>`, otherwise the catalog block's `binding.service_name` and
-    `service_port`; with neither the run fails with `SERVICE_BASE_URL_MISSING`.
-  - `--flow-base-url` and `--foundry-base-url` remain as aliases.
+  - `<base>` is `--service-base-url <claimUri>=<url>` (repeatable or comma-separated), otherwise the service the signed
+    binding plan carries for that entry. Compile copies the catalog block's `binding.service_name` and `service_port` into
+    the plan for a component placed in a containerized, Spring Boot or standalone shape (HLD-D §6.2b), and the deploy
+    emitter renders that same plan entry, so endpoint and service agree (handoff test
+    `FabricCliDocumentationArtifactsTest.bindingEndpointsNameTheEmittedServices`). With neither the run fails with
+    `SERVICE_BASE_URL_MISSING`. A base URL for a claim URI outside the composition is `SERVICE_BASE_URL_UNKNOWN`.
+  - `--flow-base-url` and `--foundry-base-url` remain as aliases on `urn:unfurl:flow:runtime` and `urn:unfurl:foundry`
+    (`ServiceBaseUrls`); an alias and `--service-base-url` for one provider are refused.
+  - The built-in `http://flow:8080` and `http://foundry:7979` defaults are gone: Flow and Foundry declare them in their
+    catalog blocks.
+  - An `external_protocol` provider gets the conventional `base_url_ref`, never a DCP URL.
 - With a `documentation.catalog` provider in the closure, `runtime-bindings` also writes `documentation_visibility` and
   `observation` into that provider's binding. The values come from `--documentation-visibility <file>`,
-  `--documentation-visibility-default`, `--catalog-observation-interval-ms` and `--catalog-observation-max-backoff-ms`.
-  It first runs DCP's gap gate and fails with `DOCUMENTATION_GAP`, listing every gap.
-- Studio's `fabric.documentation-check` tool (Flowfoundry Step 18) runs the artifact checks and the gap gate on an
-  export.
+  `--documentation-visibility-default`, `--catalog-observation-interval-ms` and `--catalog-observation-max-backoff-ms`
+  (`DocumentationOptions`). It first runs DCP's gap gate and fails with `DOCUMENTATION_GAP`, listing every gap. Without
+  one, those options are refused (`DOCUMENTATION_SETTINGS_WITHOUT_CATALOG`).
+- `fabric documentation-check` and Studio's `fabric.documentation-check` tool (Flowfoundry Step 18) take the
+  `runtime-bindings` inputs, run the gap gate over the bindings that command would write (`DocumentationCheck`), and
+  write `step-18-documentation-check-report.json`. The CLI exits 0 on `PASS` and 1 on `GAP`.
 
 ## Build Outputs
 

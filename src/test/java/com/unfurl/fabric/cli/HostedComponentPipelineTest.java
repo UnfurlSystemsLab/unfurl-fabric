@@ -238,7 +238,7 @@ class HostedComponentPipelineTest {
 
         Path bindings = work.resolve("runtime-binding.yaml");
         assertExit(0, CliTestFixtures.run("runtime-bindings", "--signed-contract", signed.toString(), "--out", bindings.toString(),
-                "--catalog", catalog.toString(),
+                "--catalog", catalog.toString(), "--service-base-url", "urn:example:agent-host=http://agent-host:7979",
                 "--component-config", "urn:example:broker-adapter#accountRef=primary-equity",
                 "--component-config", "urn:example:broker-adapter#sessionRef=secret://demo/broker/session",
                 "--component-config", "urn:example:broker-adapter#maxRows=50"));
@@ -311,7 +311,8 @@ class HostedComponentPipelineTest {
         var noCatalog = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
                 Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString()), Map.of()));
         assertThat(noCatalog.output()).containsEntry("status", "GAP");
-        assertThat(String.valueOf(noCatalog.output())).contains("the contract hosts in-process components");
+        // The catalog is always required (HLD-api-documentation-artifacts §4.0), hosted components or not.
+        assertThat(String.valueOf(noCatalog.output())).contains("catalogPath");
         var missingValues = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
                 Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString(),
                         "catalogPath", catalog.toString()), Map.of()));
@@ -320,7 +321,8 @@ class HostedComponentPipelineTest {
 
         var bound = gateway.execute(new com.unfurl.fabric.studio.StudioToolCallRequest("b", "fabric.runtime-binding-generate",
                 Map.of("signedCompiledContractPath", signed.toString(), "runtimeBindingPath", bindings.toString(),
-                        "catalogPath", catalog.toString(), "componentConfig", List.of(
+                        "catalogPath", catalog.toString(),
+                        "serviceBaseUrls", Map.of("urn:unfurl:foundry", "http://foundry:7979"), "componentConfig", List.of(
                                 "urn:example:broker-adapter#accountRef=primary-equity",
                                 "urn:example:broker-adapter#sessionRef=secret://demo/broker/session")), Map.of()));
         assertThat(bound.output()).containsEntry("status", "PASS");
@@ -422,6 +424,8 @@ class HostedComponentPipelineTest {
     }
 
     private static String hostManifest(String uri, String coordinates, String capability) {
+        // A remote host: its DCP base URL is the operator's --service-base-url, never guessed (HLD-api-documentation-
+        // artifacts §4.1; HLD-D §6.2b).
         return manifest(uri, coordinates, capability, "REMOTE_HTTP",
                 "  component_host:\n    registrar_shape: " + SHAPE + "\n    shared_api_prefixes: [com.unfurl.foundry.substrate.]\n");
     }

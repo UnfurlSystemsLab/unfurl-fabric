@@ -761,6 +761,9 @@ that the export *can* be documented:
 - the visibility policy leaves no documentation gap.
 
 Its output is `target/flowfoundry-run/step-18-documentation-check-report.json`. It blocks on any artifact failure or gap.
+The CLI form is `fabric documentation-check --signed-contract ... --catalog ... --out <report>`, with the
+`runtime-bindings` options; Studio's `fabric.documentation-check` tool takes the binding tool's arguments plus
+`reportPath`.
 
 The rest of this section records the original static-export design for history. Where it conflicts with the paragraph
 above, the paragraph above governs.

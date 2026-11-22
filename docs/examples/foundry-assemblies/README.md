@@ -270,7 +270,7 @@ A policy failure names the component that couldn't be placed.
 Create the runtime bindings, which say where each part runs, then generate deployment files:
 
 ```powershell
-fabric runtime-bindings --signed-contract "$out\signed.yaml" --tenant demo --environment local --out "$out\runtime-bindings.yaml"
+fabric runtime-bindings --signed-contract "$out\signed.yaml" --catalog "$work\catalog" --tenant demo --environment local --out "$out\runtime-bindings.yaml"
 
 fabric emit --contract "$out\signed.yaml" --profile "$out\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" --target "$examples\target-local-images.yaml" --out "$out\compose"
 fabric emit --contract "$out\signed.yaml" --profile "$out\compiled.substrate-profile.yaml" --trust-keys "$work\keys\trust" --target k8s-dev --out "$out\kubernetes"
@@ -471,7 +471,7 @@ the launch script and leaves Studio holding port 7879.
 service never writes into your checkout.
 
 ```powershell
-fabric runtime-bindings --signed-contract "$export\signed-compiled-contract.yaml" --tenant demo --environment local --flow-base-url http://flow:8080 --foundry-base-url http://foundry:7979 --out "$export\runtime-binding.yaml"
+fabric runtime-bindings --signed-contract "$export\signed-compiled-contract.yaml" --catalog "$work\catalog" --tenant demo --environment local --flow-base-url http://flow:8080 --foundry-base-url http://foundry:7979 --out "$export\runtime-binding.yaml"
 
 fabric emit --contract "$export\signed-compiled-contract.yaml" --profile "$export\substrate-profile.yaml" --runtime-binding "$export\runtime-binding.yaml" --dcp-runtime-bundle "$export\dcp-runtime-bundle.zip" --flow-workflows "$examples\workflows" --foundry-deployment-root unfurl-foundry\deployment --trust-keys "$work\keys\trust" --target "$examples\target-local-images.yaml" --out "$export\deploy"
 ```
@@ -1309,7 +1309,7 @@ $identityLocal = @(
     '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
     '--identity-client-credentials-ref', 'secret://demo/identity/flow-client'
 )
-fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --tenant demo --environment local --out "$a\build\bindings.yaml" @identityLocal
+fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --catalog "$work\catalog" --tenant demo --environment local --out "$a\build\bindings.yaml" @identityLocal
 fabric assembly-bind --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment local --revision r1 --bindings "$a\build\bindings.yaml" @keys
 fabric assembly-verify-binding --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment local --revision r1 --trust-keys "$work\keys\trust"
 ```
@@ -1330,7 +1330,7 @@ $identity = @(
     '--identity-verification-keys-ref', 'config://demo/identity/verification-keys'
     '--identity-client-credentials-ref', 'secret://demo/identity/flow-client'
 )
-fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --tenant demo --environment production --out "$a\build\bindings-production.yaml" @identity
+fabric runtime-bindings --signed-contract "$a\build\signed.yaml" --catalog "$work\catalog" --tenant demo --environment production --out "$a\build\bindings-production.yaml" @identity
 fabric assembly-bind --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment production --revision r1 --bindings "$a\build\bindings-production.yaml" @keys
 fabric assembly-verify-binding --repository "$a\releases" --deployment-repository "$a\deployments" --uri $uri --version 1.0.0 --tenant demo --environment production --revision r1 --trust-keys "$work\keys\trust"
 ```
