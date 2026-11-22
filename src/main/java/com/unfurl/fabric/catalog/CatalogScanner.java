@@ -1,5 +1,13 @@
 package com.unfurl.fabric.catalog;
 
+import com.unfurl.dcp.claim.Claim;
+import com.unfurl.dcp.claim.ClaimValidator;
+import com.unfurl.dcp.documentation.ClaimArtifactValidator;
+import com.unfurl.dcp.documentation.PackagedArtifactStore;
+import com.unfurl.dcp.validation.Diagnostic;
+import com.unfurl.dcp.validation.ErrorCode;
+import com.unfurl.dcp.validation.SchemaValidationReport;
+import com.unfurl.dcp.validation.Severity;
 import com.unfurl.fabric.artifact.ArtifactDescriptor;
 
 import java.io.IOException;
@@ -12,8 +20,11 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -32,6 +43,11 @@ import java.util.jar.JarFile;
  * <p>Pattern: <b>service</b> with injected collaborators (codec + clock); skips are signalled via an
  * internal control-flow exception ({@link SkipJar}) so one bad JAR never aborts the whole scan.
  *
+ * <p>Each claim's shipped documentation is verified as data (HLD-api-documentation-artifacts §2): DCP's claim rules for
+ * {@code documentation} and {@code api_documents}, then DCP's {@link ClaimArtifactValidator} over the files they name,
+ * read from the very jar bytes that were hashed. A failure is a {@link SkippedEntry.SkipReason#DOCUMENTATION_ARTIFACT_INVALID}
+ * skip naming DCP's code and the path; DCP's documentation-hint warning is a {@link CatalogScanReport.ScanWarning}.
+ *
  * <p>Jars without a catalog manifest are offered to the {@link CompanionIndex} (HLD-in-process-component-hosting §3).
  * A hosted entry whose companions are missing or conflicting is reported as
  * {@link SkippedEntry.SkipReason#COMPANION_UNRESOLVED} and left out of the catalog, so it is never selectable.
@@ -40,6 +56,18 @@ public final class CatalogScanner {
 
     /** Path within each JAR where the catalog manifest is expected. */
     static final String MANIFEST_PATH = "META-INF/unfurl-catalog.yaml";
+
+    /**
+     * DCP claim-validation codes about a claim's documentation shape (DCP HLD-C2 A.6, A.12, A.13). Only these skip an
+     * entry here: the scanner verifies documentation, and the claim's other rules are the planner's concern.
+     */
+    static final Set<ErrorCode> DOCUMENTATION_CODES = EnumSet.of(
+            ErrorCode.CLAIM_DOCUMENTATION_INCOMPLETE,
+            ErrorCode.CLAIM_DOCUMENTATION_OPERATION_DUPLICATE,
+            ErrorCode.CLAIM_DOCUMENTATION_MEDIA_TYPE,
+            ErrorCode.ARTIFACT_REF_INVALID,
+            ErrorCode.CLAIM_API_DOCUMENT_INVALID,
+            ErrorCode.CLAIM_EXTERNAL_PROTOCOL_INVALID);
 
     /** Manifest parser / claim-hash computer. */
     private final CatalogManifestCodec codec;
@@ -82,6 +110,7 @@ public final class CatalogScanner {
 
         List<CatalogEntry> entries = new ArrayList<>();
         List<SkippedEntry> skipped = new ArrayList<>();
+        List<CatalogScanReport.ScanWarning> warnings = new ArrayList<>();
         CompanionIndex companions = new CompanionIndex();
 
         List<Path> jars = new ArrayList<>();
@@ -95,7 +124,7 @@ public final class CatalogScanner {
         jars.sort(java.util.Comparator.comparing(Path::toString));
         for (Path jarPath : jars) {
             try {
-                CatalogEntry entry = scanSingleJar(jarPath);
+                CatalogEntry entry = scanSingleJar(jarPath, warnings);
                 if (entry != null) {
                     entries.add(entry);
                 }
@@ -127,18 +156,20 @@ public final class CatalogScanner {
         }
 
         Catalog catalog = new Catalog(selectable, companions.artifacts());
-        return new CatalogScanReport(catalog, Instant.now(clock), catalogDirectory, skipped);
+        return new CatalogScanReport(catalog, Instant.now(clock), catalogDirectory, skipped, warnings);
     }
 
     /**
      * Scan one JAR into a {@link CatalogEntry}: compute its SHA-256, parse its manifest, enrich the
      * authored artifact with the computed SHA, and compute the claim hash.
      *
-     * @param jarPath the JAR to scan.
+     * @param jarPath  the JAR to scan.
+     * @param warnings where warnings about a still-selectable entry are added.
      * @return the catalog entry.
-     * @throws SkipJar if the JAR is unreadable, lacks a manifest, or the manifest is malformed.
+     * @throws SkipJar if the JAR is unreadable, lacks a manifest, the manifest is malformed, or its shipped
+     *                 documentation is invalid.
      */
-    private CatalogEntry scanSingleJar(Path jarPath) {
+    private CatalogEntry scanSingleJar(Path jarPath, List<CatalogScanReport.ScanWarning> warnings) {
         byte[] jarBytes = readJarBytes(jarPath);
         String jarSha = sha256Hex(jarBytes);
 
@@ -161,10 +192,49 @@ public final class CatalogScanner {
         ClaimDescriptor claimDescriptor = new ClaimDescriptor(
                 parsed.claim(),
                 codec.computeClaimHash(parsed.claim()));
+        verifyDocumentation(parsed.claim(), jarBytes, jarPath, warnings);
 
         CatalogMetadata metadata = parsed.metadata();
 
         return new CatalogEntry(artifact, claimDescriptor, metadata, parsed.componentShapeProfile(), jarPath);
+    }
+
+    /**
+     * Verifies a claim's shipped documentation as data (HLD-api-documentation-artifacts §2): first DCP's claim rules for
+     * the documentation shape, then, when the claim names any file, DCP's artifact rules over those files read from
+     * {@code jarBytes}, the bytes whose SHA-256 the artifact descriptor carries. Classes are never loaded.
+     *
+     * @throws SkipJar {@code DOCUMENTATION_ARTIFACT_INVALID}, listing every problem as {@code CODE field: message}
+     */
+    private static void verifyDocumentation(Claim claim, byte[] jarBytes, Path jarPath,
+                                            List<CatalogScanReport.ScanWarning> warnings) {
+        SchemaValidationReport shape = new ClaimValidator().validate(claim);
+        List<Diagnostic> invalid = shape.diagnostics().stream()
+                .filter(d -> d.severity() == Severity.ERROR && DOCUMENTATION_CODES.contains(d.code())).toList();
+        if (!invalid.isEmpty()) {
+            throw new SkipJar(SkippedEntry.SkipReason.DOCUMENTATION_ARTIFACT_INVALID, describe(invalid));
+        }
+        shape.diagnostics().stream()
+                .filter(d -> d.severity() == Severity.WARNING && d.code() == ErrorCode.CLAIM_DOCUMENTATION_HINT_ONLY)
+                .forEach(d -> warnings.add(new CatalogScanReport.ScanWarning(jarPath, d.code().name(),
+                        d.fieldPath() + ": " + d.message())));
+        boolean namesFiles = !claim.apiDocuments().isEmpty()
+                || claim.offers().stream().anyMatch(offer -> offer.documentation() != null);
+        if (!namesFiles) {
+            return;
+        }
+        SchemaValidationReport artifacts = new ClaimArtifactValidator().validate(claim,
+                PackagedArtifactStore.fromArchiveBytes(jarBytes, String.valueOf(jarPath.getFileName())));
+        List<Diagnostic> failures = artifacts.diagnostics().stream().filter(d -> d.severity() == Severity.ERROR).toList();
+        if (!failures.isEmpty()) {
+            throw new SkipJar(SkippedEntry.SkipReason.DOCUMENTATION_ARTIFACT_INVALID, describe(failures));
+        }
+    }
+
+    /** Diagnostic text of a documentation skip: each problem as {@code CODE field: message}, DCP's code first. */
+    private static String describe(List<Diagnostic> diagnostics) {
+        return diagnostics.stream().map(d -> d.code().name() + " " + d.fieldPath() + ": " + d.message())
+                .collect(Collectors.joining("; "));
     }
 
     /**

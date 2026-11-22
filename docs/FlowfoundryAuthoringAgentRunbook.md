@@ -21,7 +21,7 @@ The canonical build phases are:
 | Assembly | 4-11 | Create the Studio draft, ask recursive-scope questions, apply validated intents, and resolve deployment shape. |
 | Export | 12-14 | Compile, sign, download, verify hashes, and generate DCP runtime bindings. |
 | Deployment | 15-17 | Assemble Foundry and Flow deployment roots and build runtime container images. |
-| API Documentation | 18 | Generate OpenAPI documents and a static Swagger UI bundle from the signed export handoff. |
+| API Documentation | 18 | Check that the export can be documented: shipped schemas verified and no documentation gap. The API catalog serves the documentation at runtime. |
 
 Steps 19-21 remain runtime run, verification, and promotion gates. The authoring agent can prepare their inputs, but it
 must not claim the deployment is complete until those gates pass.
@@ -154,11 +154,11 @@ it is not the Flowfoundry product deployment path.
 | `fabric.deployment-resolve` | `http.request` to `/studio/tools/fabric.deployment-resolve` | `POST /studio/deployment/resolve` in Studio session mode | `step-11-deployment-resolve-response.json` |
 | `fabric.candidate-compile` | `http.request` to `/studio/tools/fabric.candidate-compile` | `POST /studio/tenants/{tenant}/assemblies/{assembly}/sessions/{session}/compile` | `step-12-compile-response.json` |
 | `fabric.export-download-all` | `function.local`, `pluginJar`, or deployment-runner HTTP | Download every compile response handoff/support artifact by repeatedly calling Studio `fabric.export-download` or the hash-pinned export content route. | downloaded handoff and support artifacts: root contract, profile, signed root contract, signed compiled envelope, runtime bundle |
-| `fabric.runtime-binding-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint wraps `fabric runtime-bindings --signed-contract ...` using the signed compiled support envelope. When the composition's needs require `identity-context`, it also needs an `identity` object (`issuer`, `audiences`, `tenantClaim`, `rolesClaim`, `permissionsClaim`, `tokenEndpointRef`, `verificationKeysRef`, `clientCredentialsRef`; HLD-needs-driven-identity §6) in every environment, and returns `GAP` when any field is missing or when an `identity` object is given for a composition without identity. | `step-14-runtime-binding.yaml`, validation report |
+| `fabric.runtime-binding-generate` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint wraps `fabric runtime-bindings --signed-contract ... --catalog ...` using the signed compiled support envelope and the catalog it was compiled from (`catalogPath`, always required; HLD-api-documentation-artifacts §4.0). Service base URLs come from `serviceBaseUrls` (`{claimUri: url}`) or each provider's catalog block, and an HTTP-served provider with neither returns `GAP` (§4.1). When the composition's needs require `identity-context`, it also needs an `identity` object (`issuer`, `audiences`, `tenantClaim`, `rolesClaim`, `permissionsClaim`, `tokenEndpointRef`, `verificationKeysRef`, `clientCredentialsRef`; HLD-needs-driven-identity §6) in every environment, and returns `GAP` when any field is missing or when an `identity` object is given for a composition without identity. | `step-14-runtime-binding.yaml`, validation report |
 | `fabric.foundry-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Foundry deployment root from signed root contract, runtime binding, support envelope, agent, prompts, registries, and plugins. | `step-15-foundry-deployment-inventory.json` |
 | `fabric.flow-root-assemble` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric execution endpoint assembles Flow deployment root from signed root contract, workflows, child DCP contracts for `agent.run` / `tool.call`, runtime binding refs, and trust keys. | `step-16-flow-deployment-inventory.json` |
 | `fabric.container-image-build` | `pluginJar` or HTTP tool | Deployment-local tool or Fabric/deployment execution endpoint builds Flow and Foundry images from deployment roots. | `step-17-container-image-validation.json` |
-| `fabric.documentation-check` | `pluginJar` or HTTP tool | Verifies every exported component's shipped documentation artifacts (hash and document checks) and runs the documentation gap gate against the visibility policy (HLD-api-documentation-artifacts §6). The API catalog serves the documentation at runtime. | `step-18-documentation-check-report.json` |
+| `fabric.documentation-check` | `pluginJar` or HTTP tool | Takes the `fabric.runtime-binding-generate` arguments plus `reportPath`. Verifies every exported component's shipped documentation artifacts (hash and document checks) and runs the documentation gap gate against the visibility policy (`documentationVisibilityDefault`, `documentationVisibilityPath`) over the bindings that tool would write (HLD-api-documentation-artifacts §6). The API catalog serves the documentation at runtime. | `step-18-documentation-check-report.json` |
 
 All tool bindings must return structured status: `PASS`, `GAP`, or `ERROR`. `GAP` means the runbook should stop and the
 agent should ask the operator or engineer for a design decision. `ERROR` means the binding failed unexpectedly and
@@ -284,13 +284,15 @@ only after this report passes.
 
 ### Questions
 
-Ask these before generating OpenAPI and Swagger UI:
+Ask these before running the documentation check (HLD-api-documentation-artifacts §4.2, §6):
 
-- Which API surfaces should be documented: Flow DCP endpoints, Foundry DCP endpoints, Fabric Studio tool gateway, or
-  all deployed operator/client endpoints?
-- Should generated server URLs target local Docker Compose, Kubernetes service DNS, or external ingress URLs?
-- Are Swagger UI artifacts allowed to use CDN assets, or must the bundle be fully static and offline?
-- Which authentication schemes should be represented as OpenAPI security schemes from DCP auth/runtime-binding refs?
+- What is the default documentation visibility: `public`, `internal` (Fabric's default) or `private`?
+- Which capabilities or API documents differ from that default? They go in the visibility file.
+- A capability whose provider ships no schemas is a gap. Should its component ship them (the right fix), or should the
+  capability be marked `private`?
+
+Documents are served at runtime by the API catalog, from the deployment's verified set: there are no server URLs,
+static bundles or security schemes to choose here.
 
 ### Tool flow
 

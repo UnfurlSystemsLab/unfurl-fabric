@@ -48,6 +48,13 @@ public record SkippedEntry(
          * The packaged {@code META-INF/unfurl-config.yaml} is invalid by DCP's schema rules
          * (HLD-in-process-component-hosting §6). The detail lists every failure. The entry is not selectable.
          */
-        INVALID_COMPONENT_CONFIGURATION
+        INVALID_COMPONENT_CONFIGURATION,
+        /**
+         * The claim's shipped documentation is invalid (HLD-api-documentation-artifacts §2): a referenced schema or API
+         * document is missing, does not match its {@code sha256}, or breaks DCP's document rules, or the claim's
+         * {@code documentation}/{@code api_documents} shape is invalid. The detail starts with DCP's code and names the
+         * path. The entry is not selectable.
+         */
+        DOCUMENTATION_ARTIFACT_INVALID
     }
 }

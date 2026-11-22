@@ -1,6 +1,10 @@
 package com.unfurl.fabric.runtime;
 
+import com.unfurl.dcp.claim.InterfaceKind;
+import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.contract.CompositionContract;
+import com.unfurl.dcp.documentation.CapabilityDocumentationValidator;
+import com.unfurl.dcp.documentation.DocumentationGap;
 import com.unfurl.dcp.runtimebinding.ConfigRef;
 import com.unfurl.dcp.runtimebinding.Configuration;
 import com.unfurl.dcp.runtimebinding.ConsumerInstance;
@@ -19,6 +23,8 @@ import com.unfurl.dcp.runtimebinding.TargetEnvironment;
 import com.unfurl.dcp.validation.SchemaValidationReport;
 import com.unfurl.dcp.validation.Severity;
 import com.unfurl.deployment.plan.BindingPlan;
+import com.unfurl.fabric.catalog.CatalogEntry;
+import com.unfurl.fabric.catalog.SelectedCatalogEntries;
 import com.unfurl.fabric.signing.SignedFabricContract;
 
 import java.net.URI;
@@ -34,7 +40,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * Builder/Composite Assembler: derives a DCP runtime-binding tree from Fabric's signed contract
@@ -44,8 +53,27 @@ import java.util.TreeMap;
  * child binding per frozen child contract. Runtime-specific endpoint and secret wiring is attached
  * through runtime-binding fields, while ownership, trust, dependency, and invalidation semantics
  * remain frozen in the signed contracts.
+ *
+ * <p>Its inputs are the signed contract and the catalog entries it selected, resolved and pin-checked by
+ * {@link SelectedCatalogEntries} (HLD-api-documentation-artifacts §4.0): the claims decide which offers are reached over
+ * their own protocol and feed the documentation gate. A provider's declared service comes from the signed binding plan
+ * (HLD-D §6.2b), the same entry the deploy emitter renders, so the endpoint and the service agree by construction.
+ * Nothing is guessed: an HTTP-served provider without a base URL is refused (§4.1). When the composition contains an API
+ * catalog ({@value #DOCUMENTATION_CATALOG_CAPABILITY}), its binding receives the documentation settings, and DCP's gap gate
+ * runs over the policy first (§4.2, §4.3).
  */
 public final class RuntimeBindingSetGenerator {
+    /** The capability an API catalog offers; its provider's binding carries the documentation settings (§4.2). */
+    public static final String DOCUMENTATION_CATALOG_CAPABILITY = "documentation.catalog";
+    /** An HTTP-served provider with neither an operator base URL nor a declared service. */
+    public static final String SERVICE_BASE_URL_MISSING = "SERVICE_BASE_URL_MISSING";
+    /** A base URL for a claim URI that provides nothing in the composition. */
+    public static final String SERVICE_BASE_URL_UNKNOWN = "SERVICE_BASE_URL_UNKNOWN";
+    /** Documentation settings for a composition without an API catalog. */
+    public static final String DOCUMENTATION_SETTINGS_WITHOUT_CATALOG = "DOCUMENTATION_SETTINGS_WITHOUT_CATALOG";
+    /** The documentation policy would leave a documented capability without schemas (DCP HLD-C2 G.1). */
+    public static final String DOCUMENTATION_GAP = "DOCUMENTATION_GAP";
+
     private final Clock clock;
 
     /** Production constructor: stamps generated binding sets with the current UTC time. */
@@ -65,30 +93,195 @@ public final class RuntimeBindingSetGenerator {
     /**
      * Generate, validate, and serialize a runtime-binding set for one signed contract closure.
      *
-     * @param signed signed Fabric contract closure; must include the aggregate contract.
-     * @param options environment-specific binding options.
+     * @param signed   signed Fabric contract closure; must include the aggregate contract.
+     * @param selected the contract's selections resolved in the catalog it was compiled from.
+     * @param options  environment-specific binding options.
      * @return generated YAML bytes.
+     * @throws IllegalStateException naming every problem, each starting with its code: identity inputs,
+     *                               {@value #SERVICE_BASE_URL_MISSING}, {@value #SERVICE_BASE_URL_UNKNOWN},
+     *                               {@value #DOCUMENTATION_SETTINGS_WITHOUT_CATALOG}, {@value #DOCUMENTATION_GAP}, or a DCP
+     *                               binding-validation failure; nothing is written
      */
-    public byte[] generate(SignedFabricContract signed, Options options) {
+    public byte[] generate(SignedFabricContract signed, SelectedCatalogEntries selected, Options options) {
+        Assembled assembled = assemble(signed, selected, options);
+        List<RuntimeBinding> children = withDocumentationSettings(assembled, selected);
+        List<RuntimeBinding> bindings = new ArrayList<>();
+        bindings.add(assembled.root());
+        bindings.addAll(children);
+        validate(assembled.root(), bindings, assembled.rootContract(), assembled.childContracts());
+        // DCP owns the document format: its codec writes it, and its set type enforces unique binding and contract ids.
+        return RuntimeBindingCodec.write(new RuntimeBindingSet(assembled.root().bindingId(), clock.instant(),
+                assembled.options().sourceSignedContract().toString(), bindings));
+    }
+
+    /**
+     * Value Object: the bindings of one contract before documentation settings: the aggregate root, the sorted children
+     * and their bindings (same order), and the normalized options.
+     */
+    record Assembled(CompositionContract rootContract, List<CompositionContract> childContracts, RuntimeBinding root,
+                     List<RuntimeBinding> childBindings, Options options) { }
+
+    /**
+     * Builder step shared by {@link #generate} and {@link DocumentationCheck}: checks the identity inputs and service base
+     * URLs, then builds the root and child bindings exactly as they would be written, without documentation settings.
+     */
+    Assembled assemble(SignedFabricContract signed, SelectedCatalogEntries selected, Options options) {
         if (signed == null) {
             throw new IllegalArgumentException("signed contract is required");
+        }
+        if (selected == null) {
+            throw new IllegalArgumentException("the contract's selections, resolved in its catalog, are required");
         }
         Options safe = options == null ? Options.defaults() : options.normalized();
         CompositionContract rootContract = signed.contract().contract();
         List<CompositionContract> childContracts = signed.contract().childContracts().stream()
                 .sorted(Comparator.comparing(contract -> contract.contractId().toString()))
                 .toList();
+        BindingPlan plan = signed.contract().bindingPlan();
         requireIdentityInputs(childContracts, safe);
+        requireServiceBases(childContracts, plan, selected, safe);
         RuntimeBinding root = rootBinding(rootContract, childContracts, safe);
-        List<RuntimeBinding> bindings = new ArrayList<>();
-        bindings.add(root);
+        List<RuntimeBinding> children = new ArrayList<>();
         for (CompositionContract child : childContracts) {
-            bindings.add(childBinding(child, signed.contract().bindingPlan(), safe));
+            children.add(childBinding(child, plan, selected, safe));
         }
-        validate(root, bindings, rootContract, childContracts);
-        // DCP owns the document format: its codec writes it, and its set type enforces unique binding and contract ids.
-        return RuntimeBindingCodec.write(new RuntimeBindingSet(root.bindingId(), clock.instant(),
-                safe.sourceSignedContract().toString(), bindings));
+        return new Assembled(rootContract, childContracts, root, List.copyOf(children), safe);
+    }
+
+    /**
+     * Strategy for the optional API catalog (HLD-api-documentation-artifacts §4.2, §4.3), decided by the signed contract
+     * alone: with a {@value #DOCUMENTATION_CATALOG_CAPABILITY} provider, DCP's gap gate runs over the policy and that
+     * provider's binding receives every documentation setting, defaults written explicitly; without one, nothing is added
+     * and any documentation setting the operator gave is refused, so none is silently dropped.
+     *
+     * @return the child bindings, the catalog's with its settings
+     */
+    private List<RuntimeBinding> withDocumentationSettings(Assembled assembled, SelectedCatalogEntries selected) {
+        DocumentationOptions documentation = assembled.options().documentation();
+        Set<java.net.URI> catalogs = new TreeSet<>(Comparator.comparing(java.net.URI::toString));
+        assembled.childContracts().stream()
+                .filter(contract -> DOCUMENTATION_CATALOG_CAPABILITY.equals(contract.binding().providerCapability()))
+                .forEach(contract -> catalogs.add(contract.contractId()));
+        if (catalogs.isEmpty()) {
+            if (documentation.given()) {
+                throw new IllegalStateException(DOCUMENTATION_SETTINGS_WITHOUT_CATALOG + ": " + String.join(", ", documentation.givenFlags())
+                        + " configure an API catalog, but the composition has no " + DOCUMENTATION_CATALOG_CAPABILITY
+                        + " provider; add " + DOCUMENTATION_CATALOG_CAPABILITY + " to the needs, or leave these options out");
+            }
+            return assembled.childBindings();
+        }
+        List<DocumentationGap> gaps = new CapabilityDocumentationValidator().gaps(assembled.childContracts(), selected.claims(),
+                assembled.childBindings(), documentation.policy());
+        if (!gaps.isEmpty()) {
+            throw new IllegalStateException(describeGaps(gaps));
+        }
+        Map<String, Object> settings = documentation.bindingValues();
+        return assembled.childBindings().stream()
+                .map(binding -> catalogs.contains(binding.contractId()) ? withValues(binding, settings) : binding)
+                .toList();
+    }
+
+    /**
+     * The {@value #DOCUMENTATION_GAP} refusal text: every gap with its contract, capability and provider, and both ways to
+     * resolve one (HLD-api-documentation-artifacts §4.3).
+     */
+    static String describeGaps(List<DocumentationGap> gaps) {
+        StringBuilder text = new StringBuilder(DOCUMENTATION_GAP + ": ");
+        for (int i = 0; i < gaps.size(); i++) {
+            DocumentationGap gap = gaps.get(i);
+            if (i > 0) text.append("; ");
+            text.append("contract ").append(gap.contractId()).append(" capability ").append(gap.capability())
+                    .append(" provider ").append(gap.providerClaimUri()).append(" has no documentation schemas");
+        }
+        return text.append(". Ship the schemas in the provider's claim, or mark the capability private in "
+                + "--documentation-visibility").toString();
+    }
+
+    /** A binding with extra {@code configuration.values}, keeping every other field. */
+    private static RuntimeBinding withValues(RuntimeBinding binding, Map<String, Object> extra) {
+        Configuration current = binding.configuration();
+        Map<String, Object> values = new LinkedHashMap<>(current.values());
+        values.putAll(extra);
+        return new RuntimeBinding(binding.bindingId(), binding.contractId(), binding.contractVersion(), binding.targetEnvironment(),
+                binding.providerInstance(), binding.consumerInstance(), binding.runtimePolicy(),
+                new Configuration(values, current.configRefs(), current.secretRefs()), binding.deploymentControls(),
+                binding.lifecycle(), binding.metadata());
+    }
+
+    /**
+     * Precondition guard (HLD-api-documentation-artifacts §4.1): every HTTP-served provider has a base URL, from the
+     * operator or its catalog block, and every operator base URL names a provider of the composition. Every problem is
+     * reported in one message.
+     */
+    private void requireServiceBases(List<CompositionContract> childContracts, BindingPlan plan,
+                                     SelectedCatalogEntries selected, Options options) {
+        List<String> problems = new ArrayList<>();
+        Set<java.net.URI> providers = new TreeSet<>(Comparator.comparing(java.net.URI::toString));
+        Set<java.net.URI> missing = new TreeSet<>(Comparator.comparing(java.net.URI::toString));
+        for (CompositionContract contract : childContracts) {
+            java.net.URI provider = contract.parties().provider().claimUri();
+            providers.add(provider);
+            if (IdentityBindingRule.isIdentity(contract) || isHosted(contract, plan) || externalProtocol(contract, selected)) {
+                continue;
+            }
+            if (RuntimeBindingValidator.isHttpServed(deploymentKind(contract, plan)) && baseFor(contract, plan, options).isEmpty()) {
+                missing.add(provider);
+            }
+        }
+        missing.forEach(provider -> problems.add(SERVICE_BASE_URL_MISSING + ": " + provider + " is served over HTTP but "
+                + "has no base URL; give --service-base-url " + provider + "=<url>, or place it as a service of its own "
+                + "(a containerized, Spring Boot or standalone shape) with binding.service_name and binding.service_port "
+                + "in its catalog block"));
+        options.serviceBaseUrls().keySet().stream().filter(claim -> !providers.contains(claim))
+                .forEach(claim -> problems.add(SERVICE_BASE_URL_UNKNOWN + ": a base URL is given for " + claim
+                        + ", which provides nothing in this composition"));
+        if (!problems.isEmpty()) {
+            throw new IllegalStateException(String.join("; ", problems));
+        }
+    }
+
+    /**
+     * Base-URL strategy (HLD-api-documentation-artifacts §4.1): the operator's base URL for the provider's claim URI,
+     * otherwise the {@code http://<name>:<port>} of the service the signed plan carries for this contract's entry
+     * (HLD-D §6.2b), which is exactly the service the deploy emitter renders; otherwise none.
+     */
+    private static Optional<String> baseFor(CompositionContract contract, BindingPlan plan, Options options) {
+        String explicit = options.serviceBaseUrls().get(contract.parties().provider().claimUri());
+        if (explicit != null) {
+            return Optional.of(explicit);
+        }
+        return planEntry(contract, plan).flatMap(com.unfurl.deployment.plan.BindingPlanEntry::service)
+                .map(com.unfurl.deployment.domain.ServiceEndpoint::baseUrl);
+    }
+
+    /** The signed plan's entry for this contract's provider artifact and capability, when the plan has one. */
+    private static Optional<com.unfurl.deployment.plan.BindingPlanEntry> planEntry(CompositionContract contract, BindingPlan plan) {
+        if (plan == null || contract.metadata() == null || contract.metadata().extensions() == null) {
+            return Optional.empty();
+        }
+        Object coordinates = contract.metadata().extensions().get("artifactCoordinates");
+        String capability = contract.binding().providerCapability();
+        return plan.entries().stream()
+                .filter(entry -> entry.artifactCoordinates() != null && entry.artifactCoordinates().equals(coordinates)
+                        && capability.equals(entry.capability()))
+                .findFirst();
+    }
+
+    /**
+     * Whether the provider's offer for this contract is reached over its own protocol (DCP HLD-C2 A.6,
+     * {@code external_protocol}): such a provider never has a DCP endpoint, whatever its deployment kind.
+     */
+    static boolean externalProtocol(CompositionContract contract, SelectedCatalogEntries selected) {
+        return providerOffer(contract, selected)
+                .map(offer -> offer.offerInterface() != null && offer.offerInterface().interfaceKind() == InterfaceKind.EXTERNAL_PROTOCOL)
+                .orElse(false);
+    }
+
+    /** The resolved provider claim's offer that this contract binds, when the provider was resolved. */
+    private static Optional<Offer> providerOffer(CompositionContract contract, SelectedCatalogEntries selected) {
+        String capability = contract.binding().providerCapability();
+        return selected.forContract(contract).map(CatalogEntry::claimDescriptor)
+                .flatMap(claim -> claim.claim().offers().stream().filter(offer -> capability.equals(offer.capability())).findFirst());
     }
 
     /**
@@ -129,9 +322,13 @@ public final class RuntimeBindingSetGenerator {
     /**
      * Leaf assembler: creates a runtime binding for one child DCP contract. Identity-provider contracts are delegated to
      * {@link #identityBinding}, because the customer IdP is an external system with operator-supplied settings rather than a
-     * Flow or Foundry endpoint.
+     * DCP endpoint, and hosted ones to {@link #hostedBinding}. A provider whose offer is {@code external_protocol} gets the
+     * conventional endpoint reference instead of a DCP endpoint. Any other provider's endpoint is
+     * {@code <base>/dcp/<capability>} when it has a base ({@link #baseFor}); {@link #requireServiceBases} has already
+     * refused an HTTP-served provider without one.
      */
-    private RuntimeBinding childBinding(CompositionContract contract, BindingPlan plan, Options options) {
+    private RuntimeBinding childBinding(CompositionContract contract, BindingPlan plan, SelectedCatalogEntries selected,
+                                        Options options) {
         if (IdentityBindingRule.isIdentity(contract)) {
             return identityBinding(contract, plan, options);
         }
@@ -139,13 +336,15 @@ public final class RuntimeBindingSetGenerator {
             return hostedBinding(contract, options);
         }
         String capability = contract.binding().providerCapability();
-        URI baseUrl = endpointFor(capability, options);
+        boolean external = externalProtocol(contract, selected);
+        URI baseUrl = external ? null : baseFor(contract, plan, options)
+                .map(base -> URI.create(base + RuntimeBindingValidator.DCP_PATH_PREFIX + capability)).orElse(null);
         return binding(
                 childBindingId(contract, options),
                 contract,
                 deploymentKind(contract, plan),
                 baseUrl,
-                null,
+                external ? conventionalEndpointRef(contract, options) : null,
                 conventionalCredentialsRef(contract, options),
                 new Configuration(Map.of(
                         "capability", capability,
@@ -334,17 +533,6 @@ public final class RuntimeBindingSetGenerator {
     }
 
     /**
-     * Endpoint strategy: Flow capabilities route to Flow; AI/provider/tool capabilities route to
-     * Foundry's DCP endpoint surface.
-     */
-    private URI endpointFor(String capability, Options options) {
-        String base = capability != null && capability.startsWith("workflow.")
-                ? options.flowBaseUrl()
-                : options.foundryBaseUrl();
-        return URI.create(trimTrailingSlash(base) + "/dcp/" + capability);
-    }
-
-    /**
      * Deployment-kind strategy: converts the binding mode of the shape Fabric selected for the contract's provider into the
      * DCP runtime-binding deployment enum. The binding plan is authoritative because a component that supports several shapes
      * (for example the Keycloak adapter: container or external) keeps only its catalog default in the contract transport. The
@@ -366,10 +554,6 @@ public final class RuntimeBindingSetGenerator {
         };
     }
 
-    /**
-     * Plan lookup: the binding mode of the plan entry for this contract's provider artifact and capability, or null when the
-     * plan is absent or has no such entry.
-     */
     /**
      * Whether a child contract's provider is hosted in-process by another runtime: its binding-plan entry has a host
      * (HLD-D §6.2a). Such a contract already names that host as consumer (HLD-in-process-component-hosting §4).
@@ -409,18 +593,12 @@ public final class RuntimeBindingSetGenerator {
                 binding.metadata());
     }
 
+    /**
+     * Plan lookup: the binding mode of the plan entry for this contract's provider artifact and capability, or null when the
+     * plan is absent or has no such entry.
+     */
     private Object planBindingMode(CompositionContract contract, BindingPlan plan) {
-        if (plan == null || contract.metadata() == null || contract.metadata().extensions() == null) {
-            return null;
-        }
-        Object coordinates = contract.metadata().extensions().get("artifactCoordinates");
-        String capability = contract.binding().providerCapability();
-        return plan.entries().stream()
-                .filter(entry -> entry.artifactCoordinates() != null && entry.artifactCoordinates().equals(coordinates)
-                        && capability.equals(entry.capability()))
-                .map(entry -> entry.bindingMode().name())
-                .findFirst()
-                .orElse(null);
+        return planEntry(contract, plan).map(entry -> entry.bindingMode().name()).orElse(null);
     }
 
     /**
@@ -437,12 +615,6 @@ public final class RuntimeBindingSetGenerator {
      */
     private String instanceName(CompositionContract contract) {
         return slug(contract.parties().provider().claimUri().toString());
-    }
-
-    /** Text helper: trims one trailing slash from a base URL. */
-    private String trimTrailingSlash(String value) {
-        String text = value == null ? "" : value.trim();
-        return text.endsWith("/") ? text.substring(0, text.length() - 1) : text;
     }
 
     /** Text helper: generates DCP-friendly lowercase slugs. */
@@ -551,6 +723,11 @@ public final class RuntimeBindingSetGenerator {
 
     /**
      * Options value: environment-specific inputs for runtime-binding generation.
+     *
+     * @param serviceBaseUrls        operator base URLs by provider claim URI ({@link ServiceBaseUrls}); they override the
+     *                               service a provider's catalog block declares. Never guessed: empty by default.
+     * @param documentation          the API catalog's documentation settings; {@link DocumentationOptions#none()} when none
+     *                               was given
      */
     public record Options(
             Path sourceSignedContract,
@@ -561,24 +738,17 @@ public final class RuntimeBindingSetGenerator {
             String environment,
             String telemetryNamespace,
             String bindingIdPrefix,
-            String flowBaseUrl,
-            String foundryBaseUrl,
+            Map<URI, String> serviceBaseUrls,
             int timeoutMs,
             IdentityOptions identity,
-            Map<URI, Configuration> componentConfiguration
+            Map<URI, Configuration> componentConfiguration,
+            DocumentationOptions documentation
     ) {
-        /** Validating constructor: the per-component configuration map is copied and never null. */
+        /** Validating constructor: maps are copied and never null; no documentation settings unless given. */
         public Options {
+            serviceBaseUrls = serviceBaseUrls == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(serviceBaseUrls));
             componentConfiguration = componentConfiguration == null ? Map.of() : Map.copyOf(componentConfiguration);
-        }
-
-        /** Compatibility constructor: no hosted component configuration. */
-        public Options(Path sourceSignedContract, String signedContractSha256, String signedContractCanonicalHash,
-                       String signerKeyFingerprint, String tenant, String environment, String telemetryNamespace,
-                       String bindingIdPrefix, String flowBaseUrl, String foundryBaseUrl, int timeoutMs,
-                       IdentityOptions identity) {
-            this(sourceSignedContract, signedContractSha256, signedContractCanonicalHash, signerKeyFingerprint, tenant,
-                    environment, telemetryNamespace, bindingIdPrefix, flowBaseUrl, foundryBaseUrl, timeoutMs, identity, Map.of());
+            documentation = documentation == null ? DocumentationOptions.none() : documentation;
         }
 
         /** Default local-dev options used by the Flowfoundry runbook's signed support envelope; no identity inputs. */
@@ -592,10 +762,11 @@ public final class RuntimeBindingSetGenerator {
                     "local-dev",
                     "flowfoundry.local",
                     "urn:unfurl:runtime-binding:flowfoundry",
-                    "http://flow:8080",
-                    "http://foundry:7979",
+                    Map.of(),
                     30000,
-                    IdentityOptions.none());
+                    IdentityOptions.none(),
+                    Map.of(),
+                    DocumentationOptions.none());
         }
 
         /**
@@ -612,11 +783,11 @@ public final class RuntimeBindingSetGenerator {
                     blankToDefault(environment, defaults.environment),
                     blankToDefault(telemetryNamespace, defaults.telemetryNamespace),
                     blankToDefault(bindingIdPrefix, defaults.bindingIdPrefix),
-                    blankToDefault(flowBaseUrl, defaults.flowBaseUrl),
-                    blankToDefault(foundryBaseUrl, defaults.foundryBaseUrl),
+                    serviceBaseUrls,
                     timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs,
                     identity == null ? IdentityOptions.none() : identity,
-                    componentConfiguration);
+                    componentConfiguration,
+                    documentation);
         }
 
         private static String blankToDefault(String value, String fallback) {

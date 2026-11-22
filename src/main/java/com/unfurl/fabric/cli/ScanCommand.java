@@ -16,6 +16,11 @@ final class ScanCommand {
         out.println("entries=" + report.catalog().entries().size());
         out.println("companions=" + report.catalog().companions().size());
         out.println("skipped=" + report.skippedEntries().size());
+        // Skips and warnings are named, so nothing is excluded or doubted silently (HLD-api-documentation-artifacts §2).
+        report.skippedEntries().forEach(skip -> out.println("skip " + skip.jarPath().getFileName() + " " + skip.reason()
+                + ": " + skip.detail()));
+        report.warnings().forEach(warning -> out.println("warning " + warning.jarPath().getFileName() + " " + warning.code()
+                + ": " + warning.detail()));
         Path target = args.optionalPath("out");
         if (target != null) {
             try {

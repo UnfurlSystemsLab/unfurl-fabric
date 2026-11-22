@@ -1,6 +1,10 @@
 package com.unfurl.fabric.cli;
 
+import com.unfurl.fabric.catalog.CatalogScanner;
+import com.unfurl.fabric.catalog.SelectedCatalogEntries;
+import com.unfurl.fabric.runtime.DocumentationOptions;
 import com.unfurl.fabric.runtime.RuntimeBindingSetGenerator;
+import com.unfurl.fabric.runtime.ServiceBaseUrls;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
 
@@ -17,13 +21,15 @@ import java.util.Map;
  * CLI Adapter: turns a signed Fabric contract closure into a DCP runtime-binding set.
  *
  * <p>Pattern: command adapter. The command owns filesystem argument parsing and delegates all
- * DCP binding construction and validation to {@link RuntimeBindingSetGenerator}.
+ * DCP binding construction and validation to {@link RuntimeBindingSetGenerator}. {@link DocumentationCheckCommand}
+ * reads its inputs through {@link #inputs}, so both commands take the same flags.
  */
 final class RuntimeBindingsCommand {
     /**
-     * Execute `fabric runtime-bindings --signed-contract --out ...`. A composition whose needs required identity-context also
-     * needs every {@code --identity-*} flag of HLD-needs-driven-identity §6, in any environment; the generator refuses the run
-     * otherwise.
+     * Execute `fabric runtime-bindings --signed-contract --catalog --out ...`. {@code --catalog} is the catalog the contract
+     * was compiled from, and is always required (HLD-api-documentation-artifacts §4.0). A composition whose needs required
+     * identity-context also needs every {@code --identity-*} flag of HLD-needs-driven-identity §6, in any environment; the
+     * generator refuses the run otherwise.
      *
      * @param argv command-line flags.
      * @param out command output stream.
@@ -31,22 +37,52 @@ final class RuntimeBindingsCommand {
      */
     int run(String[] argv, PrintStream out) {
         CliArgs args = CliArgs.parse(argv);
-        Path signedPath = args.requiredPath("signed-contract");
         Path outPath = args.requiredPath("out");
+        Inputs inputs = inputs(args);
         try {
-            byte[] signedBytes = Files.readAllBytes(signedPath);
-            SignedFabricContract signed = new SignedFabricContractCodec().parse(signedBytes);
-            byte[] yaml = new RuntimeBindingSetGenerator().generate(signed, options(args, signedPath, signed, signedBytes));
+            byte[] yaml = new RuntimeBindingSetGenerator().generate(inputs.signed(), inputs.selected(), inputs.options());
             if (outPath.getParent() != null) {
                 Files.createDirectories(outPath.getParent());
             }
             Files.write(outPath, yaml);
             out.println("runtimeBinding=" + outPath);
             out.println("runtimeBindingSha256=" + sha256(yaml));
-            out.println("bindings=" + (1 + signed.contract().childContracts().size()));
+            out.println("bindings=" + (1 + inputs.signed().contract().childContracts().size()));
             return 0;
         } catch (IOException ex) {
             throw FabricCliException.runtime("unable to write runtime bindings: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Value Object: everything a binding command reads: the signed contract, its selections resolved in the catalog, and
+     * the generator options.
+     */
+    record Inputs(SignedFabricContract signed, SelectedCatalogEntries selected, RuntimeBindingSetGenerator.Options options) { }
+
+    /**
+     * Reads the flags shared by {@code runtime-bindings} and {@code documentation-check}: the signed contract, the
+     * required catalog (scanned and resolved against the contract's pins), and every option.
+     */
+    Inputs inputs(CliArgs args) {
+        Path signedPath = args.requiredPath("signed-contract");
+        Path catalog = args.optionalPath("catalog");
+        if (catalog == null) {
+            throw FabricCliException.usage("--catalog is required: it is the catalog the contract was compiled from, which "
+                    + "holds the selected providers' claims and catalog blocks (HLD-api-documentation-artifacts §4.0)");
+        }
+        try {
+            byte[] signedBytes = Files.readAllBytes(signedPath);
+            SignedFabricContract signed = new SignedFabricContractCodec().parse(signedBytes);
+            SelectedCatalogEntries selected;
+            try {
+                selected = SelectedCatalogEntries.resolve(signed.contract(), new CatalogScanner().scan(catalog).catalog());
+            } catch (SelectedCatalogEntries.Refusal refusal) {
+                throw FabricCliException.usage("--catalog does not hold the contract's selections: " + refusal.getMessage());
+            }
+            return new Inputs(signed, selected, options(args, signedPath, signed, signedBytes));
+        } catch (IOException ex) {
+            throw FabricCliException.runtime("unable to read the signed contract " + signedPath + ": " + ex.getMessage());
         }
     }
 
@@ -69,11 +105,50 @@ final class RuntimeBindingsCommand {
                 value(args, "environment", defaults.environment()),
                 value(args, "telemetry-namespace", defaults.telemetryNamespace()),
                 value(args, "binding-id-prefix", defaults.bindingIdPrefix()),
-                value(args, "flow-base-url", defaults.flowBaseUrl()),
-                value(args, "foundry-base-url", defaults.foundryBaseUrl()),
+                serviceBaseUrls(args),
                 intValue(args, "timeout-ms", defaults.timeoutMs()),
                 identity(args),
-                componentConfiguration(args, signed));
+                componentConfiguration(args, signed),
+                documentation(args));
+    }
+
+    /**
+     * Service base URLs (HLD-api-documentation-artifacts §4.1): every {@code --service-base-url claimUri=url} (repeatable
+     * or comma-separated) plus the {@code --flow-base-url} and {@code --foundry-base-url} aliases.
+     */
+    private java.util.Map<java.net.URI, String> serviceBaseUrls(CliArgs args) {
+        try {
+            return ServiceBaseUrls.parse(args.all("service-base-url"), args.get("flow-base-url"), args.get("foundry-base-url"));
+        } catch (IllegalArgumentException invalid) {
+            throw FabricCliException.usage(invalid.getMessage());
+        }
+    }
+
+    /**
+     * The API catalog's documentation settings (HLD-api-documentation-artifacts §4.2): {@code --documentation-visibility-default},
+     * {@code --documentation-visibility <file>}, {@code --catalog-observation-interval-ms} and
+     * {@code --catalog-observation-max-backoff-ms}. Whether the composition may take them is the generator's decision.
+     */
+    private DocumentationOptions documentation(CliArgs args) {
+        try {
+            return DocumentationOptions.of(args.get("documentation-visibility-default"), args.optionalPath("documentation-visibility"),
+                    longValue(args, "catalog-observation-interval-ms"), longValue(args, "catalog-observation-max-backoff-ms"));
+        } catch (IllegalArgumentException invalid) {
+            throw FabricCliException.usage(invalid.getMessage());
+        }
+    }
+
+    /** Optional long flag helper: null when absent. */
+    private Long longValue(CliArgs args, String key) {
+        String value = args.get(key);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ex) {
+            throw FabricCliException.usage("--" + key + " must be an integer");
+        }
     }
 
     /**

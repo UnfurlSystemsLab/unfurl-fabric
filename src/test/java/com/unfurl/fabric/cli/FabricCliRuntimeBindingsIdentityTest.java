@@ -321,7 +321,7 @@ class FabricCliRuntimeBindingsIdentityTest {
     private static CliTestFixtures.CliRun bindings(CliTestFixtures.SignedPaths signed, Path out, String environment,
                                                    List<String> extra) {
         List<String> argv = new ArrayList<>(List.of("runtime-bindings", "--signed-contract", signed.signed().toString(),
-                "--out", out.toString(), "--tenant", "acme", "--environment", environment));
+                "--catalog", signed.catalog().toString(), "--out", out.toString(), "--tenant", "acme", "--environment", environment));
         argv.addAll(extra);
         return CliTestFixtures.run(argv.toArray(String[]::new));
     }

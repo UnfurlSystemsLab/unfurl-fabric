@@ -33,7 +33,7 @@ fabric assembly-publish --source <publisher-workspace>/assemblies/flow-foundry/<
 
 fabric assembly-verify --repository <release-repository> --uri <logical-composite-uri> --version 1.0.0 --trust-keys <trusted-public-keys-dir>
 
-fabric runtime-bindings --signed-contract <build-dir>/signed.yaml --out <build-dir>/runtime-bindings.yaml --tenant <tenant> --environment <environment> --flow-base-url <flow-url> --foundry-base-url <foundry-url>
+fabric runtime-bindings --signed-contract <build-dir>/signed.yaml --catalog <catalog-dir> --out <build-dir>/runtime-bindings.yaml --tenant <tenant> --environment <environment> [--service-base-url <claim-uri>=<url> ...]
 
 fabric assembly-bind --repository <release-repository> --deployment-repository <deployment-repository> --uri <logical-composite-uri> --version 1.0.0 --tenant <tenant> --environment <environment> --revision r1 --bindings <build-dir>/runtime-bindings.yaml --key <deployment-private.pem> --public-key <deployment-public.pem> --trust-keys <trusted-public-keys-dir>
 

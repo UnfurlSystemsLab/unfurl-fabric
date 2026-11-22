@@ -86,6 +86,7 @@ public final class StudioToolGateway {
                 case "fabric.export-download" -> exportDownload(toolName, request.arguments());
                 case "fabric.export-download-all" -> exportDownloadAll(toolName, request.arguments());
                 case "fabric.runtime-binding-generate" -> runtimeBindingGenerate(toolName, request.arguments());
+                case "fabric.documentation-check" -> documentationCheck(toolName, request.arguments());
                 case "fabric.foundry-root-assemble" -> foundryRootAssemble(toolName, request.arguments());
                 case "fabric.flow-root-assemble" -> flowRootAssemble(toolName, request.arguments());
                 case "fabric.container-image-build" -> containerImageBuild(toolName, request.arguments());
@@ -230,63 +231,176 @@ public final class StudioToolGateway {
 
     /**
      * Deployment-runner tool: generates a DCP runtime-binding tree from the signed
-     * Fabric compiler support envelope and writes the YAML handoff artifact.
+     * Fabric compiler support envelope and writes the YAML handoff artifact. Like {@code fabric runtime-bindings} it
+     * always reads {@code catalogPath}, the catalog the contract was compiled from, and resolves the contract's selections
+     * there against their pins (HLD-api-documentation-artifacts §4.0). Service base URLs come from
+     * {@code serviceBaseUrls} ({@code {claimUri: url}}) and the {@code flowBaseUrl}/{@code foundryBaseUrl} aliases; the
+     * API catalog's settings from {@code documentationVisibilityDefault}, {@code documentationVisibilityPath},
+     * {@code catalogObservationIntervalMs} and {@code catalogObservationMaxBackoffMs} (§4.1, §4.2).
      */
     private StudioToolCallResult runtimeBindingGenerate(String toolName, Map<String, Object> arguments) {
-        String signedPath = text(arguments, "signedCompiledContractPath",
-                text(arguments, "signedContractPath", ""));
         String outputPath = text(arguments, "runtimeBindingPath",
                 text(arguments, "out", text(arguments, "outputPath", "")));
-        if (signedPath.isBlank() || outputPath.isBlank()) {
-            return gap(toolName, "runtime-binding generation requires signedCompiledContractPath and runtimeBindingPath",
-                    Map.of(),
-                    List.of("Which signed compiled support envelope should be used?",
-                            "Where should step-14-runtime-binding.yaml be written?"));
+        if (outputPath.isBlank()) {
+            return gap(toolName, "runtime-binding generation requires runtimeBindingPath", Map.of(),
+                    List.of("Where should step-14-runtime-binding.yaml be written?"));
         }
         try {
-            Path signed = resolveLocalPath(signedPath);
-            byte[] signedBytes = Files.readAllBytes(signed);
-            SignedFabricContract contract = new SignedFabricContractCodec().parse(signedBytes);
-            java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration;
-            try {
-                String catalogPath = text(arguments, "catalogPath", "");
-                componentConfiguration = com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(contract.contract(),
-                        catalogPath.isBlank() ? null : resolveExistingPath(catalogPath), stringList(value(arguments, "componentConfig")));
-            } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
-                return hostedConfigurationGap(toolName, refusal);
-            }
-            RuntimeBindingSetGenerator.Options defaults = RuntimeBindingSetGenerator.Options.defaults();
-            RuntimeBindingSetGenerator.Options options = new RuntimeBindingSetGenerator.Options(
-                    signed,
-                    "sha256:" + sha256(signedBytes),
-                    contract.canonicalHash(),
-                    contract.signerKeyFingerprint(),
-                    text(arguments, "tenant", text(arguments, "tenantId", defaults.tenant())),
-                    text(arguments, "environment", defaults.environment()),
-                    text(arguments, "telemetryNamespace", defaults.telemetryNamespace()),
-                    text(arguments, "bindingIdPrefix", defaults.bindingIdPrefix()),
-                    text(arguments, "flowBaseUrl", defaults.flowBaseUrl()),
-                    text(arguments, "foundryBaseUrl", defaults.foundryBaseUrl()),
-                    (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()),
-                    identityOptions(asMap(value(arguments, "identity"))),
-                    componentConfiguration);
-            byte[] yaml = new RuntimeBindingSetGenerator().generate(contract, options);
+            BindingToolInputs inputs = bindingInputs(toolName, arguments);
+            byte[] yaml = new RuntimeBindingSetGenerator().generate(inputs.contract(), inputs.selected(), inputs.options());
             Path target = resolveOutputPath(outputPath);
             Files.createDirectories(target.getParent());
             Files.write(target, yaml);
             return pass(toolName, Map.of(
                     "runtimeBindingArtifact", artifactMetadata(target, yaml.length, sha256(yaml)),
                     "artifact", artifactMetadata(target, yaml.length, sha256(yaml)),
-                    "bindingCount", 1 + contract.contract().childContracts().size(),
-                    "sourceSignedContract", signed.toString(),
-                    "canonicalHash", contract.canonicalHash()));
+                    "bindingCount", 1 + inputs.contract().contract().childContracts().size(),
+                    "sourceSignedContract", inputs.signed().toString(),
+                    "canonicalHash", inputs.contract().canonicalHash()));
+        } catch (ToolGap gap) {
+            return gap.result;
         } catch (Exception ex) {
-            return gap(toolName, "unable to generate runtime binding: " + ex.getMessage(), Map.of(),
-                    List.of("Confirm Step 12 signed support artifact exists and signing was enabled.",
-                            "Confirm Flow and Foundry base URLs for the target environment.",
-                            "If the needs require identity-context, supply identity in every environment: issuer, audiences, "
-                                    + "tenantClaim, rolesClaim, permissionsClaim, tokenEndpointRef, verificationKeysRef and "
-                                    + "clientCredentialsRef. Otherwise leave identity out."));
+            return bindingGap(toolName, "unable to generate runtime binding: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Deployment-runner tool, Flowfoundry Step 18 (HLD-api-documentation-artifacts §6): the export-time documentation
+     * check. It takes the same arguments as {@code fabric.runtime-binding-generate} ({@link #bindingInputs}), so it checks
+     * the bindings that tool would write, plus {@code reportPath}; it writes the report and no binding. Its status is
+     * {@code PASS}, or {@code GAP} naming every gap.
+     */
+    private StudioToolCallResult documentationCheck(String toolName, Map<String, Object> arguments) {
+        String reportPath = text(arguments, "reportPath", text(arguments, "out", ""));
+        if (reportPath.isBlank()) {
+            return gap(toolName, "the documentation check requires reportPath", Map.of(),
+                    List.of("Where should step-18-documentation-check-report.json be written?"));
+        }
+        try {
+            BindingToolInputs inputs = bindingInputs(toolName, arguments);
+            com.unfurl.fabric.runtime.DocumentationCheck.Report report = new com.unfurl.fabric.runtime.DocumentationCheck()
+                    .run(inputs.contract(), inputs.selected(), inputs.options());
+            byte[] json = mapper.writerWithDefaultPrettyPrinter().writeValueAsBytes(report);
+            Path target = resolveOutputPath(reportPath);
+            Files.createDirectories(target.getParent());
+            Files.write(target, json);
+            Map<String, Object> payload = Map.of(
+                    "documentationCheckReport", artifactMetadata(target, json.length, sha256(json)),
+                    "artifact", artifactMetadata(target, json.length, sha256(json)),
+                    "gaps", report.gaps());
+            return com.unfurl.fabric.runtime.DocumentationCheck.PASS.equals(report.status())
+                    ? pass(toolName, payload) : result("GAP", toolName, payload);
+        } catch (ToolGap gap) {
+            return gap.result;
+        } catch (Exception ex) {
+            return bindingGap(toolName, "unable to check the documentation: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Value Object: what the binding tools read: the signed contract and its path, its selections resolved in the
+     * catalog, and the generator options.
+     */
+    private record BindingToolInputs(Path signed, SignedFabricContract contract,
+                                     com.unfurl.fabric.catalog.SelectedCatalogEntries selected,
+                                     RuntimeBindingSetGenerator.Options options) { }
+
+    /** Control-flow signal: an argument problem answered with a {@code GAP} result, which the tool returns as is. */
+    private static final class ToolGap extends RuntimeException {
+        private final StudioToolCallResult result;
+
+        private ToolGap(StudioToolCallResult result) {
+            super(null, null, false, false);
+            this.result = result;
+        }
+    }
+
+    /**
+     * Reads the arguments shared by {@code fabric.runtime-binding-generate} and {@code fabric.documentation-check}, with the
+     * rules of {@code fabric runtime-bindings}: {@code signedCompiledContractPath} and {@code catalogPath} are required,
+     * the selections are resolved against their pins, hosted configuration is validated, and every option is read.
+     *
+     * @throws ToolGap with the {@code GAP} result for a missing argument, an unresolved selection or invalid hosted
+     *                 configuration
+     */
+    private BindingToolInputs bindingInputs(String toolName, Map<String, Object> arguments) throws IOException {
+        String signedPath = text(arguments, "signedCompiledContractPath", text(arguments, "signedContractPath", ""));
+        String catalogPath = text(arguments, "catalogPath", "");
+        if (signedPath.isBlank() || catalogPath.isBlank()) {
+            throw new ToolGap(gap(toolName, toolName + " requires signedCompiledContractPath and catalogPath", Map.of(),
+                    List.of("Which signed compiled support envelope should be used?",
+                            "Which catalog was the contract compiled from? It holds the selected providers' claims.")));
+        }
+        Path signed = resolveLocalPath(signedPath);
+        byte[] signedBytes = Files.readAllBytes(signed);
+        SignedFabricContract contract = new SignedFabricContractCodec().parse(signedBytes);
+        Path catalog = resolveExistingPath(catalogPath);
+        com.unfurl.fabric.catalog.SelectedCatalogEntries selected;
+        try {
+            selected = com.unfurl.fabric.catalog.SelectedCatalogEntries.resolve(contract.contract(),
+                    new com.unfurl.fabric.catalog.CatalogScanner().scan(catalog).catalog());
+        } catch (com.unfurl.fabric.catalog.SelectedCatalogEntries.Refusal refusal) {
+            throw new ToolGap(gap(toolName, "the catalog does not hold the contract's selections: " + refusal.getMessage(), Map.of(),
+                    List.of("Point catalogPath at the catalog the contract was compiled from.")));
+        }
+        java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration;
+        try {
+            componentConfiguration = com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(contract.contract(),
+                    catalog, stringList(value(arguments, "componentConfig")));
+        } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
+            throw new ToolGap(hostedConfigurationGap(toolName, refusal));
+        }
+        RuntimeBindingSetGenerator.Options defaults = RuntimeBindingSetGenerator.Options.defaults();
+        RuntimeBindingSetGenerator.Options options = new RuntimeBindingSetGenerator.Options(
+                signed,
+                "sha256:" + sha256(signedBytes),
+                contract.canonicalHash(),
+                contract.signerKeyFingerprint(),
+                text(arguments, "tenant", text(arguments, "tenantId", defaults.tenant())),
+                text(arguments, "environment", defaults.environment()),
+                text(arguments, "telemetryNamespace", defaults.telemetryNamespace()),
+                text(arguments, "bindingIdPrefix", defaults.bindingIdPrefix()),
+                com.unfurl.fabric.runtime.ServiceBaseUrls.parse(serviceBaseUrlEntries(asMap(value(arguments, "serviceBaseUrls"))),
+                        text(arguments, "flowBaseUrl", ""), text(arguments, "foundryBaseUrl", "")),
+                (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()),
+                identityOptions(asMap(value(arguments, "identity"))),
+                componentConfiguration,
+                com.unfurl.fabric.runtime.DocumentationOptions.of(text(arguments, "documentationVisibilityDefault", ""),
+                        text(arguments, "documentationVisibilityPath", "").isBlank() ? null
+                                : resolveExistingPath(text(arguments, "documentationVisibilityPath", "")),
+                        optionalLong(value(arguments, "catalogObservationIntervalMs")),
+                        optionalLong(value(arguments, "catalogObservationMaxBackoffMs"))));
+        return new BindingToolInputs(signed, contract, selected, options);
+    }
+
+    /** The {@code GAP} a binding tool returns when its inputs cannot be bound, with what to check. */
+    private StudioToolCallResult bindingGap(String toolName, String diagnostic) {
+        return gap(toolName, diagnostic, Map.of(),
+                List.of("Confirm Step 12 signed support artifact exists and signing was enabled.",
+                        "Confirm the service base URL of every HTTP-served provider (serviceBaseUrls), or that its catalog "
+                                + "block declares binding.service_name and binding.service_port.",
+                        "If the composition has an API catalog, confirm every documented capability ships its schemas, or "
+                                + "mark it private in documentationVisibilityPath.",
+                        "If the needs require identity-context, supply identity in every environment: issuer, audiences, "
+                                + "tenantClaim, rolesClaim, permissionsClaim, tokenEndpointRef, verificationKeysRef and "
+                                + "clientCredentialsRef. Otherwise leave identity out."));
+    }
+
+    /** The {@code serviceBaseUrls} argument ({@code {claimUri: url}}) as {@code claimUri=url} entries for ServiceBaseUrls. */
+    private static List<String> serviceBaseUrlEntries(Map<String, Object> bases) {
+        List<String> entries = new java.util.ArrayList<>();
+        bases.forEach((claim, url) -> entries.add(claim + "=" + (url == null ? "" : url)));
+        return entries;
+    }
+
+    /** An optional whole-number argument: null when absent, refused when not a whole number. */
+    private static Long optionalLong(Object value) {
+        if (value == null || value.toString().isBlank()) return null;
+        if (value instanceof Number number) return number.longValue();
+        try {
+            return Long.parseLong(value.toString().trim());
+        } catch (NumberFormatException notANumber) {
+            throw new IllegalArgumentException("'" + value + "' is not a whole number");
         }
     }
 
@@ -2097,6 +2211,7 @@ public final class StudioToolGateway {
                 "fabric.export-download",
                 "fabric.export-download-all",
                 "fabric.runtime-binding-generate",
+                "fabric.documentation-check",
                 "fabric.foundry-root-assemble",
                 "fabric.flow-root-assemble",
                 "fabric.container-image-build");
