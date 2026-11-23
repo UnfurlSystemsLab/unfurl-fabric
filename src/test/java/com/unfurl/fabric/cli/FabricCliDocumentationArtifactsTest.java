@@ -290,6 +290,9 @@ class FabricCliDocumentationArtifactsTest {
         assertThat(tunedValues.at("/observation/interval_ms").asLong()).isEqualTo(5000);
         assertThat(composition.bindings(dir.resolve("bad.yaml"), "--catalog-observation-interval-ms", "5000",
                 "--catalog-observation-max-backoff-ms", "100").stderr()).contains("must be at least the observation interval");
+        // The catalog's own minimum, so every binding Fabric writes starts it.
+        assertThat(composition.bindings(dir.resolve("fast.yaml"), "--catalog-observation-interval-ms", "500").stderr())
+                .contains("--catalog-observation-interval-ms must be at least 1000");
 
         Composition withoutCatalog = Composition.documented(dir.resolve("plain"), false);
         CliTestFixtures.CliRun refused = withoutCatalog.bindings(dir.resolve("plain.yaml"), "--documentation-visibility-default", "public");

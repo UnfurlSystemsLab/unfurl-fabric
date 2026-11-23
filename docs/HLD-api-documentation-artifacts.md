@@ -136,7 +136,9 @@ The binding's `runtime_policy.timeout_ms` is the generator's `timeoutMs`.
 - Every value is written explicitly; the defaults above are Fabric's option defaults, recorded in the binding.
 - The visibility file is YAML with two optional maps, `capabilities` and `api_documents`, whose values are `public`,
   `internal` or `private`. Any other key or value is a usage error. The default comes from the option, never the file.
-- `interval_ms` and `max_backoff_ms` are positive, and `max_backoff_ms` is at least `interval_ms`.
+- `interval_ms` is at least 1000 (one probe per root per second at most) and `max_backoff_ms` at least `interval_ms`.
+  These are the catalog's own bounds (`unfurl-api-catalog` LLD §2.2), so every binding Fabric writes starts the
+  catalog.
 - The catalog has no defaults of its own and refuses to start without these settings.
 - Compositions without a `documentation.catalog` provider get none of this. That absence is normal, not an error. Any
   of the four options given for such a composition is refused (`DOCUMENTATION_SETTINGS_WITHOUT_CATALOG`), as identity
