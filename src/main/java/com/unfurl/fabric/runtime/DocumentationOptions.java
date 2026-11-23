@@ -46,17 +46,20 @@ public record DocumentationOptions(
     public static final Visibility DEFAULT_VISIBILITY = Visibility.INTERNAL;
     /** Fabric's default observation interval. */
     public static final long DEFAULT_INTERVAL_MS = 10_000;
+    /** The shortest observation interval the API catalog accepts (its LLD §2.2): one probe per root per second at most. */
+    public static final long MIN_INTERVAL_MS = 1_000;
     /** Fabric's default maximum observation backoff. */
     public static final long DEFAULT_MAX_BACKOFF_MS = 60_000;
     /** The only keys a visibility file may hold. */
     private static final Set<String> FILE_KEYS = Set.of("capabilities", "api_documents");
 
-    /** Canonical constructor: sorted, immutable maps; positive observation settings, the backoff not below the interval. */
+    /** Canonical constructor: sorted, immutable maps; an interval of at least {@link #MIN_INTERVAL_MS} and a positive backoff not below it. */
     public DocumentationOptions {
         capabilities = Collections.unmodifiableMap(new TreeMap<>(capabilities == null ? Map.of() : capabilities));
         apiDocuments = Collections.unmodifiableMap(new TreeMap<>(apiDocuments == null ? Map.of() : apiDocuments));
-        if (intervalMs != null && intervalMs <= 0) {
-            throw new IllegalArgumentException("--catalog-observation-interval-ms must be positive, not " + intervalMs);
+        if (intervalMs != null && intervalMs < MIN_INTERVAL_MS) {
+            throw new IllegalArgumentException("--catalog-observation-interval-ms must be at least " + MIN_INTERVAL_MS
+                    + ", not " + intervalMs);
         }
         if (maxBackoffMs != null && maxBackoffMs <= 0) {
             throw new IllegalArgumentException("--catalog-observation-max-backoff-ms must be positive, not " + maxBackoffMs);
