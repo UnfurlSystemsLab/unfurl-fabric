@@ -15,6 +15,9 @@ import com.unfurl.deployment.domain.ComponentShapeProfile;
  * @param authoredArtifact      the authored artifact block (required).
  * @param binding               the binding block (required).
  * @param componentShapeProfile optional deployment shape profile (may be null).
+ * @param hostedActivation      optional {@code hosted_activation} (may be null).
+ * @param componentHost         optional {@code component_host} (may be null).
+ * @param compositionMount      optional {@code composition_mount}, the service's composition part (HLD-E §4.0d; may be null).
  */
 public record ParsedManifest(
         Claim claim,
@@ -23,7 +26,8 @@ public record ParsedManifest(
         BindingDescriptor binding,
         ComponentShapeProfile componentShapeProfile,
         HostedActivation hostedActivation,
-        ComponentHostDeclaration componentHost
+        ComponentHostDeclaration componentHost,
+        com.unfurl.deployment.domain.CompositionMount compositionMount
 ) {
     /** Constructor for manifests without hosting blocks. */
     public ParsedManifest(
@@ -32,12 +36,24 @@ public record ParsedManifest(
             AuthoredArtifact authoredArtifact,
             BindingDescriptor binding,
             ComponentShapeProfile componentShapeProfile) {
-        this(claim, lifecycle, authoredArtifact, binding, componentShapeProfile, null, null);
+        this(claim, lifecycle, authoredArtifact, binding, componentShapeProfile, null, null, null);
     }
 
-    /** Returns the catalog metadata of this manifest, including its optional hosting blocks. */
+    /** Constructor for manifests without a composition mount. */
+    public ParsedManifest(
+            Claim claim,
+            Lifecycle lifecycle,
+            AuthoredArtifact authoredArtifact,
+            BindingDescriptor binding,
+            ComponentShapeProfile componentShapeProfile,
+            HostedActivation hostedActivation,
+            ComponentHostDeclaration componentHost) {
+        this(claim, lifecycle, authoredArtifact, binding, componentShapeProfile, hostedActivation, componentHost, null);
+    }
+
+    /** Returns the catalog metadata of this manifest, including its optional hosting blocks and composition mount. */
     public CatalogMetadata metadata() {
-        return new CatalogMetadata(lifecycle, binding, hostedActivation, componentHost);
+        return new CatalogMetadata(lifecycle, binding, hostedActivation, componentHost, compositionMount);
     }
 
     /**

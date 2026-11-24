@@ -13,6 +13,7 @@ import com.unfurl.fabric.catalog.SkippedEntry;
 import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.runtime.ServiceBaseUrls;
+import com.unfurl.deployment.domain.DeploymentShape;
 import com.unfurl.fabric.signing.SigningTestFixtures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -225,9 +226,29 @@ class FabricCliDocumentationArtifactsTest {
         Map<String, Integer> compose = new LinkedHashMap<>();
         YAML.readTree(new com.unfurl.deploy.compose.ComposeFileRenderer().render(plan, null)).path("services").fields()
                 .forEachRemaining(service -> compose.put(service.getKey(), service.getValue().at("/expose/0").asInt(-1)));
+        // The catalog declares a composition mount, so Kubernetes needs its part: assembled by the emitter's own template
+        // from the real DCP runtime bundle, bindings and public keys (HLD-E §4.0d).
+        Path bundle = dir.resolve("bundle.zip");
+        CliTestFixtures.CliRun signed = composition.sign(bundle);
+        assertThat(signed.exitCode()).withFailMessage(signed.stderr()).isZero();
+        Path trust = Files.createDirectories(dir.resolve("trust"));
+        SigningTestFixtures.writePublicKeyPem(trust, "signer.pem", composition.keys().getPublic());
+        Map<String, String> partInputs = Map.of("dcpRuntimeBundlePath", bundle.toString(),
+                "runtimeBindingPath", bindings.toString(), "trustKeysPath", trust.toString());
+        Map<String, com.unfurl.deploy.spi.CompositionPart> parts = new LinkedHashMap<>();
+        new com.unfurl.deploy.spi.DeclaredCompositionPart(entry -> entry.deploymentShape() == DeploymentShape.CONTAINERIZED_SERVICE)
+                .assemble(plan, partInputs).forEach(part -> parts.put(part.serviceName(), part));
+        assertThat(parts).containsOnlyKeys("api-catalog");
+        assertThat(parts.get("api-catalog").files().keySet()).as("the signed set, bindings, keys, claims and artifacts")
+                .contains("contracts/root.frozen.json", "runtime-binding.yaml", "trust-keys/signer.pem",
+                        "claims/urn-unfurl-test-lookup.claim.json")
+                .anyMatch(path -> path.startsWith("artifacts/sha256/"));
+        String manifests = new com.unfurl.deploy.k8s.ManifestRenderer().render(plan, parts);
+        assertThat(manifests).contains("name: api-catalog-composition-1", "path: \"/health/ready\"");
+        assertThat(new com.unfurl.deploy.compose.ComposeFileRenderer().render(plan, null))
+                .contains("      - ./api-catalog-composition:/opt/unfurl/api-catalog/composition:ro\n");
         Map<String, Integer> kubernetes = new LinkedHashMap<>();
-        for (JsonNode document : YAML.readValues(YAML.getFactory().createParser(
-                new com.unfurl.deploy.k8s.ManifestRenderer().render(plan)), JsonNode.class).readAll()) {
+        for (JsonNode document : YAML.readValues(YAML.getFactory().createParser(manifests), JsonNode.class).readAll()) {
             if ("Service".equals(document.path("kind").asText())) {
                 kubernetes.put(document.at("/metadata/name").asText(), document.at("/spec/ports/0/port").asInt());
                 assertThat(document.at("/spec/ports/0/targetPort").asInt()).isEqualTo(document.at("/spec/ports/0/port").asInt());
@@ -237,6 +258,50 @@ class FabricCliDocumentationArtifactsTest {
             assertThat(compose).as("Compose renders " + host).containsEntry(host, port);
             assertThat(kubernetes).as("Kubernetes renders " + host).containsEntry(host, port);
         });
+
+        // How the catalog runs reaches the signed plan with its service, and no other component gains either value.
+        assertThat(plan.entries()).filteredOn(entry -> entry.componentId().contains("api-catalog"))
+                .isNotEmpty().allSatisfy(entry -> {
+                    com.unfurl.deployment.domain.ServiceEndpoint service = entry.service().orElseThrow();
+                    assertThat(service.readinessPath()).contains("/health/ready");
+                    assertThat(service.compositionMount()).contains(new com.unfurl.deployment.domain.CompositionMount(
+                            "/opt/unfurl/api-catalog/composition", "UNFURL_CATALOG_COMPOSITION", List.of("claims", "artifacts")));
+                });
+        assertThat(plan.entries()).filteredOn(entry -> !entry.componentId().contains("api-catalog"))
+                .allSatisfy(entry -> assertThat(entry.service()).hasValueSatisfying(service -> {
+                    assertThat(service.readinessPath()).isEmpty();
+                    assertThat(service.compositionMount()).isEmpty();
+                }));
+    }
+
+    /**
+     * The scan refuses a readiness path or composition mount without a declared service, and malformed values, by the
+     * plan's own rules; each entry is skipped as a malformed manifest naming the field, and a valid declaration is kept.
+     */
+    @Test
+    void scanRefusesHowAServiceRunsWithoutAValidService(@TempDir Path dir) throws Exception {
+        Path catalog = Files.createDirectories(dir.resolve("catalog"));
+        String valid = manifest("valid", "valid.run", "REMOTE_HTTP", "valid:9100", "", "");
+        writeJar(catalog.resolve("valid.jar"), Map.of(MANIFEST, withServiceRun(valid, "/ready", CATALOG_MOUNT)));
+        String unserved = manifest("unserved", "unserved.run", "REMOTE_HTTP", null, "", "");
+        writeJar(catalog.resolve("probe.jar"), Map.of(MANIFEST, withServiceRun(unserved, "/ready", null)));
+        writeJar(catalog.resolve("mount.jar"), Map.of(MANIFEST, withServiceRun(unserved, null, CATALOG_MOUNT)));
+        String served = manifest("served", "served.run", "REMOTE_HTTP", "served:9101", "", "");
+        writeJar(catalog.resolve("path.jar"), Map.of(MANIFEST, withServiceRun(served, "ready?now", null)));
+        writeJar(catalog.resolve("include.jar"), Map.of(MANIFEST, withServiceRun(served, null,
+                CATALOG_MOUNT.replace("[claims, artifacts]", "[jars]"))));
+
+        CatalogScanReport report = new CatalogScanner().scan(catalog);
+
+        assertThat(report.catalog().entries()).singleElement().satisfies(entry -> assertThat(entry.metadata().serviceEndpoint())
+                .hasValueSatisfying(service -> {
+                    assertThat(service.readinessPath()).contains("/ready");
+                    assertThat(service.compositionMount().orElseThrow().include()).containsExactly("artifacts", "claims");
+                }));
+        assertThat(malformed(report, "probe.jar")).contains("binding.readiness_path is declared only with binding.service_name");
+        assertThat(malformed(report, "mount.jar")).contains("composition_mount is declared only with binding.service_name");
+        assertThat(malformed(report, "path.jar")).contains("binding.readiness_path must be an absolute URL path");
+        assertThat(malformed(report, "include.jar")).contains("composition_mount.include allows only");
     }
 
     /** The aliases name Flow's and Foundry's claim URIs; an alias and an explicit value for one provider are refused. */
@@ -464,13 +529,34 @@ class FabricCliDocumentationArtifactsTest {
         }
     }
 
-    /** The API catalog stand-in: urn:unfurl:api-catalog offering documented documentation.catalog, served at api-catalog:8090. */
+    /**
+     * The API catalog stand-in: urn:unfurl:api-catalog offering documented documentation.catalog, served at
+     * api-catalog:8090, with the real catalog's readiness path and composition mount (HLD-E §4.0d).
+     */
     private static Map<String, byte[]> apiCatalogJar() {
         SchemaFiles files = SchemaFiles.valid("documentation.catalog");
         Map<String, byte[]> entries = new LinkedHashMap<>(files.files);
-        entries.put(MANIFEST, manifest("api-catalog", "documentation.catalog", "REMOTE_HTTP", "api-catalog:8090",
-                files.documentationYaml(), CATALOG_URI).getBytes(StandardCharsets.UTF_8));
+        entries.put(MANIFEST, withServiceRun(manifest("api-catalog", "documentation.catalog", "REMOTE_HTTP", "api-catalog:8090",
+                files.documentationYaml(), CATALOG_URI), "/health/ready", CATALOG_MOUNT).getBytes(StandardCharsets.UTF_8));
         return entries;
+    }
+
+    /** The API catalog's {@code composition_mount}, as its packaged catalog block declares it, at catalog-field depth. */
+    private static final String CATALOG_MOUNT = """
+              composition_mount:
+                path: /opt/unfurl/api-catalog/composition
+                env: UNFURL_CATALOG_COMPOSITION
+                include: [claims, artifacts]
+            """;
+
+    /**
+     * Adds how the service runs to a {@link #manifest}: a {@code binding.readiness_path} after its binding modes, and a
+     * {@code composition_mount} block at the end of the catalog block; either may be null.
+     */
+    private static String withServiceRun(String manifest, String readinessPath, String mount) {
+        String withPath = readinessPath == null ? manifest : manifest.replaceFirst("(?m)^(    supported_modes: \\[[A-Z_]+\\])$",
+                "$1\n    readiness_path: " + readinessPath);
+        return mount == null ? withPath : withPath + mount;
     }
 
     /** A documented component jar: its manifest plus the schema files it names. */
@@ -617,6 +703,14 @@ class FabricCliDocumentationArtifactsTest {
                 .filter(binding -> capability.equals(binding.at("/configuration/values/capability").asText())).toList();
         assertThat(matches).as(capability).hasSize(1);
         return matches.get(0);
+    }
+
+    /** The detail of the malformed-manifest skip recorded for a jar. */
+    private static String malformed(CatalogScanReport report, String jar) {
+        SkippedEntry skip = report.skippedEntries().stream().filter(s -> s.jarPath().getFileName().toString().equals(jar))
+                .findFirst().orElseThrow(() -> new AssertionError(jar + " was not skipped: " + report.skippedEntries()));
+        assertThat(skip.reason()).isEqualTo(SkippedEntry.SkipReason.MALFORMED_MANIFEST);
+        return skip.detail();
     }
 
     /** The detail of the skip recorded for a jar. */

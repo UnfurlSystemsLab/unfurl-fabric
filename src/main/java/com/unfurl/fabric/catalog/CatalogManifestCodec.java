@@ -68,8 +68,13 @@ public final class CatalogManifestCodec {
             if (cat.binding == null) {
                 throw new CatalogScanException("manifest catalog block is missing required `binding`");
             }
-            return new ParsedManifest(envelope.claim, cat.lifecycle, cat.artifact, cat.binding, cat.componentShapeProfile,
-                    cat.hostedActivation, cat.componentHost);
+            ParsedManifest parsed = new ParsedManifest(envelope.claim, cat.lifecycle, cat.artifact, cat.binding,
+                    cat.componentShapeProfile, cat.hostedActivation, cat.componentHost, cat.compositionMount);
+            // The metadata's rules (a composition mount needs a declared service) refuse the manifest here, at scan.
+            parsed.metadata();
+            return parsed;
+        } catch (IllegalArgumentException ex) {
+            throw new CatalogScanException("invalid catalog block: " + ex.getMessage(), ex);
         } catch (IOException ex) {
             throw new CatalogScanException("unable to parse catalog manifest: " + ex.getMessage(), ex);
         }
@@ -144,6 +149,8 @@ public final class CatalogManifestCodec {
         public HostedActivation hostedActivation;
         /** Optional {@code component_host}: the component hosts in-process components. */
         public ComponentHostDeclaration componentHost;
+        /** Optional {@code composition_mount}: where the component's service reads its composition part (HLD-E §4.0d). */
+        public com.unfurl.deployment.domain.CompositionMount compositionMount;
     }
 
     /**

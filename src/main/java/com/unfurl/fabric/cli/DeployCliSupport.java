@@ -46,7 +46,7 @@ final class DeployCliSupport {
         Path trustKeysPath = args.requiredPath("trust-keys");
         SignedFabricContract signed = readSigned(contractPath);
         Path componentArtifacts = componentArtifacts(args, signed);
-        DeploymentTarget target = withComposeRuntimePaths(
+        DeploymentTarget target = withRuntimePaths(
                 loadTarget(args.get("target")),
                 contractPath,
                 profilePath,
@@ -57,7 +57,8 @@ final class DeployCliSupport {
                 componentArtifacts,
                 trustKeysPath,
                 args.optionalPath("flow-config"),
-                args.optionalPath("flow-secrets"));
+                args.optionalPath("flow-secrets"),
+                ServiceMountOptions.parse(args.all("service-config"), args.all("service-secrets")));
         EmitterConfig config = new EmitterConfig(target, target.options(), true);
         DeployEmitter backend = new EmitterBootstrap().create(config);
         EmitRequest request = new EmitRequest(
@@ -78,7 +79,7 @@ final class DeployCliSupport {
         SignedFabricContract signed = readSigned(contractPath);
         Path componentArtifacts = componentArtifacts(args, signed);
         List<DeploymentTarget> targets = loadTargets(args.get("targets")).stream()
-                .map(target -> withComposeRuntimePaths(
+                .map(target -> withRuntimePaths(
                         target,
                         contractPath,
                         profilePath,
@@ -89,7 +90,8 @@ final class DeployCliSupport {
                         componentArtifacts,
                         trustKeysPath,
                         args.optionalPath("flow-config"),
-                        args.optionalPath("flow-secrets")))
+                        args.optionalPath("flow-secrets"),
+                        ServiceMountOptions.parse(args.all("service-config"), args.all("service-secrets"))))
                 .toList();
         VerificationKeySet keys = new TrustKeyDirectoryLoader().load(trustKeysPath);
         StitchResult result = new StitchDriver().stitch(new StitchRequest(
@@ -116,8 +118,13 @@ final class DeployCliSupport {
      * {@code componentArtifactsPath} for the admitted-component overlay (HLD-in-process-component-hosting §8).
      * {@code --flow-config} and {@code --flow-secrets} become {@code flowConfigPath} and {@code flowSecretsPath}, the
      * operator-owned mounts Flow needs for an identity binding (HLD-needs-driven-identity §8; emitter HLD-E §4.0a).
+     * {@code --service-config}/{@code --service-secrets} become {@code serviceConfigPath.<name>} and
+     * {@code serviceSecretsPath.<name>}, the operator mounts of declared services (emitter HLD-E §4.0d), local compose only.
+     * A {@code k8s} target receives the composition-part inputs alone ({@code runtimeBindingPath},
+     * {@code dcpRuntimeBundlePath}, {@code trustKeysPath}), since its declared parts need them and it cannot deliver
+     * operator mounts (HLD-api-documentation-artifacts §4.1).
      */
-    private static DeploymentTarget withComposeRuntimePaths(
+    static DeploymentTarget withRuntimePaths(
             DeploymentTarget target,
             Path contract,
             Path profile,
@@ -128,7 +135,15 @@ final class DeployCliSupport {
             Path componentArtifacts,
             Path trustKeysPath,
             Path flowConfig,
-            Path flowSecrets) {
+            Path flowSecrets,
+            Map<String, String> serviceMounts) {
+        if ("k8s".equals(target.kind())) {
+            Map<String, String> options = new LinkedHashMap<>(target.options());
+            putIfPresent(options, "runtimeBindingPath", runtimeBinding);
+            putIfPresent(options, "dcpRuntimeBundlePath", dcpRuntimeBundle);
+            putIfPresent(options, "trustKeysPath", trustKeysPath);
+            return withOptions(target, options);
+        }
         if (!"local-compose".equals(target.kind())) {
             return target;
         }
@@ -143,6 +158,12 @@ final class DeployCliSupport {
         putIfPresent(options, "trustKeysPath", trustKeysPath);
         putIfPresent(options, "flowConfigPath", flowConfig);
         putIfPresent(options, "flowSecretsPath", flowSecrets);
+        serviceMounts.forEach(options::putIfAbsent);
+        return withOptions(target, options);
+    }
+
+    /** The target with its options replaced, every other field kept. */
+    private static DeploymentTarget withOptions(DeploymentTarget target, Map<String, String> options) {
         return new DeploymentTarget(
                 target.kind(),
                 target.environment(),
