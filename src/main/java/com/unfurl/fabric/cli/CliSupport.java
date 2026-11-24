@@ -266,8 +266,9 @@ final class CliSupport {
                         // Host placement inputs (HLD-D §6.2a), copied from the catalog block.
                         com.unfurl.fabric.compile.HostedComponents.hostedActivation(entry),
                         com.unfurl.fabric.compile.HostedComponents.componentHost(entry),
-                        // Where it listens as its own service (HLD-D §6.2b): bindings and emitted services read it from the plan.
-                        entry.metadata().binding().serviceEndpoint()))
+                        // Where it listens as its own service, and how it is run (HLD-D §6.2b): bindings and emitted
+                        // services read it from the plan.
+                        entry.metadata().serviceEndpoint()))
                 .toList();
     }
 

@@ -114,8 +114,32 @@ catalog among them, would therefore get Foundry's address. It is now generic, an
 - `--flow-base-url` and `--foundry-base-url` remain as aliases for `--service-base-url` on Flow's claim URI
   (`urn:unfurl:flow:runtime`) and Foundry's (`urn:unfurl:foundry`), so existing runbooks keep working. Giving an alias
   and `--service-base-url` for the same claim URI is a usage error.
-- The deploy emitter uses the same `service_name` and `service_port` for the service it renders (HLD-E §4.0c), so the
+- The deploy emitter uses the same `service_name` and `service_port` for the service it renders (HLD-E §4.0d), so the
   binding and the running container always agree.
+- **How the service runs.** The catalog block may also declare `binding.readiness_path` and a `composition_mount`
+  (`path`, `env`, `include`), which only the emitter uses: a readiness probe target, and the service's read-only part
+  of the signed composition (HLD-E §4.0d). Compile copies them into the same `ServiceEndpoint` it copies the name and
+  port into (HLD-D §6.2b), so they reach the emitter only through the signed plan.
+  - The scan validates them with the plan's own rules. It refuses a manifest that declares either without
+    `service_name`/`service_port`, because there would be no service to probe or mount into. It also refuses a
+    malformed value. Both are `CatalogScanException`s naming the field; the entry is skipped with that reason, never
+    dropped silently.
+  - A catalog without them is unchanged, and so is its catalog JSON: absent fields are not written.
+  - The mount may declare `config` and `secrets` (`{ path, env }` each, together). These are the operator directories
+    its `config://` and `secret://` references resolve from. The operator gives them at deploy time:
+    `fabric deploy|emit --service-config <service_name>=<dir> --service-secrets <service_name>=<dir>`, repeatable,
+    passed to the target as `serviceConfigPath.<service_name>` and `serviceSecretsPath.<service_name>`. The emitter
+    requires them when the composition has references to resolve: identity in the contract, or an HTTP-served binding
+    naming its endpoint by `base_url_ref`. Otherwise they are optional (HLD-E §4.0d, *Operator mounts*). A
+    malformed value (no `=`, an empty side, a service named twice) is a usage error.
+  - The composition part's inputs (`--runtime-binding`, `--dcp-runtime-bundle`, `--trust-keys`) reach the `k8s` target
+    as well as `local-compose`, as `runtimeBindingPath`, `dcpRuntimeBundlePath` and `trustKeysPath`, because a
+    Kubernetes service with a declared mount needs them too. The operator mount options reach `local-compose` only;
+    Kubernetes refuses them (HLD-E §4.0d).
+  - Flow and Foundry declare neither. Foundry's part is the emitter's §4.0c instance, because its launcher reads a
+    deployment-relative folder (`UNFURL_FOUNDRY_COMPOSITION: composition`), while a declared mount sets the variable to
+    the absolute `path`. The API catalog declares `readiness_path: /health/ready` and
+    `composition_mount { path: /opt/unfurl/api-catalog/composition, env: UNFURL_CATALOG_COMPOSITION, include: [claims, artifacts] }`.
 
 ### 4.2 The catalog's binding settings
 
@@ -218,6 +242,10 @@ API catalog in the deployed composition.
   - **handoff:** for a composition emitted to Compose and to Kubernetes, every binding endpoint names a rendered service
     and its exposed port (`FabricCliDocumentationArtifactsTest.bindingEndpointsNameTheEmittedServices`);
   - `--service-base-url` overrides the catalog block;
+  - a declared `readiness_path` and `composition_mount` reach the signed plan's service; declaring either without a
+    service, or a malformed value, skips the entry with its reason;
+  - `--service-config`/`--service-secrets` become the target options, the composition-part inputs reach the `k8s`
+    target, and malformed values are refused;
   - a missing base is `SERVICE_BASE_URL_MISSING`;
   - the aliases still work, and an alias plus `--service-base-url` for one provider is refused;
   - an `external_protocol` provider gets no base URL, in both its container and its external shape;

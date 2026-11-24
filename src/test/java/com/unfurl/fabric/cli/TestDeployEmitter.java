@@ -43,6 +43,10 @@ final class TestDeployEmitter implements DeployEmitter {
             appendOption(content, "componentArtifactsPath");
             appendOption(content, "flowConfigPath");
             appendOption(content, "flowSecretsPath");
+            appendOption(content, "trustKeysPath");
+            // The operator mounts of declared services (emitter HLD-E §4.0d), in key order.
+            config.target().options().keySet().stream().filter(key -> key.startsWith("serviceConfigPath.")
+                    || key.startsWith("serviceSecretsPath.")).sorted().forEach(key -> appendOption(content, key));
             Files.writeString(path, content.toString(), StandardCharsets.UTF_8);
             EmittedArtifact artifact = new EmittedArtifact(
                     request.outDir().relativize(path),

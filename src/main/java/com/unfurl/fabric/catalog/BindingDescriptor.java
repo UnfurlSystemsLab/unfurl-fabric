@@ -18,7 +18,8 @@ import java.util.regex.Pattern;
  * a claim hash. Compile copies them into the signed binding plan for a component placed as a service of its own
  * (HLD-D §6.2b); the binding generator builds the DCP endpoint {@code http://<service_name>:<service_port>/dcp/
  * <capability>} from the plan, and the deploy emitter names and exposes the service from the same plan entry, so the two
- * always agree (HLD-api-documentation-artifacts §4.1).
+ * always agree (HLD-api-documentation-artifacts §4.1). {@code readiness_path} is how the orchestrator probes that
+ * service; it travels the same way, through {@link CatalogMetadata#serviceEndpoint()} (HLD-D §6.2b; HLD-E §4.0d).
  *
  * @param defaultMode        the preferred binding mode (required, must be in supportedModes).
  * @param supportedModes     all modes the component supports (defaults to {defaultMode}).
@@ -27,6 +28,8 @@ import java.util.regex.Pattern;
  * @param serviceName        the service host name it listens on as its own service (a DNS label); null when it declares
  *                           none. Omitted from JSON when absent, so existing catalogs keep their bytes.
  * @param servicePort        the port it listens on, 1 to 65535; given exactly when {@code serviceName} is.
+ * @param readinessPath      the readiness probe path of that service, when declared; only with {@code serviceName}, and
+ *                           an absolute URL path ({@code ServiceEndpoint}'s rule). Omitted from JSON when absent.
  */
 public record BindingDescriptor(
         BindingMode defaultMode,
@@ -34,7 +37,8 @@ public record BindingDescriptor(
         String containerImage,
         String remoteEndpointHint,
         @JsonInclude(JsonInclude.Include.NON_NULL) String serviceName,
-        @JsonInclude(JsonInclude.Include.NON_NULL) Integer servicePort
+        @JsonInclude(JsonInclude.Include.NON_NULL) Integer servicePort,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String readinessPath
 ) {
     /** A DNS label (RFC 1123): what a container or Kubernetes service name may be. */
     private static final Pattern DNS_LABEL = Pattern.compile("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$");
@@ -42,13 +46,19 @@ public record BindingDescriptor(
     /** Compatibility constructor: a component that declares no service of its own. */
     public BindingDescriptor(BindingMode defaultMode, Set<BindingMode> supportedModes, String containerImage,
                              String remoteEndpointHint) {
-        this(defaultMode, supportedModes, containerImage, remoteEndpointHint, null, null);
+        this(defaultMode, supportedModes, containerImage, remoteEndpointHint, null, null, null);
+    }
+
+    /** Compatibility constructor: a component that declares a service without a readiness path. */
+    public BindingDescriptor(BindingMode defaultMode, Set<BindingMode> supportedModes, String containerImage,
+                             String remoteEndpointHint, String serviceName, Integer servicePort) {
+        this(defaultMode, supportedModes, containerImage, remoteEndpointHint, serviceName, servicePort, null);
     }
 
     /**
      * Compact constructor: requires a default mode, defaults supportedModes to {defaultMode}, and
-     * enforces that the default mode is among the supported modes, and that the service name and port are given together
-     * and well formed.
+     * enforces that the default mode is among the supported modes, that the service name and port are given together
+     * and well formed, and that a readiness path is declared only for a service and is a valid probe path.
      */
     public BindingDescriptor {
         if (defaultMode == null) {
@@ -70,12 +80,14 @@ public record BindingDescriptor(
         if (servicePort != null && (servicePort < 1 || servicePort > 65535)) {
             throw new IllegalArgumentException("binding.service_port must be 1 to 65535, not " + servicePort);
         }
-    }
-
-    /** The service this component declares, as the deployment plan carries it (HLD-D §6.2b), when it declares one. */
-    public Optional<com.unfurl.deployment.domain.ServiceEndpoint> serviceEndpoint() {
-        return serviceName == null ? Optional.empty()
-                : Optional.of(new com.unfurl.deployment.domain.ServiceEndpoint(serviceName, servicePort));
+        if (readinessPath != null && serviceName == null) {
+            throw new IllegalArgumentException("binding.readiness_path is declared only with binding.service_name and "
+                    + "binding.service_port: without a service there is nothing to probe");
+        }
+        if (readinessPath != null) {
+            // One rule for the path: the plan's own (HLD-D §6.2b), so a catalog never admits what the plan would refuse.
+            new com.unfurl.deployment.domain.ServiceEndpoint(serviceName, servicePort, Optional.of(readinessPath), Optional.empty());
+        }
     }
 
     /**

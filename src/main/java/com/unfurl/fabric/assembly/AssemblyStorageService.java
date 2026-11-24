@@ -322,7 +322,8 @@ public final class AssemblyStorageService {
         var artifact = parsed.authoredArtifact();
         return new CatalogEntry(new ArtifactDescriptor(artifact.coordinates(), artifact.packaging(), artifact.source(), hash(bytes), artifact.signature()),
                 new ClaimDescriptor(parsed.claim(), codec.computeClaimHash(parsed.claim())),
-                new CatalogMetadata(parsed.lifecycle(), parsed.binding()), parsed.componentShapeProfile(), null);
+                // The scanner's metadata, hosting blocks and composition mount included, so a recovered entry plans alike.
+                parsed.metadata(), parsed.componentShapeProfile(), null);
     }
 
     /** Decode the two required source artifacts without relying on the publisher's live filesystem during verification. */

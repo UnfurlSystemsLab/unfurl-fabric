@@ -158,6 +158,17 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
   - The built-in `http://flow:8080` and `http://foundry:7979` defaults are gone: Flow and Foundry declare them in their
     catalog blocks.
   - An `external_protocol` provider gets the conventional `base_url_ref`, never a DCP URL.
+- How a declared service runs (HLD-api-documentation-artifacts §4.1; HLD-D §6.2b; emitter HLD-E §4.0d):
+  - The catalog block's `binding.readiness_path` and `composition_mount` (`path`, `env`, `include`, and the optional
+    `config`/`secrets` operator mounts) are parsed into `BindingDescriptor.readinessPath` and
+    `CatalogMetadata.compositionMount`.
+  - `CatalogMetadata.serviceEndpoint()` copies them with the name and port into the plan's `ServiceEndpoint`.
+  - Either declared without a service, or a malformed value, skips the entry as `MALFORMED_MANIFEST` naming the field.
+  - `deploy`/`emit`/`stitch` take `--service-config <service>=<dir>` and `--service-secrets <service>=<dir>`
+    (`ServiceMountOptions`, repeatable). These become `serviceConfigPath.<service>` and `serviceSecretsPath.<service>`
+    on `local-compose`, and a malformed value is a usage error.
+  - A `k8s` target receives `runtimeBindingPath`, `dcpRuntimeBundlePath` and `trustKeysPath` for its declared parts
+    (`DeployCliSupport.withRuntimePaths`).
 - With a `documentation.catalog` provider in the closure, `runtime-bindings` also writes `documentation_visibility` and
   `observation` into that provider's binding. The values come from `--documentation-visibility <file>`,
   `--documentation-visibility-default`, `--catalog-observation-interval-ms` and `--catalog-observation-max-backoff-ms`
