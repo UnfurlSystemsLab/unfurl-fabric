@@ -109,7 +109,21 @@ final class RuntimeBindingsCommand {
                 intValue(args, "timeout-ms", defaults.timeoutMs()),
                 identity(args),
                 componentConfiguration(args, signed),
-                documentation(args));
+                documentation(args),
+                disabledBindings(args));
+    }
+
+    /**
+     * Operator-disabled bindings (HLD-api-documentation-artifacts §4.4): every {@code --disable-binding
+     * <provider-claim-uri>#<capability>}, repeatable. A malformed entry is a usage error here; whether each key names a
+     * child contract, and is not identity, is the generator's decision.
+     */
+    private com.unfurl.fabric.runtime.DisabledBindings disabledBindings(CliArgs args) {
+        try {
+            return com.unfurl.fabric.runtime.DisabledBindings.parse(args.all("disable-binding"));
+        } catch (IllegalArgumentException invalid) {
+            throw FabricCliException.usage(invalid.getMessage());
+        }
     }
 
     /**

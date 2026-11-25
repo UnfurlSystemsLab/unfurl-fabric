@@ -236,7 +236,8 @@ public final class StudioToolGateway {
      * there against their pins (HLD-api-documentation-artifacts §4.0). Service base URLs come from
      * {@code serviceBaseUrls} ({@code {claimUri: url}}) and the {@code flowBaseUrl}/{@code foundryBaseUrl} aliases; the
      * API catalog's settings from {@code documentationVisibilityDefault}, {@code documentationVisibilityPath},
-     * {@code catalogObservationIntervalMs} and {@code catalogObservationMaxBackoffMs} (§4.1, §4.2).
+     * {@code catalogObservationIntervalMs} and {@code catalogObservationMaxBackoffMs} (§4.1, §4.2); bindings the operator
+     * switches off from {@code disableBindings} (§4.4).
      */
     private StudioToolCallResult runtimeBindingGenerate(String toolName, Map<String, Object> arguments) {
         String outputPath = text(arguments, "runtimeBindingPath",
@@ -369,8 +370,24 @@ public final class StudioToolGateway {
                         text(arguments, "documentationVisibilityPath", "").isBlank() ? null
                                 : resolveExistingPath(text(arguments, "documentationVisibilityPath", "")),
                         optionalLong(value(arguments, "catalogObservationIntervalMs")),
-                        optionalLong(value(arguments, "catalogObservationMaxBackoffMs"))));
+                        optionalLong(value(arguments, "catalogObservationMaxBackoffMs"))),
+                disabledBindings(toolName, arguments));
         return new BindingToolInputs(signed, contract, selected, options);
+    }
+
+    /**
+     * The tool's {@code disableBindings} ({@code ["<provider-claim-uri>#<capability>", ...]}), as {@code fabric
+     * runtime-bindings --disable-binding} reads them (HLD-api-documentation-artifacts §4.4).
+     *
+     * @throws ToolGap with the {@code GAP} result for a malformed entry
+     */
+    private com.unfurl.fabric.runtime.DisabledBindings disabledBindings(String toolName, Map<String, Object> arguments) {
+        try {
+            return com.unfurl.fabric.runtime.DisabledBindings.parse(stringList(value(arguments, "disableBindings")));
+        } catch (IllegalArgumentException invalid) {
+            throw new ToolGap(gap(toolName, invalid.getMessage(), Map.of(),
+                    List.of("Name each binding to disable as <provider-claim-uri>#<capability>.")));
+        }
     }
 
     /** The {@code GAP} a binding tool returns when its inputs cannot be bound, with what to check. */
