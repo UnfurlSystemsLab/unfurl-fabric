@@ -86,6 +86,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Comparator;
 import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -111,6 +112,8 @@ import java.util.zip.ZipOutputStream;
  * and UI layout state never becomes contract validity.
  */
 public final class StudioCatalogService {
+    /** An assembly snapshot whose sessions cannot be imported as a whole (LLD-fabric-studio-api, Assembly snapshots). */
+    public static final String ASSEMBLY_SNAPSHOT_INVALID = "ASSEMBLY_SNAPSHOT_INVALID";
     private static final int AUTHORING_CONTEXT_CONVERSATION_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_CATALOG_FILE_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT = 8;
@@ -3262,9 +3265,11 @@ public final class StudioCatalogService {
     /**
      * Snapshot factory: captures the durable Studio workspace state for one
      * tenant/assembly. The result is a portable JSON object; compile/export
-     * validity remains governed by later Fabric DCP operations.
+     * validity remains governed by later Fabric DCP operations. It holds the
+     * service lock, so the summary, layout and sessions it captures are one
+     * consistent state, never one taken mid-import.
      */
-    public StudioAssemblySnapshot saveAssemblySnapshot(String tenantId, String assemblyId) {
+    public synchronized StudioAssemblySnapshot saveAssemblySnapshot(String tenantId, String assemblyId) {
         String tenant = normalizeTenant(tenantId);
         String assembly = normalizeAssembly(assemblyId);
         StudioAssemblySummary summary = assembliesByTenant
@@ -3295,11 +3300,19 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Snapshot loader: restores a portable assembly snapshot into the addressed
-     * tenant and assembly maps. Route ids are authoritative and all imported
-     * sessions are re-scoped before persistence.
+     * Snapshot loader (Unit of Work): restores a portable assembly snapshot into the addressed tenant and assembly, all
+     * or nothing (LLD-fabric-studio-api, Assembly snapshots). Route ids are authoritative.
+     *
+     * <p>Phase 1 validates and normalizes the whole snapshot (summary, layout rules, session ids) and reads, but never
+     * writes, stored state; any violation is refused before anything changes. Phase 2 ({@link #commitAssemblySnapshot})
+     * replaces the summary, layout and the assembly's sessions and persists, restoring the previous records if
+     * persisting fails. The method holds the service lock that session intents, compile and layout writes hold, so
+     * no concurrent operation observes a mix of old and new records.
+     *
+     * @throws IllegalArgumentException {@value StudioLayoutRules#INVALID} or {@value #ASSEMBLY_SNAPSHOT_INVALID}, naming
+     *         the field, with stored state unchanged
      */
-    public StudioAssemblySnapshot loadAssemblySnapshot(
+    public synchronized StudioAssemblySnapshot loadAssemblySnapshot(
             String tenantId,
             String assemblyId,
             StudioAssemblySnapshot snapshot
@@ -3309,6 +3322,7 @@ public final class StudioCatalogService {
         if (snapshot == null) {
             throw new IllegalArgumentException("assembly snapshot is required");
         }
+        // Phase 1: validate and normalize everything; stored state is only read.
         StudioAssemblySummary sourceAssembly = snapshot.assembly() == null
                 ? defaultAssemblySummary(tenant, assembly)
                 : snapshot.assembly();
@@ -3321,24 +3335,15 @@ public final class StudioCatalogService {
                 sourceAssembly.deploymentShape(),
                 sourceAssembly.currentCandidateId(),
                 sourceAssembly.sceneRevision());
-        assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies).put(assembly, normalizedAssembly);
 
         StudioLayoutState sourceLayout = snapshot.layout() == null
-                ? layout(tenant, assembly)
+                ? storedLayoutOrInitial(tenant, assembly)
                 : snapshot.layout();
-        StudioLayoutState normalizedLayout = new StudioLayoutState(
-                tenant,
-                assembly,
-                sourceLayout.activeView(),
-                sourceLayout.semanticZoomLevel(),
-                sourceLayout.selectedSurface(),
-                sourceLayout.camera(),
-                sourceLayout.annotations());
-        layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(assembly, normalizedLayout);
+        // A supplied snapshot's layout follows the same rules as a write (LLD-fabric-studio-api, Layout state extension).
+        StudioLayoutRules.requireStored(sourceLayout);
+        StudioLayoutState normalizedLayout = sourceLayout.scopedTo(tenant, assembly);
 
-        Map<String, StudioDraftSession> tenantSessions = sessionsByTenant
-                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
-        tenantSessions.keySet().removeIf(key -> key.startsWith(assembly + "/"));
+        requireImportableSessions(snapshot.sessions());
         List<StudioDraftSession> normalizedSessions = snapshot.sessions().stream()
                 .map(session -> new StudioDraftSession(
                         tenant,
@@ -3362,8 +3367,9 @@ public final class StudioCatalogService {
                         session.lastOpenedAt()))
                 .sorted(Comparator.comparing(StudioDraftSession::sessionId))
                 .toList();
-        normalizedSessions.forEach(session -> tenantSessions.put(sessionKey(assembly, session.sessionId()), session));
-        persist();
+
+        // Phase 2: replace the summary, layout and sessions together, and persist.
+        commitAssemblySnapshot(tenant, assembly, normalizedAssembly, normalizedLayout, normalizedSessions);
         StudioAssemblySnapshot loaded = new StudioAssemblySnapshot(
                 tenant,
                 assembly,
@@ -3380,34 +3386,109 @@ public final class StudioCatalogService {
                 List.of(diagnosticArtifact(tenant, "assembly-snapshot-load", "assembly-snapshot-load.json", loaded)));
     }
 
+    /**
+     * Guard: every imported session has a non-blank id and no id appears twice, so phase 2 can key every session and
+     * none silently overwrites another.
+     *
+     * @throws IllegalArgumentException {@value #ASSEMBLY_SNAPSHOT_INVALID} naming the session index
+     */
+    private static void requireImportableSessions(List<StudioDraftSession> sessions) {
+        Set<String> seen = new HashSet<>();
+        for (int index = 0; index < sessions.size(); index++) {
+            String sessionId = sessions.get(index).sessionId();
+            if (sessionId.isBlank()) {
+                throw new IllegalArgumentException(ASSEMBLY_SNAPSHOT_INVALID + ": sessions[" + index + "].sessionId is required");
+            }
+            if (!seen.add(sessionId)) {
+                throw new IllegalArgumentException(ASSEMBLY_SNAPSHOT_INVALID + ": sessions[" + index + "].sessionId "
+                        + sessionId + " appears twice");
+            }
+        }
+    }
+
+    /**
+     * Unit of Work commit for {@link #loadAssemblySnapshot}: replaces the assembly's summary, layout and sessions with
+     * already-validated records, then persists. If persisting fails, the previous records are restored in memory and
+     * the failure is rethrown, so the import is never partly applied. Called with the service lock held.
+     */
+    private void commitAssemblySnapshot(
+            String tenant,
+            String assembly,
+            StudioAssemblySummary summary,
+            StudioLayoutState layoutState,
+            List<StudioDraftSession> sessions
+    ) {
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        Map<String, StudioLayoutState> layouts = layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        Map<String, StudioDraftSession> tenantSessions = sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        String prefix = assembly + "/";
+        StudioAssemblySummary previousSummary = assemblies.get(assembly);
+        StudioLayoutState previousLayout = layouts.get(assembly);
+        Map<String, StudioDraftSession> previousSessions = new LinkedHashMap<>();
+        tenantSessions.forEach((key, session) -> {
+            if (key.startsWith(prefix)) previousSessions.put(key, session);
+        });
+        try {
+            assemblies.put(assembly, summary);
+            layouts.put(assembly, layoutState);
+            tenantSessions.keySet().removeIf(key -> key.startsWith(prefix));
+            sessions.forEach(session -> tenantSessions.put(sessionKey(assembly, session.sessionId()), session));
+            persist();
+        } catch (RuntimeException failure) {
+            restore(assemblies, assembly, previousSummary);
+            restore(layouts, assembly, previousLayout);
+            tenantSessions.keySet().removeIf(key -> key.startsWith(prefix));
+            tenantSessions.putAll(previousSessions);
+            throw failure;
+        }
+    }
+
+    /** Puts back a previous value, or removes the key when there was none. */
+    private static <V> void restore(Map<String, V> map, String key, V previous) {
+        if (previous == null) {
+            map.remove(key);
+        } else {
+            map.put(key, previous);
+        }
+    }
+
+    /** The assembly's stored layout, or its initial layout, without storing anything (a read for validation). */
+    private StudioLayoutState storedLayoutOrInitial(String tenant, String assembly) {
+        StudioLayoutState stored = layoutsByTenant.getOrDefault(tenant, Map.of()).get(assembly);
+        return stored == null ? StudioLayoutState.initial(tenant, assembly) : stored;
+    }
+
     public StudioLayoutState layout(String tenantId, String assemblyId) {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
         Map<String, StudioLayoutState> layouts = layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
-        return layouts.computeIfAbsent(assembly, ignored -> new StudioLayoutState(
-                tenant,
-                assembly,
-                "Assembly",
-                "ASSEMBLY_DCP",
-                "validation",
-                Map.of(),
-                List.of()));
+        return layouts.computeIfAbsent(assembly, ignored -> StudioLayoutState.initial(tenant, assembly));
     }
 
-    public StudioLayoutState saveLayout(String tenantId, String assemblyId, StudioLayoutStateRequest request) {
+    /**
+     * Writes the assembly's layout (workbench view state) after {@link StudioLayoutRules#requireWritable} accepts it.
+     * It holds the service lock, so a layout write never interleaves with a snapshot import's commit or rollback.
+     *
+     * @throws IllegalArgumentException {@value StudioLayoutRules#INVALID} naming the field
+     */
+    public synchronized StudioLayoutState saveLayout(String tenantId, String assemblyId, StudioLayoutStateRequest request) {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
-        StudioLayoutStateRequest safe = request == null
-                ? new StudioLayoutStateRequest("Assembly", "ASSEMBLY_DCP", "validation", Map.of(), List.of())
-                : request;
+        // Every write carries a valid workbench view state; nothing is defaulted (LLD-fabric-studio-api).
+        StudioLayoutRules.requireWritable(request);
         StudioLayoutState state = new StudioLayoutState(
                 tenant,
                 assembly,
-                safe.activeView(),
-                safe.semanticZoomLevel(),
-                safe.selectedSurface(),
-                safe.camera(),
-                safe.annotations());
+                null,
+                request.semanticZoomLevel(),
+                request.selectedSurface(),
+                request.camera(),
+                request.annotations(),
+                request.activeViewpoint(),
+                request.activeOverlays(),
+                request.colourOverlay(),
+                request.renderer(),
+                request.layout());
         layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(assembly, state);
         persist();
         return state;

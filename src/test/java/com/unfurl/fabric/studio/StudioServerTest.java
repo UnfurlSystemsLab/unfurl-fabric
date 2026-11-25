@@ -205,7 +205,11 @@ class StudioServerTest {
                     "/studio/tenants/tenant-a/assemblies/assembly-payments/layout",
                     """
                     {
-                      "activeView": "Exploded",
+                      "activeViewpoint": "FLOW",
+                      "activeOverlays": ["SECURITY"],
+                      "colourOverlay": "SECURITY",
+                      "renderer": "THREE_D",
+                      "layout": "EXPLODED",
                       "semanticZoomLevel": "CHILD_DCP",
                       "selectedSurface": "payment",
                       "camera": { "distance": 5.5 },
@@ -214,8 +218,19 @@ class StudioServerTest {
                     """);
             assertThat(layoutSaved.statusCode()).isEqualTo(200);
             assertThat(layoutSaved.body())
-                    .contains("\"activeView\":\"Exploded\"")
-                    .contains("\"semanticZoomLevel\":\"CHILD_DCP\"");
+                    .contains("\"activeViewpoint\":\"FLOW\"", "\"layout\":\"EXPLODED\"")
+                    .contains("\"semanticZoomLevel\":\"CHILD_DCP\"")
+                    .doesNotContain("activeView\"");
+
+            // The retired tab value, and a value outside its set, are refused naming the field, never coerced.
+            HttpResponse<String> retired = post(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/layout",
+                    "{\"activeView\":\"Exploded\",\"activeViewpoint\":\"FLOW\",\"renderer\":\"TABLE\"}");
+            assertThat(retired.statusCode()).isEqualTo(400);
+            assertThat(retired.body()).contains("LAYOUT_STATE_INVALID", "activeView");
+            HttpResponse<String> unknown = post(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/layout",
+                    "{\"activeViewpoint\":\"COCKPIT\",\"renderer\":\"TABLE\"}");
+            assertThat(unknown.statusCode()).isEqualTo(400);
+            assertThat(unknown.body()).contains("LAYOUT_STATE_INVALID", "activeViewpoint");
 
             HttpResponse<String> layout = get(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/layout");
             assertThat(layout.statusCode()).isEqualTo(200);
@@ -240,6 +255,17 @@ class StudioServerTest {
                     .contains("\"tenantId\":\"tenant-b\"")
                     .contains("\"assemblyId\":\"assembly-import\"")
                     .contains("\"selectedSurface\":\"payment\"");
+            // A snapshot whose layout breaks the layout rules is refused, and the assembly keeps its records.
+            HttpResponse<String> refusedImport = post(server, "/studio/tenants/tenant-b/assemblies/assembly-import/snapshot",
+                    "{\"assembly\":{\"tenantId\":\"tenant-b\",\"assemblyId\":\"assembly-import\",\"targetApplicationName\":\"Replaced\"},"
+                            + "\"layout\":{\"activeViewpoint\":\"COCKPIT\",\"renderer\":\"TABLE\"},\"sessions\":[]}");
+            assertThat(refusedImport.statusCode()).isEqualTo(400);
+            assertThat(refusedImport.body()).contains("LAYOUT_STATE_INVALID", "activeViewpoint");
+            HttpResponse<String> afterRefusal = get(server, "/studio/tenants/tenant-b/assemblies/assembly-import/snapshot");
+            assertThat(afterRefusal.statusCode()).isEqualTo(200);
+            assertThat(afterRefusal.body())
+                    .contains("\"selectedSurface\":\"payment\"")
+                    .doesNotContain("Replaced", "COCKPIT");
 
             HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
             assertThat(assemblies.statusCode()).isEqualTo(200);

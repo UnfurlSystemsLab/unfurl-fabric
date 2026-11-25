@@ -141,12 +141,12 @@ class StudioCatalogServiceTest {
                 "CONTAINERIZED_SERVICE",
                 "cand-abc123",
                 3));
-        service.saveLayout("tenant-a", "assembly-checkout", new StudioLayoutStateRequest(
-                "Exploded",
+        service.saveLayout("tenant-a", "assembly-checkout", StudioLayoutStateRequest.of(
                 "CHILD_DCP",
                 "payment",
                 Map.of("distance", 5.5),
-                List.of("inspect payment replacement")));
+                List.of("inspect payment replacement"),
+                "FLOW", List.of("SECURITY"), "SECURITY", "THREE_D", "EXPLODED"));
         StudioCreateDraftCompositionResponse session = service.createDraftSession(
                 "tenant-a",
                 "assembly-checkout",
@@ -174,6 +174,96 @@ class StudioCatalogServiceTest {
                     assertThat(loaded.assemblyId()).isEqualTo("assembly-import");
                     assertThat(loaded.sessionId()).isEqualTo(session.session().sessionId());
                 });
+    }
+
+    /**
+     * Regression (LLD-fabric-studio-api, Assembly snapshots): a refused import changes nothing. An invalid layout, a
+     * session without an id, and two sessions with one id are each refused before the summary, layout or sessions
+     * stored for the assembly are touched.
+     */
+    @Test
+    void refusedAssemblySnapshotImportsLeaveStoredStateUnchanged() {
+        StudioCatalogService service = new StudioCatalogService();
+        StudioAssemblySnapshot before = seededAssembly(service);
+        StudioDraftSession session = before.sessions().get(0);
+        StudioAssemblySummary otherSummary = new StudioAssemblySummary("tenant-a", "assembly-checkout", "Replaced Name",
+                "compose-local", "needs-other", "IN_PROCESS_LIBRARY", "cand-other", 9);
+        StudioLayoutState invalidLayout = new StudioLayoutState("tenant-a", "assembly-checkout", null, "ASSEMBLY_DCP", "x",
+                Map.of(), List.of(), "COCKPIT", List.of(), null, "TABLE", null);
+
+        record Refusal(StudioAssemblySnapshot snapshot, String reason) {
+        }
+        List<Refusal> refusals = List.of(
+                new Refusal(new StudioAssemblySnapshot("tenant-a", "assembly-checkout", otherSummary, invalidLayout,
+                        List.of(), List.of()), "LAYOUT_STATE_INVALID: activeViewpoint"),
+                new Refusal(new StudioAssemblySnapshot("tenant-a", "assembly-checkout", otherSummary, null,
+                        List.of(withSessionId(session, " ")), List.of()), "ASSEMBLY_SNAPSHOT_INVALID: sessions[0].sessionId is required"),
+                new Refusal(new StudioAssemblySnapshot("tenant-a", "assembly-checkout", otherSummary, null,
+                        List.of(session, withSessionId(session, session.sessionId())), List.of()),
+                        "ASSEMBLY_SNAPSHOT_INVALID: sessions[1].sessionId " + session.sessionId() + " appears twice"));
+        for (Refusal refusal : refusals) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(
+                            () -> service.loadAssemblySnapshot("tenant-a", "assembly-checkout", refusal.snapshot()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(refusal.reason());
+            assertStoredAssembly(service, before);
+        }
+    }
+
+    /**
+     * Regression (LLD-fabric-studio-api, Assembly snapshots): when persisting a valid import fails, the previous
+     * summary, layout and sessions are restored in memory and the failure is reported.
+     */
+    @Test
+    void assemblySnapshotImportRollsBackWhenPersistingFails(@TempDir Path dir) throws Exception {
+        Path statePath = dir.resolve("studio-state.json");
+        StudioCatalogService service = new StudioCatalogService(new StudioStateStore(statePath));
+        StudioAssemblySnapshot before = seededAssembly(service);
+        StudioAssemblySnapshot replacement = new StudioAssemblySnapshot("tenant-a", "assembly-checkout",
+                new StudioAssemblySummary("tenant-a", "assembly-checkout", "Replaced Name", "compose-local", "needs-other",
+                        "IN_PROCESS_LIBRARY", "cand-other", 9),
+                StudioLayoutState.initial("tenant-a", "assembly-checkout"), List.of(), List.of());
+        // A non-empty directory where the state file was: the store's atomic replace cannot succeed.
+        Files.delete(statePath);
+        Files.createDirectories(statePath);
+        Files.writeString(statePath.resolve("blocker"), "x");
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> service.loadAssemblySnapshot("tenant-a", "assembly-checkout", replacement))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unable to write Studio state");
+        assertStoredAssembly(service, before);
+    }
+
+    /** Fixture: an assembly with a saved summary, a workbench layout and one draft session; returns its snapshot. */
+    private static StudioAssemblySnapshot seededAssembly(StudioCatalogService service) {
+        StudioCatalogSnapshot catalog = service.saveCatalogSnapshot("tenant-a");
+        service.saveDraft("tenant-a", "assembly-checkout", new StudioSaveDraftRequest(
+                "Checkout Platform", "needs-checkout", "kubernetes-prod", "CONTAINERIZED_SERVICE", "cand-abc123", 3));
+        service.saveLayout("tenant-a", "assembly-checkout", StudioLayoutStateRequest.of(
+                "CHILD_DCP", "payment", Map.of(), List.of(), "TOPOLOGY", List.of("SECURITY"), "SECURITY", "TABLE", null));
+        service.createDraftSession("tenant-a", "assembly-checkout", new StudioCreateDraftCompositionRequest(
+                "tenant-a", "assembly-checkout", catalog.catalogHash(), "needs-checkout", "", "cand-abc123", "operator", "Operator"));
+        StudioAssemblySnapshot snapshot = service.saveAssemblySnapshot("tenant-a", "assembly-checkout");
+        assertThat(snapshot.sessions()).hasSize(1);
+        return snapshot;
+    }
+
+    /** Asserts the assembly's stored summary, layout and sessions are exactly those of {@code expected}. */
+    private static void assertStoredAssembly(StudioCatalogService service, StudioAssemblySnapshot expected) {
+        StudioAssemblySnapshot now = service.saveAssemblySnapshot("tenant-a", "assembly-checkout");
+        assertThat(now.assembly()).isEqualTo(expected.assembly());
+        assertThat(now.layout()).isEqualTo(expected.layout());
+        assertThat(now.sessions()).isEqualTo(expected.sessions());
+    }
+
+    /** The session with another id, everything else unchanged. */
+    private static StudioDraftSession withSessionId(StudioDraftSession session, String sessionId) {
+        return new StudioDraftSession(session.tenantId(), session.assemblyId(), sessionId, session.baseCatalogHash(),
+                session.compositionMode(), session.needsId(), session.trustPolicyId(), session.currentCandidateId(),
+                session.sceneRevision(), session.warnings(), session.collaborators(), session.intentLog(),
+                session.catalogFileId(), session.displayName(), session.sessionType(), session.status(),
+                session.createdAt(), session.updatedAt(), session.lastOpenedAt());
     }
 
     @Test
@@ -1076,12 +1166,12 @@ class StudioCatalogServiceTest {
                 "assembly-checkout",
                 "Checkout Platform",
                 "kubernetes-prod"));
-        first.saveLayout("tenant-a", "assembly-checkout", new StudioLayoutStateRequest(
-                "Exploded",
+        first.saveLayout("tenant-a", "assembly-checkout", StudioLayoutStateRequest.of(
                 "CHILD_DCP",
                 "payment",
                 Map.of("distance", 5.5),
-                List.of("inspect payment replacement")));
+                List.of("inspect payment replacement"),
+                "FLOW", List.of("SECURITY"), "SECURITY", "THREE_D", "EXPLODED"));
 
         StudioCatalogService second = new StudioCatalogService(store);
 
@@ -1095,7 +1185,10 @@ class StudioCatalogServiceTest {
                 .contains("assembly-checkout");
         assertThat(second.layout("tenant-a", "assembly-checkout"))
                 .satisfies(layout -> {
-                    assertThat(layout.activeView()).isEqualTo("Exploded");
+                    assertThat(layout.activeView()).isNull();
+                    assertThat(layout.activeViewpoint()).isEqualTo("FLOW");
+                    assertThat(layout.activeOverlays()).containsExactly("SECURITY");
+                    assertThat(layout.layout()).isEqualTo("EXPLODED");
                     assertThat(layout.semanticZoomLevel()).isEqualTo("CHILD_DCP");
                     assertThat(layout.selectedSurface()).isEqualTo("payment");
                     assertThat(layout.annotations()).contains("inspect payment replacement");

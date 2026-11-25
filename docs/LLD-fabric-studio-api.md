@@ -169,6 +169,23 @@ and draft sessions for that tenant/assembly. Loading an assembly writes those re
 store after normalizing tenant and assembly ids to the route. It does not deserialize arbitrary contract exports or bypass
 DCP validation; subsequent edits, compile, and export still use Fabric's governed intent and validation APIs.
 
+Loading a snapshot is **all or nothing**: the assembly summary, layout and sessions are replaced together or not at all.
+- **Validate and normalize first, without touching stored state.**
+  - The assembly summary and the sessions are re-scoped to the route's tenant and assembly.
+  - The layout follows the layout rules (*Layout state extension*). A violation is a `400 LAYOUT_STATE_INVALID` naming
+    the field.
+  - Every session needs a non-blank `sessionId`, and no id may appear twice. A violation is a
+    `400 ASSEMBLY_SNAPSHOT_INVALID` naming the session index.
+  - A snapshot without a layout keeps the assembly's current layout. Reading it for that purpose stores nothing.
+- **Then commit as one step.**
+  - The commit replaces the summary, the layout and the assembly's sessions. The assembly's existing sessions are
+    removed, so a snapshot with no sessions leaves none.
+  - Then it persists.
+  - It holds the same service lock as session intents, compile and layout writes, so no concurrent operation sees a
+    mix of old and new records.
+  - If persisting fails, the previous summary, layout and sessions are restored in memory and the error is returned.
+    The import is never partly applied.
+
 ## Layout
 
 | Method | Path | Request | Response |
@@ -455,6 +472,226 @@ strategies:
 Session mode replays the same complete draft inventory as compile and consumes
 the tenant's admitted catalog/session state. It must never require browser users
 to know server filesystem paths.
+
+## Views and Overlays
+
+[proposed] Studio's workbench is organised by views, perspective overlays and renderers
+(`unfurl-ui/docs/LLD-studio-viewpoints-and-perspectives.md`). These routes supply the typed data its P2 phase needs.
+They are read models: none of them changes a session, a revision or a contract, and none is a validity source.
+
+**Fabric interprets claims; Studio never does.**
+- Every claim field in these responses is read from the claim Fabric parsed from the artifact, through the
+  `unfurl-dcp` model.
+- Grounding is the same as compile: the persisted `catalogManifest` is used only when its recomputed claim hash equals
+  the pinned `claimHash`. A mismatched or display-only entry is reported as `CATALOG_ENTRY_NOT_ADMITTED`, never
+  approximated.
+- Studio does not parse `catalogManifest` or dependency strings.
+
+**Response rules shared by every route below:**
+- Session scope matches `/dynamic-dcp` with `sessionId`: the accepted intents are replayed and only that draft
+  inventory is projected.
+- Element ids are the `/dynamic-dcp` node, edge, port and substrate-port ids, so selection and overlays line up across
+  views.
+- Each response carries `available` and, when false, `absentReason`, a stable code plus message. Examples:
+  `NO_OWNED_STATE_DECLARED`, `NO_FAULTS_DECLARED`, `COMPILE_REQUIRED`, `NOT_IN_DCP_SCHEMA`.
+- Every value carries `source`, the DCP field path it was read from (for example
+  `claim.domain.concerns[2].owns_state[0].sensitivity`). Studio can show where each value came from.
+- A field outside the shape DCP HLD-C2 defines for it is reported as a diagnostic (`severity`, `code`, `path`,
+  `message`) and not projected. This matters most for `integration_ports`, which the Java model holds as an untyped
+  map (DCP HLD-C2 §I.1).
+- Each response also exposes a hash-pinned diagnostic artifact, like the other tenant-scoped read models.
+
+**Compile records and freshness.** Some values come from a compile, not from the draft: data mappings, transports,
+runtime bindings, verification, contract timeouts, the decision audit, the signing state, the emit plan and the contract
+diff. After an edit they can describe an older composition, so they are never mixed with current draft elements.
+
+- **Compile records.** Fabric keeps an append-only list of compile records per session:
+  `StudioCompileRecord {revision, deploymentPolicyHash, contractHash, signedContractHash?, bindingsHash?, compiledAt}`.
+  - There is one record per compile.
+  - `revision` is the session revision that was compiled.
+  - `deploymentPolicyHash` is the canonical hash of the deployment policy the compile was requested with. The policy
+    is request input, not session state, so an operator can change it without a new revision.
+  - `contractHash` is the compiled contract's canonical hash.
+  - `bindingsHash` is set when runtime bindings were generated from that contract.
+  - The latest record is the *current compile record*.
+  - Records are stored and kept with the session, exactly like its intent log, and are never edited.
+- **Provenance.** Every compile-derived value carries `sourceRevision` and `contractHash` from the record it came
+  from. That covers every view section, every overlay annotation, and the `emit-plan`, `contract-diff` and `verify`
+  responses.
+- **Current means the same inputs.** A compile-derived value is current only when its `sourceRevision` equals the
+  session's current revision. Records belong to one session, so a value from another session is never current. A
+  request may also pass the policy it would compile with now, as `deploymentPolicyHash`. A record compiled with a
+  different policy is then `COMPILE_STALE` too, with that reason. Studio always passes it.
+  - **No compile yet:** the section is `available: false` with `COMPILE_REQUIRED`.
+  - **The draft has changed since:** the section is `available: false` with `COMPILE_STALE`. The message names both
+    revisions, for example "compiled at revision 7; the draft is at revision 9". The stale values are left out, not
+    returned beside current elements.
+  - **Overlays:** annotations from a stale source are left out the same way. The response lists the source in
+    `staleSources[] {source, sourceRevision, contractHash}`.
+- **Historical is explicit.**
+  - `contract-diff` and `verify` accept `revision` or `contractHash` to answer about a past compile, from that compile
+    record. When no compile was recorded at that revision, the answer is `COMPILE_RECORD_UNAVAILABLE`.
+  - Such a response carries `historical: true`.
+  - Studio shows historical results only in its compile and history panels, labelled with their revision and hash,
+    never as annotations on current elements.
+- **Element ids.** A compiled artifact is mapped onto `/dynamic-dcp` element ids only when it is current. After a
+  replace, an id can name a different component, so a stale artifact is never mapped.
+
+| Method | Path | Query | Response |
+|---|---|---|---|
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId` | `StudioViewProjection` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view` | `StudioOverlayAnnotations` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `target`, `environment` | `StudioEmitPlanPreview` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision` | `StudioContractDiff` |
+| `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/verify` | optional `revision` or `contractHash` | `StudioVerificationResult` |
+
+### `StudioViewProjection`
+
+`view` is one of `flow`, `data`, `topology`, `runtime`. Each adds to `/dynamic-dcp` and does not duplicate it.
+
+| View | Adds |
+|---|---|
+| `flow` | `externalOwners[] {boundaryNodeId, owner, dependency, neededByNodeId}`, from dependencies whose `owner` qualifier binds them outside the catalog (HLD-unfurl-fabric Core Flow step 3). `boundaryNodeId` is derived deterministically from `owner`. Also `externalProtocolOffers[] {nodeId, capability, protocol}` (DCP HLD-C2 A.6). |
+| `data` | `ownedState[] {nodeId, concern, resource, description, sensitivity}` and `ownedDecisions[] {nodeId, concern, decision, authority}` (A.3.2, A.3.3); `operations[] {nodeId, capability, operation, requestSchema, responseSchema}`. Also `dataMappings[] {childContractId, inbound, outbound}` from the current compile record's contract (§B). That section follows the freshness rules: `COMPILE_REQUIRED` before a compile, `COMPILE_STALE` after an edit. |
+| `topology` | `transports[] {childContractId, kind, details}` from the current compile record's contract. Also `runtimeBindings[] {bindingId, environment, deploymentKind, instanceName}` when that record has bindings (`bindingsHash`). Both sections follow the freshness rules. Shapes stay in `/studio/deployment/resolve`; emitted facts are in `emit-plan`. |
+| `runtime` | `monitoring[] {nodeId, healthEndpoints, readinessRequired, livenessRequired}` and `telemetry[] {nodeId, signals, correlationIdRequired}` (A.9). Also `verification`: the `StudioVerificationResult` for the current compile record's signed contract. It follows the freshness rules, and is `NOT_SIGNED` for an unsigned compile. |
+
+### `StudioOverlayAnnotations`
+
+`overlay` is one of `security`, `performance`, `resilience`, `compliance`. The response is
+`{overlay, view, available, absentReason?, annotations[], staleSources[]}`. Each annotation is
+`{elementId, elementKind NODE|EDGE|PORT|SUBSTRATE_PORT, kind, severity?, label, detail, source, sourceRevision?, contractHash?}`.
+The last two are present exactly when the annotation comes from a compile, and such an annotation is returned only
+when it is current.
+
+An overlay annotates elements that the view's projection already contains. It never introduces an element id that is
+not in that projection.
+
+Sources per overlay are listed in the Studio LLD §4:
+- `security`: identity-context, authentication and authorization ports, trust rejections, signing and verification
+  state;
+- `performance`: contract and runtime timeouts;
+- `resilience`: declared faults and their propagation up `CONTAINS`;
+- `compliance`: decision audit, audit flags, trust policy provenance.
+
+### `StudioEmitPlanPreview`
+
+The preview runs the deploy emitter's real pipeline, `EmitPipeline.emit`
+(`unfurl-deploy-emitter/docs/HLD-E-deployment-emitter.md` §3). It never calls `apply` or touches a live environment.
+
+**One code path.** There is no separate, in-memory emit. `EmitRequest` requires a signed contract and an output
+directory, and `EmitPipeline` runs signature preflight before any backend renders. A second "plan" method on every
+backend would duplicate rendering and drift from what a deploy emits. So the preview refuses exactly what a real emit
+refuses (preflight, `SERVICE_NAME_CONFLICT`, `COMPOSITION_PART_INPUT_MISSING`, `OPERATOR_MOUNT_TARGET_UNSUPPORTED`),
+and reports it as the absent reason.
+
+**Inputs.**
+- **Contract:** the signed contract of the session's current compile record (see *Compile records and freshness*).
+  - No compile yet: `COMPILE_REQUIRED`.
+  - An edit since the compile: `COMPILE_STALE`.
+  - An unsigned compile: `NOT_SIGNED`.
+- **Trust keys:** the tenant's configured public keys, which `EmitPipeline` verifies the contract with. Without them
+  the preview is `TRUST_KEYS_UNAVAILABLE`.
+- **Target:** `target` names a deployment target from the tenant's configuration, and `environment` the target
+  environment. The target file's own options are used unchanged.
+- **Composition-part inputs:** a target that renders a declared composition part (HLD-E §4.0d) needs
+  `dcpRuntimeBundlePath`, `runtimeBindingPath` and `trustKeysPath`. The preview generates them with the code a deploy
+  uses, and never guesses them:
+  - the bundle from `DcpRuntimeBundleWriter` over the tenant catalog;
+  - the bindings from `RuntimeBindingSetGenerator` for `environment`;
+  - the tenant's public keys.
+
+  A generation failure is the absent reason under its own code, for example `SERVICE_BASE_URL_MISSING`,
+  `DOCUMENTATION_GAP` or `CATALOG_ENTRY_MISSING`.
+- **Operator mounts:** operator directories (`serviceConfigPath.*`, `serviceSecretsPath.*`) are the operator's, so the
+  preview never supplies them. When the composition needs them, the emitter's own refusal becomes the absent reason:
+  `COMPOSITION_PART_INPUT_MISSING` on Compose, `OPERATOR_MOUNT_TARGET_UNSUPPORTED` on Kubernetes.
+
+**Isolated output.**
+- Each run gets a fresh temporary directory owned by Fabric, with owner-only permissions. Its name is unique to the
+  run. It holds the generated inputs and the emitter's output.
+- It is deleted in a `finally`, whatever the outcome, and nothing in it is served or returned except the fields
+  below.
+- At most one preview runs per session at a time. Concurrent requests for the same session, revision, target and
+  environment share one run.
+
+**Response.**
+- `available` and `absentReason?`;
+- `sourceRevision` and `contractHash`;
+- `targetKind`;
+- `artifacts[] {path, kind, sha256}`;
+- `requiredSecrets[] {name, boundComponentId, targetStoreHint}`, the `SecretRequest` records (HLD-E §5.3);
+- `emitManifestSha256`.
+
+Paths, kinds and secret requests describe what a deploy of this contract to this target emits. The per-artifact
+`sha256` and `emitManifestSha256` describe this preview run only. Rendered files can hold host paths (HLD-E §4.0a), so
+an operator's emit can hash differently. Studio labels them "preview hashes" and never compares them with a deployed
+manifest.
+
+Secret **values never appear**. The emitter does not have them, and the preview does not ask for them.
+
+The emit manifest does not declare named volumes, published ports, the runtime state store mode or
+`substrateProfileMode` today; they exist only inside rendered files. The preview reports them only once the manifest
+declares them (gap recorded in HLD-E §3). Studio does not parse rendered compose or profile files.
+
+### Structured match failures and trust rejections
+
+`NO_MATCH` responses from `/studio/deployment/resolve` and compile keep their `details` string and add:
+- `reasons[] {kind UNMET_NEED|CONFLICT, capability?, reasonCode?, message, fix?, componentUri?}`.
+  - The text comes from the same `NoMatchExplanation` presenter as `details`, so CLI, Studio and the advisor still
+    print the same message.
+  - `reasonCode` is the `UnmetCapabilityRequirement.Reason` value (`NOT_IN_CATALOG`, `VERSION_NOT_OFFERED`,
+    `OFFER_DETAILS_UNSATISFIED`, `REJECTED_BY_TRUST_POLICY`).
+- `trustRejections[] {catalogEntryId, reasonCode, message}`, from `trust.RejectedEntry`.
+  - `reasonCode` names the `RejectionReason` variant (`VendorNotTrusted`, `ArtifactGroupNotAllowed`,
+    `StabilityBelowFloor`, `LifecycleNotAllowed`, `UnsignedClaim`, `CapabilityDenied`, `CapabilityNotAllowed`).
+
+### Contract diff and verification
+
+- **`contract-diff`** compares two compile records of the session: the one at `baseRevision`, and either the current
+  record or the one at `revision`.
+  - The comparison logic lives today inside the package-private CLI class `cli/DiffCommand`. It is extracted into a
+    shared, non-CLI differ that the `diff` command and this route both call. The route does not reimplement it.
+  - The response carries both records' `sourceRevision` and `contractHash`.
+  - It carries `historical: true` when `revision` names a record other than the current one, and
+    `COMPILE_RECORD_UNAVAILABLE` when no compile was recorded at a requested revision.
+  - Against the current record, it is `COMPILE_STALE` when the draft has changed since that compile.
+- **`verify`** checks a signed contract with `com.unfurl.fabric.verify`. By default that is the current compile
+  record's; with `revision` or `contractHash`, a past one (`historical: true`).
+  - It returns the `FabricVerificationReport` content: the signature result and, when a catalog is supplied, the
+    `CatalogDriftReport`.
+  - It uses the tenant's configured trust keys and carries the record's `sourceRevision` and `contractHash`.
+  - Without a signed contract the response is `available: false` with `NOT_SIGNED`. Studio never reports an unsigned
+    contract as verified.
+
+### Layout state extension [P1]
+
+`StudioLayoutState` and `StudioLayoutStateRequest` gain the workbench view state (Studio LLD §6):
+
+| Field | Values |
+|---|---|
+| `activeViewpoint` | `FLOW`, `DATA`, `TOPOLOGY`, `RUNTIME` |
+| `activeOverlays` | a list of distinct `SECURITY`, `PERFORMANCE`, `RESILIENCE`, `COMPLIANCE` |
+| `colourOverlay` | one of the active overlays, or absent |
+| `renderer` | `THREE_D`, `TWO_D`, `TABLE`; `THREE_D` only with `FLOW` or `TOPOLOGY` (Studio LLD §5.2) |
+| `layout` | `ASSEMBLY`, `EXPLODED`; only with `FLOW` and `THREE_D` |
+
+- **Validation.** Each value is validated, and a value outside its set is `400 LAYOUT_STATE_INVALID` naming the field.
+  It is never coerced to a default. The same applies to a `colourOverlay` that is not among `activeOverlays`, and to a
+  `layout` outside 3D Flow.
+- **Old layouts.** A stored layout written before this has only `activeView`. It is returned as stored, with the new
+  fields absent, and Studio maps `activeView` (Studio LLD §5.4).
+- **Writes** carry the new fields. `activeView` is no longer written, and a request that sends it is
+  `400 LAYOUT_STATE_INVALID`.
+- Layout remains UI state and is never a contract validity source.
+
+### Permissive trust policy warning [P1]
+
+A draft session created without a `trustPolicyId` is planned under `TrustPolicy.permissive()`, the policy
+`StudioDeploymentService` already falls back to. Its `warnings` therefore carry the planning warning
+`TRUST_POLICY_PERMISSIVE`: "No trust policy is set for this session; every catalog entry is trusted." The warning is
+present exactly when `trustPolicyId` is blank, and is recomputed whenever the session is returned. Studio's Security &
+Trust overlay displays it and never infers it (Studio LLD §4).
 
 ## Client Mirror
 

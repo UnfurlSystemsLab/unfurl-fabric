@@ -72,9 +72,17 @@ public record StudioDraftSession(
                 null);
     }
 
+    /** The planning warning a session without a trust policy carries (LLD-fabric-studio-api, Permissive trust policy warning). */
+    public static final String TRUST_POLICY_PERMISSIVE = "TRUST_POLICY_PERMISSIVE";
+
     /**
      * Data Transfer Object invariant: normalizes optional persisted metadata and
      * keeps intent/collaboration collections immutable.
+     *
+     * <p>Derived warning: {@value #TRUST_POLICY_PERMISSIVE} is present exactly when {@code trustPolicyId} is blank, since
+     * Fabric then plans under {@code TrustPolicy.permissive()} ({@code StudioDeploymentService}). It is derived here, the one
+     * constructor every session passes through, so a stored, replayed or copied session can never carry a stale value, and
+     * Studio displays it without inferring it.
      */
     public StudioDraftSession {
         tenantId = tenantId == null || tenantId.isBlank() ? "tenant-local" : tenantId;
@@ -85,7 +93,7 @@ public record StudioDraftSession(
         needsId = needsId == null ? "" : needsId;
         trustPolicyId = trustPolicyId == null ? "" : trustPolicyId;
         currentCandidateId = currentCandidateId == null ? "" : currentCandidateId;
-        warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        warnings = withTrustPolicyWarning(warnings == null ? List.of() : warnings, trustPolicyId);
         collaborators = collaborators == null ? List.of() : List.copyOf(collaborators);
         intentLog = intentLog == null ? List.of() : List.copyOf(intentLog);
         catalogFileId = catalogFileId == null ? "" : catalogFileId;
@@ -95,5 +103,18 @@ public record StudioDraftSession(
         createdAt = createdAt == null ? Instant.EPOCH : createdAt;
         updatedAt = updatedAt == null ? createdAt : updatedAt;
         lastOpenedAt = lastOpenedAt == null ? updatedAt : lastOpenedAt;
+    }
+
+    /** The warnings with {@value #TRUST_POLICY_PERMISSIVE} present exactly when there is no trust policy, once. */
+    private static List<StudioPlanningWarning> withTrustPolicyWarning(List<StudioPlanningWarning> warnings, String trustPolicyId) {
+        java.util.ArrayList<StudioPlanningWarning> result = new java.util.ArrayList<>();
+        for (StudioPlanningWarning warning : warnings) {
+            if (warning != null && !TRUST_POLICY_PERMISSIVE.equals(warning.code())) result.add(warning);
+        }
+        if (trustPolicyId.isBlank()) {
+            result.add(new StudioPlanningWarning(TRUST_POLICY_PERMISSIVE,
+                    "No trust policy is set for this session; every catalog entry is trusted."));
+        }
+        return List.copyOf(result);
     }
 }
