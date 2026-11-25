@@ -178,6 +178,15 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
   `runtime-bindings` inputs, run the gap gate over the bindings that command would write (`DocumentationCheck`), and
   write `step-18-documentation-check-report.json`. The CLI exits 0 on `PASS` and 1 on `GAP`.
 
+- Studio workbench support (P1; `LLD-fabric-studio-api.md`, *Layout state extension* and *Permissive trust policy
+  warning*):
+  - `StudioLayoutState` and `StudioLayoutStateRequest` carry the workbench view state.
+  - `StudioLayoutRules` refuses a write with an unknown value or the retired `activeView` as
+    `400 LAYOUT_STATE_INVALID`, and checks a snapshot's layout the same way.
+  - `StudioDraftSession` derives `TRUST_POLICY_PERMISSIVE` from a blank `trustPolicyId`.
+  - Tests: `StudioLayoutRulesTest`, plus the updated layout cases in `StudioCatalogServiceTest` and `StudioServerTest`.
+  - The P2 read models (views, overlays, emit preview, compile records) are designed in the same LLD and not yet built.
+
 ## Build Outputs
 
 Typical contract flow outputs:

@@ -42,6 +42,9 @@
    candidate reports each distinct conflict, including a selected component's unmet claim dependency with the component
    named (`NoMatchExplanation`; HLD-needs-driven-identity §3). Identity is one such capability: a composition has
    authentication and authorization exactly when its needs require `identity-context` (HLD-needs-driven-identity).
+   Studio renders these same reasons as guided-fix cards. An applied fix is an ordinary Studio intent that Fabric
+   re-validates, never a default that Fabric or Studio binds on the operator's behalf, and validation is identical for
+   every user, preset, and view (`unfurl-ui/docs/LLD-unfurl-studio-visual-composition.md` §19A).
 3. Matching creates composition candidates and validates dependency bindings. Dependencies marked `owner=host`, `owner=fabric`, `owner=customer-controlled`, or a concrete customer owner such as `owner=customer-idp` are external runtime/profile bindings, not peer catalog gates. The binding must still be preserved in the candidate audit and deployment handoff so production packaging can require the real customer system.
    Optional dependencies (a claim's `dependencies.optional`, DCP HLD-C v0.2 §3.4) never gate a candidate: a composition
    without a provider for one is valid, and the component runs without it. When a selected component does provide one, it
@@ -91,6 +94,11 @@ the selected catalog file id and resolved catalog hash as provenance, and histor
 display name derived from the draft/catalog title unless the caller supplies a title.
 
 Dynamic DCP has two read-model modes. Catalog mode is available when no draft session is supplied and is used only for catalog browsing or preview guidance. Draft-session mode is authoritative for Studio composition inspection: it replays the accepted session intent log to derive the same catalog-entry inventory that compile uses, grounds those entries in the tenant catalog, and projects only that draft inventory.
+
+[proposed] Studio's views and perspective overlays read the same draft-session inventory through typed view, overlay,
+emit-plan, contract-diff and verification read models (`LLD-fabric-studio-api.md`, "Views and Overlays"). Fabric reads
+every claim field they carry from the grounded claim. Studio never parses claim YAML, and none of these read models is a
+validity source.
 
 ## Architectural Invariants
 
