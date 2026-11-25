@@ -99,7 +99,8 @@ public final class RuntimeBindingSetGenerator {
      * @return generated YAML bytes.
      * @throws IllegalStateException naming every problem, each starting with its code: identity inputs,
      *                               {@value #SERVICE_BASE_URL_MISSING}, {@value #SERVICE_BASE_URL_UNKNOWN},
-     *                               {@value #DOCUMENTATION_SETTINGS_WITHOUT_CATALOG}, {@value #DOCUMENTATION_GAP}, or a DCP
+     *                               {@value #DOCUMENTATION_SETTINGS_WITHOUT_CATALOG}, {@value #DOCUMENTATION_GAP},
+     *                               {@value DisabledBindings#INVALID}, or a DCP
      *                               binding-validation failure; nothing is written
      */
     public byte[] generate(SignedFabricContract signed, SelectedCatalogEntries selected, Options options) {
@@ -122,8 +123,9 @@ public final class RuntimeBindingSetGenerator {
                      List<RuntimeBinding> childBindings, Options options) { }
 
     /**
-     * Builder step shared by {@link #generate} and {@link DocumentationCheck}: checks the identity inputs and service base
-     * URLs, then builds the root and child bindings exactly as they would be written, without documentation settings.
+     * Builder step shared by {@link #generate} and {@link DocumentationCheck}: checks the identity inputs, service base
+     * URLs and disable keys, then builds the root and child bindings exactly as they would be written, operator-disabled
+     * ones included (HLD-api-documentation-artifacts §4.4), without documentation settings.
      */
     Assembled assemble(SignedFabricContract signed, SelectedCatalogEntries selected, Options options) {
         if (signed == null) {
@@ -138,12 +140,19 @@ public final class RuntimeBindingSetGenerator {
                 .sorted(Comparator.comparing(contract -> contract.contractId().toString()))
                 .toList();
         BindingPlan plan = signed.contract().bindingPlan();
+        // The operator's disable keys are checked first: they are plain input, and a wrong one must be named whatever else
+        // is missing (HLD-api-documentation-artifacts §4.4).
+        List<String> disableProblems = safe.disabledBindings().problems(childContracts);
+        if (!disableProblems.isEmpty()) {
+            throw new IllegalStateException(String.join("; ", disableProblems));
+        }
         requireIdentityInputs(childContracts, safe);
         requireServiceBases(childContracts, plan, selected, safe);
         RuntimeBinding root = rootBinding(rootContract, childContracts, safe);
         List<RuntimeBinding> children = new ArrayList<>();
         for (CompositionContract child : childContracts) {
-            children.add(childBinding(child, plan, selected, safe));
+            // An operator-disabled binding is written with runtime_policy.enabled false, and nothing else changes (§4.4).
+            children.add(safe.disabledBindings().apply(child, childBinding(child, plan, selected, safe)));
         }
         return new Assembled(rootContract, childContracts, root, List.copyOf(children), safe);
     }
@@ -742,13 +751,18 @@ public final class RuntimeBindingSetGenerator {
             int timeoutMs,
             IdentityOptions identity,
             Map<URI, Configuration> componentConfiguration,
-            DocumentationOptions documentation
+            DocumentationOptions documentation,
+            DisabledBindings disabledBindings
     ) {
-        /** Validating constructor: maps are copied and never null; no documentation settings unless given. */
+        /**
+         * Validating constructor: maps are copied and never null; no documentation settings unless given; no binding
+         * disabled unless given (HLD-api-documentation-artifacts §4.4).
+         */
         public Options {
             serviceBaseUrls = serviceBaseUrls == null ? Map.of() : Collections.unmodifiableMap(new TreeMap<>(serviceBaseUrls));
             componentConfiguration = componentConfiguration == null ? Map.of() : Map.copyOf(componentConfiguration);
             documentation = documentation == null ? DocumentationOptions.none() : documentation;
+            disabledBindings = disabledBindings == null ? DisabledBindings.none() : disabledBindings;
         }
 
         /** Default local-dev options used by the Flowfoundry runbook's signed support envelope; no identity inputs. */
@@ -766,7 +780,8 @@ public final class RuntimeBindingSetGenerator {
                     30000,
                     IdentityOptions.none(),
                     Map.of(),
-                    DocumentationOptions.none());
+                    DocumentationOptions.none(),
+                    DisabledBindings.none());
         }
 
         /**
@@ -787,7 +802,8 @@ public final class RuntimeBindingSetGenerator {
                     timeoutMs <= 0 ? defaults.timeoutMs : timeoutMs,
                     identity == null ? IdentityOptions.none() : identity,
                     componentConfiguration,
-                    documentation);
+                    documentation,
+                    disabledBindings);
         }
 
         private static String blankToDefault(String value, String fallback) {

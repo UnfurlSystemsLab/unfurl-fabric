@@ -1090,6 +1090,24 @@ class StudioServerTest {
             assertThat(runtimeBinding).isRegularFile();
             assertThat(Files.readString(runtimeBinding)).contains("runtime_binding_set",
                     "http://flow:8080/dcp/workflow.execute", "http://foundry:7979/dcp/agent.run");
+            // disableBindings is the tool's --disable-binding (HLD-api-documentation-artifacts §4.4).
+            Path disabledBinding = dir.resolve("disabled-runtime-binding.yaml");
+            StudioToolCallResult disabledResult = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", disabledBinding.toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
+                    "disableBindings", List.of("urn:unfurl:test:flow#workflow.execute"))));
+            assertThat(disabledResult.output()).containsEntry("status", "PASS");
+            assertThat(Files.readString(disabledBinding)).contains("enabled: false");
+            StudioToolCallResult malformedDisable = gateway.execute(toolRequest("fabric.runtime-binding-generate", Map.of(
+                    "signedCompiledContractPath", signedCompiled.toString(),
+                    "runtimeBindingPath", dir.resolve("malformed-disable.yaml").toString(),
+                    "catalogPath", catalog.toString(),
+                    "serviceBaseUrls", flowBase,
+                    "disableBindings", List.of("workflow.execute"))));
+            assertThat(malformedDisable.output()).containsEntry("status", "GAP");
+            assertThat(String.valueOf(malformedDisable.output())).contains("BINDING_DISABLE_INVALID");
             // Step 18 (HLD-api-documentation-artifacts §6): the fixtures ship no schemas, so the check names both gaps;
             // marking everything private passes. It writes its report and no binding.
             Path checkReport = dir.resolve("step-18-documentation-check-report.json");

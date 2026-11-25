@@ -322,6 +322,44 @@ class FabricCliDocumentationArtifactsTest {
      * DOCUMENTATION_GAP naming it; marking it private passes, and the catalog's binding records every setting, defaults
      * included; given settings are written as given. Without an API catalog the settings are refused, not dropped.
      */
+    /**
+     * §4.4: {@code --disable-binding} writes only the matched binding with {@code runtime_policy.enabled: false}, leaving
+     * every other binding, the root and the gap gate as they were. A malformed key, a key matching no child contract and an
+     * identity key are each refused with {@code BINDING_DISABLE_INVALID}, and nothing is written.
+     */
+    @Test
+    void anOperatorDisablesOneBindingAndNothingElse(@TempDir Path dir) throws Exception {
+        Composition composition = Composition.documented(dir, true);
+        Path visibility = Files.writeString(dir.resolve("visibility.yaml"), "capabilities:\n  ledger.post: private\n");
+
+        Path out = dir.resolve("bindings.yaml");
+        CliTestFixtures.CliRun ok = composition.bindings(out, "--documentation-visibility", visibility.toString(),
+                "--disable-binding", LOOKUP_URI + "#lookup.find");
+        assertThat(ok.exitCode()).withFailMessage(ok.stderr()).as("the gap gate still passes").isZero();
+        JsonNode set = YAML.readTree(Files.readAllBytes(out)).path("runtime_binding_set");
+        assertThat(binding(set, "lookup.find").at("/runtime_policy/enabled").asBoolean(true)).isFalse();
+        assertThat(binding(set, "lookup.find").at("/lifecycle/enabled").asBoolean()).as("only the runtime policy changes").isTrue();
+        assertThat(binding(set, "ledger.post").at("/runtime_policy/enabled").asBoolean()).isTrue();
+        assertThat(binding(set, "documentation.catalog").at("/runtime_policy/enabled").asBoolean()).isTrue();
+        assertThat(StreamSupport.stream(set.path("runtime_bindings").spliterator(), false)
+                .filter(binding -> !binding.at("/runtime_policy/enabled").asBoolean()).count())
+                .as("exactly one binding is disabled").isEqualTo(1);
+
+        record Refusal(String key, String reason) {
+        }
+        for (Refusal refusal : List.of(
+                new Refusal("not-a-key", "must be <provider-claim-uri>#<capability>"),
+                new Refusal(LOOKUP_URI + "#ledger.post", "matches no child contract"),
+                new Refusal("urn:unfurl:keycloak#identity-context", "identity is used fully while it is in the contract"))) {
+            Path refusedOut = dir.resolve("refused-" + Math.abs(refusal.key().hashCode()) + ".yaml");
+            CliTestFixtures.CliRun refused = composition.bindings(refusedOut, "--documentation-visibility", visibility.toString(),
+                    "--disable-binding", refusal.key());
+            assertThat(refused.exitCode()).as(refusal.key()).isNotZero();
+            assertThat(refused.stderr()).contains("BINDING_DISABLE_INVALID", refusal.reason());
+            assertThat(refusedOut).as("nothing is written").doesNotExist();
+        }
+    }
+
     @Test
     void anApiCatalogGetsItsSettingsBehindTheGapGate(@TempDir Path dir) throws Exception {
         Composition composition = Composition.documented(dir, true);

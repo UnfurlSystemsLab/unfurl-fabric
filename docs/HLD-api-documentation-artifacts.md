@@ -186,6 +186,36 @@ Without a catalog provider no policy is emitted, so the gate does not run. Each 
 `/openapi.json`) and refuses an undocumented registered offer at runtime (HLD-C2 G.2); `fabric documentation-check`
 (§6) lets an operator check that before deploying.
 
+### 4.4 Disabling a binding
+
+An operator can switch a capability off for one deployment without recompiling: the signed contracts stay as they are,
+and only that deployment's bindings change. This is the only way Fabric writes a disabled binding.
+
+```text
+fabric runtime-bindings ... --disable-binding <provider-claim-uri>#<capability> [--disable-binding ...]
+```
+
+Studio's `fabric.runtime-binding-generate` and `fabric.documentation-check` tools take the same list as
+`disableBindings`.
+
+- Each key disables every child binding whose contract has that provider claim URI and provider capability. The
+  binding is written with `runtime_policy.enabled: false`. Nothing else changes: not its `lifecycle`, its endpoint, or
+  the signed contract.
+- **What a disabled binding means downstream.** No component treats it as an error:
+  - Flow skips registering the capability (`DcpDeploymentHydrator`);
+  - DCP's in-process host refuses to start the hosted component (`RUNTIME_BINDING_DISABLED`);
+  - the API catalog reports the contract `inactive` / `BINDING_DISABLED` (DCP HLD-C2 G.1) and leaves it out of the
+    index.
+
+  A disabled binding is not a documentation gap: §4.3 asks whether a capability *can* be documented, which a disabled
+  binding does not change.
+- **Refusals**, all reported together before anything is written (`BINDING_DISABLE_INVALID`):
+  - a key that is not `<uri>#<capability>`;
+  - a key that matches no child contract of the composition;
+  - a key for `identity-context`. Identity is either in the contract, and then used fully, or not (root CLAUDE.md rule
+    6), so it is never switched off at bind time. To deploy without identity, compile without it in the needs.
+- The aggregate root binding is never disabled: it carries no capability.
+
 ## 5. Identity
 
 The catalog's claim declares `identity-context@v1` as an **optional** need, as Flow does. Existing rules then apply
@@ -251,6 +281,13 @@ API catalog in the deployed composition.
   - an `external_protocol` provider gets no base URL, in both its container and its external shape;
   - the catalog settings are written only when a `documentation.catalog` provider is present, and the options are
     refused otherwise.
+- **Disable (§4.4):**
+  - `--disable-binding` writes only the matched binding with `enabled: false`; the other bindings and the root stay
+    enabled, and the gap gate still passes;
+  - a malformed key, an unknown key and `identity-context` are each refused with `BINDING_DISABLE_INVALID` naming the
+    key, and nothing is written;
+  - the Studio tool takes `disableBindings` the same way;
+  - end to end, the API catalog reports `BINDING_DISABLED` (`unfurl-e2e`, composed stack).
 - **Gate:** a gap fails with every gap named; marking the capability `private` passes, and the policy records it; a
   composition with Keycloak, bundled or external, passes.
 - **documentation-check:** `PASS` and `GAP` reports and exit codes.
