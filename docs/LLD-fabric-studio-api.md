@@ -382,6 +382,10 @@ runtime authority separation is required.
 - `fabric.dynamic-dcp-project`
 - `fabric.deployment-resolve`
 - `fabric.candidate-compile`
+- `fabric.contract-diff` [P2a]: the `contract-diff` route's inputs (`baseRevision`, `revision`, `deploymentPolicy`);
+  `PASS` with the diff when available, `GAP` naming the absent reason otherwise.
+- `fabric.contract-verify` [P2a]: the `verify` route's `StudioVerifyRequest`; `PASS` only when the contract verified
+  and the catalog is clean, `GAP` otherwise.
 - `fabric.export-download`
 - `fabric.export-download-all`
 - `fabric.runtime-binding-generate`
@@ -475,9 +479,19 @@ to know server filesystem paths.
 
 ## Views and Overlays
 
-[proposed] Studio's workbench is organised by views, perspective overlays and renderers
+Studio's workbench is organised by views, perspective overlays and renderers
 (`unfurl-ui/docs/LLD-studio-viewpoints-and-perspectives.md`). These routes supply the typed data its P2 phase needs.
 They are read models: none of them changes a session, a revision or a contract, and none is a validity source.
+
+**Status.** P2 is built in slices (Studio LLD §10):
+- **P2a, implemented:** compile records and freshness, durable compiled contracts, `contract-diff`, `verify`, and
+  structured match failures.
+- **P2b to P2e, proposed:**
+  - P2b: `views/*`;
+  - P2c: `overlays/*`;
+  - P2d: `emit-plan`;
+  - P2e: Resilience & Faults.
+  Each one builds on P2a's compile records.
 
 **Fabric interprets claims; Studio never does.**
 - Every claim field in these responses is read from the claim Fabric parsed from the artifact, through the
@@ -505,23 +519,68 @@ They are read models: none of them changes a session, a revision or a contract, 
 runtime bindings, verification, contract timeouts, the decision audit, the signing state, the emit plan and the contract
 diff. After an edit they can describe an older composition, so they are never mixed with current draft elements.
 
-- **Compile records.** Fabric keeps an append-only list of compile records per session:
-  `StudioCompileRecord {revision, deploymentPolicyHash, contractHash, signedContractHash?, bindingsHash?, compiledAt}`.
-  - There is one record per compile.
+- **Compile records [P2a].** Fabric keeps an append-only list of compile records per session, in
+  `StudioDraftSession.compileRecords`:
+  `StudioCompileRecord {revision, deploymentPolicyHash, contractHash, compiledEnvelopeSha256, substrateProfileSha256, signedEnvelopeSha256?, bindingsHash?, compiledAt}`.
+  - There is one record per successful compile (`COMPILED`). A refused, failed or stale compile records nothing.
   - `revision` is the session revision that was compiled.
   - `deploymentPolicyHash` is the canonical hash of the deployment policy the compile was requested with. The policy
     is request input, not session state, so an operator can change it without a new revision.
-  - `contractHash` is the compiled contract's canonical hash.
-  - `bindingsHash` is set when runtime bindings were generated from that contract.
+  - `contractHash` is the compiled contract's canonical hash: the SHA-256 of
+    `CompiledContractCodec.canonicalBytes`, as lower-case hex without a prefix (the signer's form). Signing signs exactly these bytes, so a signed envelope's `canonicalHash`
+    equals it.
+  - `compiledEnvelopeSha256`, `substrateProfileSha256` and `signedEnvelopeSha256` are the SHA-256 of the stored
+    compiled envelope, the compile's substrate profile (`substrate-profile.yaml`; the envelope carries only its hash)
+    and, when the compile was signed, the signed envelope (`signed-compiled-contract.yaml`). They address the bytes in
+    the compiled-contract store below. `signedEnvelopeSha256` is absent when signing was not requested, and when the
+    request asked for it but it failed, for example with no Studio signing keys.
+  - `bindingsHash` is set when runtime bindings were generated from that contract. It stays absent until P2b links
+    binding generation to a session.
   - The latest record is the *current compile record*.
-  - Records are stored and kept with the session, exactly like its intent log, and are never edited.
+  - Records are stored and kept with the session, exactly like its intent log, and are never edited. A state file
+    written before records existed reads with none.
+  - **Records are facts of the Studio that compiled, so a snapshot never carries them in.** An intent log is replayed
+    and re-validated on import; a record cannot be: nothing in the compiled bytes proves which session revision or
+    policy it was compiled from. Importing an assembly snapshot therefore gives each imported session no records,
+    whatever the snapshot holds, and the imported draft is compiled again here. Exported snapshots still list them,
+    as a record of what the exporting Studio compiled.
+  - The compile response carries the new record as `compileRecord`, so Studio pins a compile to Fabric's own hashes
+    and never computes one.
+- **Durable compiled contracts [P2a].** Export artifacts are a download cache: in memory, keyed by session, and
+  replaced by the next compile. They cannot answer about a past compile, so the envelopes a record names are kept in
+  the `StudioCompiledContractStore`, a content-addressed repository partitioned by tenant:
+  - files named by their SHA-256 in `studio-compiled/<tenant folder>/` beside the Studio state file, next to
+    `studio-companions/`; in memory when Studio runs without a state file;
+  - the tenant folder is named by the SHA-256 of the tenant id, and a tenant reads only its own folder, so a record can
+    never reach another tenant's contract by naming its hash;
+  - a write is atomic (temporary file, then move) and never replaces existing content;
+  - a read recomputes the SHA-256 and refuses bytes that do not match, so a damaged or edited file is never used.
+  A record whose bytes are missing or refused answers `COMPILE_RECORD_UNAVAILABLE` naming the hash, never a guess.
+- **A record is checked against its bytes [P2a].** A record names its hashes, and every read proves them before any
+  value is derived from it (`StudioCompiledContractReader`):
+  - the compiled envelope's canonical hash (SHA-256 of `CompiledContractCodec.canonicalBytes`) equals `contractHash`;
+  - the stored profile's recomputed hash equals the envelope's `substrateProfileHash`;
+  - the signed envelope's `canonicalHash`, and the canonical hash of the contract it carries, both equal `contractHash`.
+  Any mismatch answers `COMPILE_RECORD_INCONSISTENT`, naming which part does not belong to the record, and nothing is
+  diffed or verified. A `verify` result is therefore always about the contract its provenance names, and a
+  `contract-diff` compares the contracts its provenance names.
+- **The policy a request would compile with [P2a].** A freshness-checked read takes that policy as
+  `deploymentPolicy`, URL-encoded JSON in the `StudioDeploymentPolicyDraft` shape (the compile request's
+  `deploymentPolicy`). Fabric parses it into the record, so an absent list and an empty list are the same policy, and
+  hashes it with the same canonical form it hashed the compile's policy with. Studio sends the policy it holds and
+  never hashes anything, so the two sides cannot canonicalize differently. A malformed `deploymentPolicy` is
+  `400 DEPLOYMENT_POLICY_INVALID`.
+- **One freshness rule [P2a].** `StudioCompileFreshness` (Policy) decides whether a record is current, for every route
+  here. Its inputs are the session, the record and the optional request policy. It answers `CURRENT`,
+  `COMPILE_REQUIRED` or `COMPILE_STALE` with its message.
 - **Provenance.** Every compile-derived value carries `sourceRevision` and `contractHash` from the record it came
   from. That covers every view section, every overlay annotation, and the `emit-plan`, `contract-diff` and `verify`
   responses.
 - **Current means the same inputs.** A compile-derived value is current only when its `sourceRevision` equals the
   session's current revision. Records belong to one session, so a value from another session is never current. A
-  request may also pass the policy it would compile with now, as `deploymentPolicyHash`. A record compiled with a
-  different policy is then `COMPILE_STALE` too, with that reason. Studio always passes it.
+  request may also pass the policy it would compile with now, as `deploymentPolicy`. A record compiled with a
+  different policy is then `COMPILE_STALE` too, with that reason, for example "compiled with a different deployment
+  policy". Studio always passes it.
   - **No compile yet:** the section is `available: false` with `COMPILE_REQUIRED`.
   - **The draft has changed since:** the section is `available: false` with `COMPILE_STALE`. The message names both
     revisions, for example "compiled at revision 7; the draft is at revision 9". The stale values are left out, not
@@ -530,7 +589,9 @@ diff. After an edit they can describe an older composition, so they are never mi
     `staleSources[] {source, sourceRevision, contractHash}`.
 - **Historical is explicit.**
   - `contract-diff` and `verify` accept `revision` or `contractHash` to answer about a past compile, from that compile
-    record. When no compile was recorded at that revision, the answer is `COMPILE_RECORD_UNAVAILABLE`.
+    record. A revision compiled more than once (with different policies, say) names its latest record there; a
+    `contractHash` names its latest record with that hash. When no compile was recorded at that revision or with that
+    hash, the answer is `COMPILE_RECORD_UNAVAILABLE`.
   - Such a response carries `historical: true`.
   - Studio shows historical results only in its compile and history panels, labelled with their revision and hash,
     never as annotations on current elements.
@@ -542,8 +603,11 @@ diff. After an edit they can describe an older composition, so they are never mi
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId` | `StudioViewProjection` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view` | `StudioOverlayAnnotations` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `target`, `environment` | `StudioEmitPlanPreview` |
-| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision` | `StudioContractDiff` |
-| `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/verify` | optional `revision` or `contractHash` | `StudioVerificationResult` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision`, optional `deploymentPolicy` | `StudioContractDiff` [P2a] |
+| `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/verify` | body `StudioVerifyRequest {revision?, contractHash?, deploymentPolicy?}` | `StudioVerificationResult` [P2a] |
+
+The session's records reach Studio inside the session itself (`StudioDraftSession.compileRecords`), so Studio offers
+a base revision for `contract-diff` from them without another route.
 
 ### `StudioViewProjection`
 
@@ -636,33 +700,82 @@ declares them (gap recorded in HLD-E §3). Studio does not parse rendered compos
 
 ### Structured match failures and trust rejections
 
-`NO_MATCH` responses from `/studio/deployment/resolve` and compile keep their `details` string and add:
-- `reasons[] {kind UNMET_NEED|CONFLICT, capability?, reasonCode?, message, fix?, componentUri?}`.
-  - The text comes from the same `NoMatchExplanation` presenter as `details`, so CLI, Studio and the advisor still
-    print the same message.
-  - `reasonCode` is the `UnmetCapabilityRequirement.Reason` value (`NOT_IN_CATALOG`, `VERSION_NOT_OFFERED`,
-    `OFFER_DETAILS_UNSATISFIED`, `REJECTED_BY_TRUST_POLICY`).
-- `trustRejections[] {catalogEntryId, reasonCode, message}`, from `trust.RejectedEntry`.
+[P2a] `NO_MATCH` responses from `/studio/deployment/resolve` and compile keep their `details` string unchanged and
+add:
+- `reasons[] {kind UNMET_NEED|CONFLICT, reasonCode, capability?, componentCoordinates?, message}`, one per cause.
+  - **One source.** `message` is the cause's own detail text, which names its fix. `NoMatchExplanation` builds both
+    `details` and `reasons` from the same causes in the same order, so the CLI, Studio and the advisor print the same
+    words.
+  - **`UNMET_NEED`:** `reasonCode` is the `UnmetCapabilityRequirement.Reason` value (`NOT_IN_CATALOG`,
+    `VERSION_NOT_OFFERED`, `OFFER_DETAILS_UNSATISFIED`, `REJECTED_BY_TRUST_POLICY`).
+  - **`CONFLICT`:** `reasonCode` names the `Conflict` variant (`MISSING_CAPABILITY`, `VERSION`, `OFFER_DETAIL`,
+    `ARTIFACT`, `REFUSAL`, `BINDING`, `DEPENDENCY`).
+  - **Optional fields:** `capability` is set when the cause names one. `componentCoordinates` is set for `DEPENDENCY`,
+    naming the component whose claim declares the unresolved dependency.
+- `trustRejections[] {coordinates, reasonCode, message}`, one per reason of each `trust.RejectedEntry` the match
+  considered.
+  - `coordinates` are the rejected entry's artifact coordinates.
   - `reasonCode` names the `RejectionReason` variant (`VendorNotTrusted`, `ArtifactGroupNotAllowed`,
     `StabilityBelowFloor`, `LifecycleNotAllowed`, `UnsignedClaim`, `CapabilityDenied`, `CapabilityNotAllowed`).
 
+Which causes each mode produces:
+- **Filesystem resolve** (`catalogPath` + `needsPath`) runs the `StructuralMatcher` under the request's trust policy,
+  so it produces unmet needs, conflicts and trust rejections.
+- **Session mode** validates the draft's own inventory with `CandidateValidator`, so its causes are conflicts. Its
+  `details` keeps its form (the conflict details, sorted, joined with `; `), and `reasons` lists the same conflicts in
+  the same order.
+- **Gap: a session's trust policy is not applied.** A session's `trustPolicyId` is stored and returned, but nothing
+  resolves it to a `TrustPolicy`: there is no tenant trust-policy registry. Session planning therefore runs without
+  trust classification whatever the id, and `trustRejections` is empty there. The `TRUST_POLICY_PERMISSIVE` warning
+  covers only a blank id. Applying a named policy needs a tenant trust-policy registry (admission, versioning, and
+  resolving the id at plan and compile time). That is its own design, to be written before Studio shows a named
+  policy as enforced.
+
 ### Contract diff and verification
+
+[P2a] Both routes read records and envelopes only, never change a session, and register a hash-pinned diagnostic
+artifact of their response.
 
 - **`contract-diff`** compares two compile records of the session: the one at `baseRevision`, and either the current
   record or the one at `revision`.
-  - The comparison logic lives today inside the package-private CLI class `cli/DiffCommand`. It is extracted into a
-    shared, non-CLI differ that the `diff` command and this route both call. The route does not reimplement it.
-  - The response carries both records' `sourceRevision` and `contractHash`.
-  - It carries `historical: true` when `revision` names a record other than the current one, and
-    `COMPILE_RECORD_UNAVAILABLE` when no compile was recorded at a requested revision.
-  - Against the current record, it is `COMPILE_STALE` when the draft has changed since that compile.
+  - **One differ.** The comparison is `verify.ContractDiffer`, extracted from the CLI's `cli/DiffCommand`. Its input
+    is two `CompiledContract`s; the selection, deployment-entry and substrate-port deltas work on those, so unsigned
+    compiles can be diffed too. It returns a typed `ContractDiff`: both canonical hashes, `canonicalHashChanged`,
+    `contractIdChanged`, the added, removed and changed selections and deployment entries, the changed deployment
+    shapes, and the added, removed and changed substrate ports. `fabric diff` prints that value with its output
+    unchanged, and this route serializes it. Neither reimplements the comparison.
+  - **Substrate ports.** A compiled envelope carries only its profile's hash, so the route diffs the two records'
+    stored profiles (`substrateProfileSha256`). The CLI reads them from `--left-profile` and `--right-profile` as it
+    does today, and prints `profileDetail=<not provided>` without them.
+  - **Response:** `StudioContractDiff {available, absentReason?, base?, target?, historical, diff?,
+    diagnosticArtifacts}`. `base` and `target` are each a provenance `{sourceRevision, contractHash, compiledAt}`, and
+    `absentReason` is `{code, message}`.
+  - It is `historical: true` when `revision` names a record other than the current one, and
+    `COMPILE_RECORD_UNAVAILABLE` when no compile was recorded at a requested revision or its bytes are unavailable.
+  - Against the current record, it is `COMPILE_STALE` when the draft or the request's `deploymentPolicy` has changed
+    since that compile, and the diff is left out.
+  - With no compile at all it is `COMPILE_REQUIRED`.
+  - `baseRevision` is required; a missing or non-numeric one is `400 CONTRACT_DIFF_INVALID`.
 - **`verify`** checks a signed contract with `com.unfurl.fabric.verify`. By default that is the current compile
   record's; with `revision` or `contractHash`, a past one (`historical: true`).
-  - It returns the `FabricVerificationReport` content: the signature result and, when a catalog is supplied, the
-    `CatalogDriftReport`.
-  - It uses the tenant's configured trust keys and carries the record's `sourceRevision` and `contractHash`.
+  - **Signature.** It reads the record's signed envelope from the compiled-contract store and runs
+    `SignatureVerifier` with Studio's trust keys.
+  - **Trust keys** are a directory of public keys (`TrustKeyDirectoryLoader`), configured as
+    `unfurl.studio.trust.keysDir` or `UNFURL_STUDIO_TRUST_KEYS_DIR`, the same form as `fabric verify --trust-keys`.
+    Without it the response is `available: false` with `TRUST_KEYS_UNAVAILABLE`. Fabric never falls back to the
+    signing key, because a contract checked only against the key that signed it proves nothing about trust.
+  - **Catalog drift** is always checked, against the tenant's current admitted catalog: every admitted entry that
+    `catalogEntryForVisual` grounds, with the tenant's companions. A display-only entry is not part of it. The result
+    is the `CatalogDriftReport` content.
+  - **Response:** `StudioVerificationResult {available, absentReason?, provenance?, historical, signature? {ok,
+    result, detail}, catalogDrift? {clean, hashDrifts[], missingFromCatalog[]}, overallOk?, diagnosticArtifacts}`.
+    `provenance` is the verified record's `{sourceRevision, contractHash, compiledAt}`, and `result` names the
+    `SignatureVerificationResult` variant (`Ok`, `KeyNotPinned`, `SignatureInvalid`, `HashMismatch`).
+  - **Request:** `StudioVerifyRequest {revision?, contractHash?, deploymentPolicy?}`. A `deploymentPolicy` that is
+    absent or null names no policy, so only the revision is compared.
   - Without a signed contract the response is `available: false` with `NOT_SIGNED`. Studio never reports an unsigned
     contract as verified.
+  - Against the current record it follows the freshness rule like `contract-diff`.
 
 ### Layout state extension [P1]
 

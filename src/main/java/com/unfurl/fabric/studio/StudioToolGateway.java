@@ -83,6 +83,8 @@ public final class StudioToolGateway {
                 case "fabric.dynamic-dcp-project" -> dynamicDcpProject(toolName, request.arguments());
                 case "fabric.deployment-resolve" -> deploymentResolve(toolName, request.arguments());
                 case "fabric.candidate-compile" -> candidateCompile(toolName, request.arguments());
+                case "fabric.contract-diff" -> contractDiff(toolName, request.arguments());
+                case "fabric.contract-verify" -> contractVerify(toolName, request.arguments());
                 case "fabric.export-download" -> exportDownload(toolName, request.arguments());
                 case "fabric.export-download-all" -> exportDownloadAll(toolName, request.arguments());
                 case "fabric.runtime-binding-generate" -> runtimeBindingGenerate(toolName, request.arguments());
@@ -1927,6 +1929,57 @@ public final class StudioToolGateway {
     }
 
     /**
+     * Read adapter: compares two compile records of a session, as {@code GET .../contract-diff} does
+     * (LLD-fabric-studio-api, <i>Contract diff and verification</i>). Takes {@code baseRevision} (required),
+     * {@code revision} and {@code deploymentPolicy}. PASS with the diff when it is available; GAP naming the absent
+     * reason (for example {@code COMPILE_STALE}) otherwise.
+     */
+    private StudioToolCallResult contractDiff(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String assemblyId = text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID);
+        String sessionId = text(arguments, "sessionId", "");
+        if (sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId is required");
+        }
+        ContractDiffArguments diffArguments = typedRequest(arguments, ContractDiffArguments.class);
+        if (diffArguments.baseRevision() == null) {
+            throw new IllegalArgumentException("CONTRACT_DIFF_INVALID: baseRevision is required");
+        }
+        StudioContractDiff response = service.contractDiff(tenantId, assemblyId, sessionId,
+                diffArguments.baseRevision(), diffArguments.revision(),
+                java.util.Optional.ofNullable(diffArguments.deploymentPolicy()));
+        return result(response.available() ? "PASS" : "GAP", toolName, Map.of("response", response));
+    }
+
+    /**
+     * The arguments of {@code fabric.contract-diff}: the two revisions and the policy the caller would compile with.
+     *
+     * @param baseRevision     the base record's revision (required).
+     * @param revision         the target record's revision, or null for the current record.
+     * @param deploymentPolicy the policy the caller would compile with now, or null.
+     */
+    private record ContractDiffArguments(Long baseRevision, Long revision, StudioDeploymentPolicyDraft deploymentPolicy) {
+    }
+
+    /**
+     * Read adapter: verifies a compile record's signed envelope, as {@code POST .../verify} does (LLD-fabric-studio-api,
+     * <i>Contract diff and verification</i>). Takes the {@link StudioVerifyRequest} fields. PASS only when the result
+     * is available and overall OK (signature verified, catalog clean); GAP otherwise, with the response naming why.
+     */
+    private StudioToolCallResult contractVerify(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String assemblyId = text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID);
+        String sessionId = text(arguments, "sessionId", "");
+        if (sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId is required");
+        }
+        StudioVerificationResult response = service.verifyCompile(tenantId, assemblyId, sessionId,
+                typedRequest(arguments, StudioVerifyRequest.class));
+        boolean verified = response.available() && Boolean.TRUE.equals(response.overallOk());
+        return result(verified ? "PASS" : "GAP", toolName, Map.of("response", response));
+    }
+
+    /**
      * Export read adapter: downloads one hash-pinned export artifact and returns
      * base64 content so Foundry's JSON tool result can persist it as a run artifact.
      */
@@ -2225,6 +2278,8 @@ public final class StudioToolGateway {
                 "fabric.dynamic-dcp-project",
                 "fabric.deployment-resolve",
                 "fabric.candidate-compile",
+                "fabric.contract-diff",
+                "fabric.contract-verify",
                 "fabric.export-download",
                 "fabric.export-download-all",
                 "fabric.runtime-binding-generate",

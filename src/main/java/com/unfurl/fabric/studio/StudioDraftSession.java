@@ -10,6 +10,11 @@ import java.util.List;
  * <p>Pattern: event-sourced read model. `intentLog` remains the source of draft
  * membership, while metadata such as `catalogFileId` and `displayName` provides
  * tenant history/provenance without changing compile semantics.
+ *
+ * <p>`compileRecords` is the session's append-only list of successful compiles, oldest first
+ * (LLD-fabric-studio-api, <i>Compile records and freshness</i>). Like `intentLog` it is kept with the session and never
+ * edited; every place that rebuilds a session passes the current list on. A state file written before records existed
+ * reads with none.
  */
 public record StudioDraftSession(
         String tenantId,
@@ -30,7 +35,8 @@ public record StudioDraftSession(
         String status,
         Instant createdAt,
         Instant updatedAt,
-        Instant lastOpenedAt
+        Instant lastOpenedAt,
+        List<StudioCompileRecord> compileRecords
 ) {
     /**
      * Convenience constructor: preserves concise service/test construction when
@@ -69,7 +75,8 @@ public record StudioDraftSession(
                 "OPEN",
                 null,
                 null,
-                null);
+                null,
+                List.of());
     }
 
     /** The planning warning a session without a trust policy carries (LLD-fabric-studio-api, Permissive trust policy warning). */
@@ -103,6 +110,26 @@ public record StudioDraftSession(
         createdAt = createdAt == null ? Instant.EPOCH : createdAt;
         updatedAt = updatedAt == null ? createdAt : updatedAt;
         lastOpenedAt = lastOpenedAt == null ? updatedAt : lastOpenedAt;
+        compileRecords = compileRecords == null ? List.of() : List.copyOf(compileRecords);
+    }
+
+    /**
+     * The session with one more compile record and the given status, at the given time.
+     *
+     * @param record the new record, appended after the existing ones.
+     * @param newStatus the session status after the compile.
+     * @param now when the compile finished.
+     * @return the updated session.
+     */
+    public StudioDraftSession withCompileRecord(StudioCompileRecord record, String newStatus, Instant now) {
+        if (record == null) {
+            throw new IllegalArgumentException("record is required");
+        }
+        java.util.ArrayList<StudioCompileRecord> records = new java.util.ArrayList<>(compileRecords);
+        records.add(record);
+        return new StudioDraftSession(tenantId, assemblyId, sessionId, baseCatalogHash, compositionMode, needsId,
+                trustPolicyId, currentCandidateId, sceneRevision, warnings, collaborators, intentLog, catalogFileId,
+                displayName, sessionType, newStatus, createdAt, now, now, records);
     }
 
     /** The warnings with {@value #TRUST_POLICY_PERMISSIVE} present exactly when there is no trust policy, once. */

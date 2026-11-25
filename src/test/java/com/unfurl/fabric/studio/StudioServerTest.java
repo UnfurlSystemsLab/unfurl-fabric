@@ -1,5 +1,7 @@
 package com.unfurl.fabric.studio;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.core.type.TypeReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -464,6 +466,71 @@ class StudioServerTest {
                     .contains("childContractCount")
                     .doesNotContain("bindingPlan")
                     .doesNotContain("selections");
+        }
+    }
+
+    /**
+     * The P2a routes (LLD-fabric-studio-api, Contract diff and verification): contract-diff refuses a missing or
+     * malformed revision and a malformed policy with 400, diffs the current record, and reports a request policy other
+     * than the compile's as COMPILE_STALE; verify answers NOT_SIGNED for an unsigned compile and
+     * COMPILE_RECORD_UNAVAILABLE for a revision with no record; the gateway tools answer PASS and GAP accordingly.
+     */
+    @Test
+    void servesContractDiffAndVerifyRoutes() throws Exception {
+        StudioCatalogService service = new StudioCatalogService();
+        assertThat(service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-demo", List.of(
+                new StudioComponentArtifactDraft("validation.jar", "", "",
+                        jarBase64(manifest("validation-service", "validate.order")))))).status())
+                .isEqualTo("VERIFIED");
+        StudioCreateDraftCompositionResponse created = service.createDraftSession("tenant-a", "assembly-demo",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-demo", "sha256:catalog", "", "", "",
+                        "alice", "Alice"));
+        String sessionId = created.session().sessionId();
+        addComponent(service, created.session(), "uploaded:validation.jar", 0);
+        StudioCompileDraftCandidateResponse compiled = service.compileCandidate("tenant-a", "assembly-demo", sessionId,
+                new StudioCompileDraftCandidateRequest("tenant-a", "assembly-demo", sessionId, 1, false, null));
+        assertThat(compiled.status()).as(compiled.reason() + ": " + compiled.details()).isEqualTo("COMPILED");
+        String session = "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions/" + sessionId;
+        ObjectMapper mapper = StudioJson.mapper();
+
+        try (StudioServer server = started(service)) {
+            HttpResponse<String> missing = get(server, session + "/contract-diff");
+            assertThat(missing.statusCode()).isEqualTo(400);
+            assertThat(missing.body()).contains("CONTRACT_DIFF_INVALID", "baseRevision is required");
+            assertThat(get(server, session + "/contract-diff?baseRevision=one").statusCode()).isEqualTo(400);
+            HttpResponse<String> badPolicy = get(server, session + "/contract-diff?baseRevision=1&deploymentPolicy="
+                    + URLEncoder.encode("{not json", StandardCharsets.UTF_8));
+            assertThat(badPolicy.statusCode()).isEqualTo(400);
+            assertThat(badPolicy.body()).contains("DEPLOYMENT_POLICY_INVALID");
+
+            JsonNode current = mapper.readTree(get(server, session + "/contract-diff?baseRevision=1").body());
+            assertThat(current.path("available").asBoolean()).isTrue();
+            assertThat(current.path("historical").asBoolean()).isFalse();
+            assertThat(current.path("target").path("contractHash").asText())
+                    .isEqualTo(compiled.compileRecord().contractHash());
+            assertThat(current.path("diff").path("canonicalHashChanged").asBoolean()).isFalse();
+
+            String otherPolicy = mapper.writeValueAsString(containerPolicy());
+            JsonNode stale = mapper.readTree(get(server, session + "/contract-diff?baseRevision=1&deploymentPolicy="
+                    + URLEncoder.encode(otherPolicy, StandardCharsets.UTF_8)).body());
+            assertThat(stale.path("available").asBoolean()).isFalse();
+            assertThat(stale.path("absentReason").path("code").asText()).isEqualTo("COMPILE_STALE");
+            assertThat(stale.has("diff")).isFalse();
+
+            JsonNode unsigned = mapper.readTree(post(server, session + "/verify", "").body());
+            assertThat(unsigned.path("absentReason").path("code").asText()).isEqualTo("NOT_SIGNED");
+            JsonNode noRecord = mapper.readTree(post(server, session + "/verify", "{\"revision\":7}").body());
+            assertThat(noRecord.path("absentReason").path("code").asText()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
+            assertThat(noRecord.path("historical").asBoolean()).isTrue();
+
+            JsonNode diffTool = mapper.readTree(post(server, "/studio/tools/fabric.contract-diff",
+                    "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
+                            + sessionId + "\",\"baseRevision\":1}}").body());
+            assertThat(diffTool.path("output").path("status").asText()).isEqualTo("PASS");
+            JsonNode verifyTool = mapper.readTree(post(server, "/studio/tools/fabric.contract-verify",
+                    "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
+                            + sessionId + "\"}}").body());
+            assertThat(verifyTool.path("output").path("status").asText()).isEqualTo("GAP");
         }
     }
 

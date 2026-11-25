@@ -1,5 +1,6 @@
 package com.unfurl.fabric.studio;
 
+import com.unfurl.fabric.matcher.MatchFailureReason;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.unfurl.dcp.claim.Claim;
@@ -36,6 +37,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -263,7 +265,7 @@ class StudioCatalogServiceTest {
                 session.compositionMode(), session.needsId(), session.trustPolicyId(), session.currentCandidateId(),
                 session.sceneRevision(), session.warnings(), session.collaborators(), session.intentLog(),
                 session.catalogFileId(), session.displayName(), session.sessionType(), session.status(),
-                session.createdAt(), session.updatedAt(), session.lastOpenedAt());
+                session.createdAt(), session.updatedAt(), session.lastOpenedAt(), session.compileRecords());
     }
 
     @Test
@@ -770,6 +772,327 @@ class StudioCatalogServiceTest {
                 .hasValueSatisfying(content -> assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
                         .contains("\"component\" : \"com.unfurl:broker:1.0.0\"", "\"host\" : \"com.unfurl:foundry:1.0.0\"",
                                 "\"coordinates\" : \"" + COMPANION + "\"", "\"sha256\" : \"" + companionSha + "\""));
+    }
+
+    // ---- P2a: compile records, contract diff, verification, typed NO_MATCH reasons (LLD-fabric-studio-api) ----
+
+    /**
+     * Compile records: one per successful compile, none for a stale or refused one; the response carries the record;
+     * records and the bytes they name survive a restart.
+     */
+    @Test
+    void recordsEachSuccessfulCompileAndKeepsItAcrossARestart(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioCatalogService service = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        String sessionId = created.session().sessionId();
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+
+        StudioCompileDraftCandidateResponse refused = compile(service, created.session());
+        assertThat(refused.status()).isEqualTo("INVALID");
+        assertThat(refused.compileRecord()).isNull();
+        StudioCompileDraftCandidateResponse stale = service.compileCandidate("tenant-a", "assembly-flow", sessionId,
+                new StudioCompileDraftCandidateRequest("tenant-a", "assembly-flow", sessionId, 0, false, containerPolicy()));
+        assertThat(stale.status()).isEqualTo("STALE_REVISION");
+        assertThat(service.draftSession("tenant-a", "assembly-flow", sessionId).compileRecords()).isEmpty();
+
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+        StudioCompileDraftCandidateResponse compiled = compile(service, created.session());
+        assertThat(compiled.status()).as(compiled.reason() + ": " + compiled.details()).isEqualTo("COMPILED");
+        StudioCompileRecord record = compiled.compileRecord();
+        assertThat(record.revision()).isEqualTo(2);
+        assertThat(record.signed()).isFalse();
+        assertThat(record.bindingsHash()).isNull();
+        assertThat(service.draftSession("tenant-a", "assembly-flow", sessionId).compileRecords()).containsExactly(record);
+        assertThat(dir.resolve("state").resolve(StudioCompiledContractStore.FOLDER)).isDirectory();
+
+        StudioCatalogService restarted = new StudioCatalogService(store, null);
+        assertThat(restarted.draftSession("tenant-a", "assembly-flow", sessionId).compileRecords()).containsExactly(record);
+        StudioContractDiff diff = restarted.contractDiff("tenant-a", "assembly-flow", sessionId, 2, null,
+                Optional.of(containerPolicy()));
+        assertThat(diff.available()).as(String.valueOf(diff.absentReason())).isTrue();
+        assertThat(diff.diff().canonicalHashChanged()).isFalse();
+        assertThat(diff.diff().ports()).isNotNull();
+        assertThat(diff.diagnosticArtifacts()).singleElement()
+                .satisfies(artifact -> assertThat(artifact.url()).contains("contract-diff.json"));
+    }
+
+    /**
+     * Contract diff: COMPILE_REQUIRED before any compile; current, historical, stale by revision and by policy; a revision
+     * with no record; and a damaged store file, which the hash check refuses.
+     */
+    @Test
+    void diffsCompileRecordsUnderTheFreshnessRule(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioCatalogService service = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        String sessionId = created.session().sessionId();
+        assertThat(service.contractDiff("tenant-a", "assembly-flow", sessionId, 0, null, Optional.empty()).absentReason())
+                .satisfies(reason -> assertThat(reason.code()).isEqualTo("COMPILE_REQUIRED"));
+
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+        StudioCompileRecord containerized = compile(service, created.session()).compileRecord();
+        // Move the revision without changing the composition, then compile it in process.
+        removeComponent(service, created.session(), "uploaded:foundry.jar", 2);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 3);
+        StudioCompileDraftCandidateResponse inProcess = service.compileCandidate("tenant-a", "assembly-flow", sessionId,
+                new StudioCompileDraftCandidateRequest("tenant-a", "assembly-flow", sessionId, 4, false, inProcessPolicy()));
+        assertThat(inProcess.status()).as(inProcess.reason() + ": " + inProcess.details()).isEqualTo("COMPILED");
+        assertThat(inProcess.compileRecord().deploymentPolicyHash()).isNotEqualTo(containerized.deploymentPolicyHash());
+
+        StudioContractDiff current = service.contractDiff("tenant-a", "assembly-flow", sessionId, 2, null,
+                Optional.of(inProcessPolicy()));
+        assertThat(current.available()).as(String.valueOf(current.absentReason())).isTrue();
+        assertThat(current.historical()).isFalse();
+        assertThat(current.base().sourceRevision()).isEqualTo(2);
+        assertThat(current.target().sourceRevision()).isEqualTo(4);
+        assertThat(current.diff().changedDeploymentShapes())
+                .isNotEmpty()
+                .allSatisfy(change -> {
+                    assertThat(change.fromShape()).isEqualTo("CONTAINERIZED_SERVICE");
+                    assertThat(change.toShape()).isEqualTo("IN_PROCESS_LIBRARY");
+                });
+
+        StudioContractDiff otherPolicy = service.contractDiff("tenant-a", "assembly-flow", sessionId, 2, null,
+                Optional.of(containerPolicy()));
+        assertThat(otherPolicy.available()).isFalse();
+        assertThat(otherPolicy.diff()).isNull();
+        assertThat(otherPolicy.absentReason().code()).isEqualTo("COMPILE_STALE");
+        assertThat(otherPolicy.absentReason().message()).contains("different deployment policy");
+
+        StudioContractDiff historical = service.contractDiff("tenant-a", "assembly-flow", sessionId, 2, 2L,
+                Optional.of(inProcessPolicy()));
+        assertThat(historical.available()).isTrue();
+        assertThat(historical.historical()).isTrue();
+        assertThat(historical.diff().canonicalHashChanged()).isFalse();
+
+        assertThat(service.contractDiff("tenant-a", "assembly-flow", sessionId, 3, null, Optional.empty()).absentReason())
+                .satisfies(reason -> {
+                    assertThat(reason.code()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
+                    assertThat(reason.message()).contains("revision 3");
+                });
+
+        removeComponent(service, created.session(), "uploaded:foundry.jar", 4);
+        StudioContractDiff moved = service.contractDiff("tenant-a", "assembly-flow", sessionId, 2, null, Optional.empty());
+        assertThat(moved.absentReason().code()).isEqualTo("COMPILE_STALE");
+        assertThat(moved.absentReason().message()).isEqualTo("compiled at revision 4; the draft is at revision 5");
+
+        // A damaged file no longer hashes to its name, so it is never used.
+        try (var files = Files.walk(dir.resolve("state").resolve(StudioCompiledContractStore.FOLDER))) {
+            Path envelope = files.filter(path -> path.getFileName().toString().equals(containerized.compiledEnvelopeSha256()))
+                    .findFirst().orElseThrow();
+            Files.writeString(envelope, Files.readString(envelope) + "\n# edited");
+        }
+        // The record at revision 2 is a historical target, read without the freshness rule, so its damaged envelope is
+        // what the answer names.
+        StudioContractDiff damaged = service.contractDiff("tenant-a", "assembly-flow", sessionId, 4, 2L, Optional.empty());
+        assertThat(damaged.absentReason().code()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
+        assertThat(damaged.absentReason().message()).contains(containerized.compiledEnvelopeSha256());
+    }
+
+    /**
+     * Verification: an unsigned compile is NOT_SIGNED; a signed one without a trust-key directory is
+     * TRUST_KEYS_UNAVAILABLE; with the signer's key trusted it verifies against a clean catalog; with only another key
+     * trusted the signature is KeyNotPinned; a past record by contract hash is historical.
+     */
+    @Test
+    void verifiesASignedCompileOnlyWithConfiguredTrustKeys(@TempDir Path dir) throws Exception {
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
+        Path trusted = Files.createDirectories(dir.resolve("trusted"));
+        writePublicKeyPem(trusted, "studio.pem", keys);
+        Path untrusted = Files.createDirectories(dir.resolve("untrusted"));
+        writePublicKeyPem(untrusted, "other.pem", generateStudioSigningKeyPair());
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        String previousKeysDir = System.getProperty("unfurl.studio.trust.keysDir");
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+            System.clearProperty("unfurl.studio.trust.keysDir");
+            StudioCatalogService service = flowfoundrySessionService(dir);
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            String sessionId = created.session().sessionId();
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+            StudioCompileRecord unsigned = compile(service, created.session()).compileRecord();
+            assertThat(service.verifyCompile("tenant-a", "assembly-flow", sessionId, null).absentReason().code())
+                    .isEqualTo("NOT_SIGNED");
+
+            StudioCompileDraftCandidateResponse signedCompile = service.compileCandidate("tenant-a", "assembly-flow",
+                    sessionId, new StudioCompileDraftCandidateRequest("tenant-a", "assembly-flow", sessionId, 2, true,
+                            containerPolicy()));
+            assertThat(signedCompile.compileRecord().signed()).isTrue();
+            StudioVerifyRequest current = new StudioVerifyRequest(null, null, containerPolicy());
+            assertThat(service.verifyCompile("tenant-a", "assembly-flow", sessionId, current).absentReason().code())
+                    .isEqualTo("TRUST_KEYS_UNAVAILABLE");
+
+            System.setProperty("unfurl.studio.trust.keysDir", trusted.toString());
+            StudioVerificationResult verified = service.verifyCompile("tenant-a", "assembly-flow", sessionId, current);
+            assertThat(verified.available()).as(String.valueOf(verified.absentReason())).isTrue();
+            assertThat(verified.historical()).isFalse();
+            assertThat(verified.signature().ok()).isTrue();
+            assertThat(verified.signature().result()).isEqualTo("Ok");
+            assertThat(verified.catalogDrift().clean()).isTrue();
+            assertThat(verified.overallOk()).isTrue();
+            assertThat(verified.provenance().contractHash()).isEqualTo(signedCompile.compileRecord().contractHash());
+
+            System.setProperty("unfurl.studio.trust.keysDir", untrusted.toString());
+            StudioVerificationResult notPinned = service.verifyCompile("tenant-a", "assembly-flow", sessionId, current);
+            assertThat(notPinned.signature().result()).isEqualTo("KeyNotPinned");
+            assertThat(notPinned.overallOk()).isFalse();
+
+            StudioVerificationResult past = service.verifyCompile("tenant-a", "assembly-flow", sessionId,
+                    new StudioVerifyRequest(null, unsigned.contractHash(), null));
+            // Each compile's audit carries its own compiledAt, so the earlier unsigned compile has its own hash: it is
+            // historical, and still not signed.
+            assertThat(past.historical()).isTrue();
+            assertThat(past.provenance().contractHash()).isEqualTo(unsigned.contractHash());
+            assertThat(past.absentReason().code()).isEqualTo("NOT_SIGNED");
+        } finally {
+            restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+            restoreProperty("unfurl.studio.trust.keysDir", previousKeysDir);
+        }
+    }
+
+    /**
+     * A session NO_MATCH keeps its details text and carries the same causes typed, built by the same presenter; a
+     * session applies no trust classification, so it carries no trust rejections.
+     */
+    @Test
+    void reportsASessionNoMatchWithTypedReasons(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+
+        StudioCompileDraftCandidateResponse response = compile(service, created.session());
+
+        assertThat(response.reason()).isEqualTo("NO_MATCH");
+        assertThat(response.reasons()).isNotEmpty()
+                .allSatisfy(reason -> assertThat(reason.kind()).isEqualTo(MatchFailureReason.Kind.CONFLICT));
+        assertThat(response.reasons()).anySatisfy(reason -> {
+            assertThat(reason.reasonCode()).isEqualTo("MISSING_CAPABILITY");
+            assertThat(reason.capability()).isEqualTo("agent.run");
+        });
+        assertThat(response.details()).isEqualTo(String.join("; ",
+                response.reasons().stream().map(MatchFailureReason::message).toList()));
+        assertThat(response.trustRejections()).isEmpty();
+
+        StudioDeploymentResolveResponse resolve = service.resolveDeployment(new StudioDeploymentResolveRequest(
+                null, null, null, null, true, containerPolicy(), "tenant-a", "assembly-flow",
+                created.session().sessionId(), "", ""));
+        assertThat(resolve.reason()).isEqualTo("NO_MATCH");
+        assertThat(resolve.reasons()).isEqualTo(response.reasons());
+    }
+
+    /**
+     * A record is proved against its bytes before anything is verified or diffed: a record whose contract hash was
+     * rewritten in the state file, or whose signed envelope belongs to another compile, is COMPILE_RECORD_INCONSISTENT,
+     * never verified for the hash it claims (LLD-fabric-studio-api, A record is checked against its bytes).
+     */
+    @Test
+    void refusesARecordWhoseBytesDoNotBelongToIt(@TempDir Path dir) throws Exception {
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
+        Path trusted = Files.createDirectories(dir.resolve("trusted"));
+        writePublicKeyPem(trusted, "studio.pem", keys);
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        String previousKeysDir = System.getProperty("unfurl.studio.trust.keysDir");
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+            System.setProperty("unfurl.studio.trust.keysDir", trusted.toString());
+            Path statePath = dir.resolve("state").resolve("studio-state.json");
+            StudioStateStore store = new StudioStateStore(statePath);
+            StudioCatalogService service = flowfoundrySessionService(dir, store);
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            String sessionId = created.session().sessionId();
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+            StudioCompileRecord first = signedCompile(service, sessionId, 2);
+            StudioCompileRecord second = signedCompile(service, sessionId, 2);
+            StudioVerifyRequest current = new StudioVerifyRequest(null, null, containerPolicy());
+            assertThat(service.verifyCompile("tenant-a", "assembly-flow", sessionId, current).overallOk()).isTrue();
+
+            // The reported attack: the current record's contract hash rewritten to 64 zeros.
+            String zeros = "0".repeat(64);
+            String state = Files.readString(statePath);
+            Files.writeString(statePath, state.replace(second.contractHash(), zeros));
+            StudioCatalogService rewritten = new StudioCatalogService(store, null);
+            StudioVerificationResult forged = rewritten.verifyCompile("tenant-a", "assembly-flow", sessionId, current);
+            assertThat(forged.available()).isFalse();
+            assertThat(forged.overallOk()).isNull();
+            assertThat(forged.absentReason().code()).isEqualTo("COMPILE_RECORD_INCONSISTENT");
+            assertThat(forged.absentReason().message()).contains(zeros);
+            assertThat(rewritten.contractDiff("tenant-a", "assembly-flow", sessionId, 2, null, Optional.of(containerPolicy()))
+                    .absentReason().code()).isEqualTo("COMPILE_RECORD_INCONSISTENT");
+
+            // Another compile's signed envelope under this record is refused too.
+            Files.writeString(statePath, state.replace(second.signedEnvelopeSha256(), first.signedEnvelopeSha256()));
+            StudioVerificationResult swapped = new StudioCatalogService(store, null)
+                    .verifyCompile("tenant-a", "assembly-flow", sessionId, current);
+            assertThat(swapped.absentReason().code()).isEqualTo("COMPILE_RECORD_INCONSISTENT");
+            assertThat(swapped.absentReason().message()).contains("signed envelope");
+        } finally {
+            restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+            restoreProperty("unfurl.studio.trust.keysDir", previousKeysDir);
+        }
+    }
+
+    /** A snapshot never carries compile records in: the imported session has none and is compiled again here. */
+    @Test
+    void importsSnapshotSessionsWithoutCompileRecords(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+        assertThat(compile(service, created.session()).status()).isEqualTo("COMPILED");
+        StudioAssemblySnapshot snapshot = service.saveAssemblySnapshot("tenant-a", "assembly-flow");
+        assertThat(snapshot.sessions()).singleElement().satisfies(session -> assertThat(session.compileRecords()).hasSize(1));
+
+        StudioAssemblySnapshot imported = service.loadAssemblySnapshot("tenant-a", "assembly-flow", snapshot);
+
+        assertThat(imported.sessions()).singleElement().satisfies(session -> assertThat(session.compileRecords()).isEmpty());
+        assertThat(service.contractDiff("tenant-a", "assembly-flow", created.session().sessionId(), 2, null,
+                Optional.empty()).absentReason().code()).isEqualTo("COMPILE_REQUIRED");
+    }
+
+    /** Fixture command: one signed compile at the supplied revision with the container policy; returns its record. */
+    private static StudioCompileRecord signedCompile(StudioCatalogService service, String sessionId, long revision) {
+        StudioCompileDraftCandidateResponse response = service.compileCandidate("tenant-a", "assembly-flow", sessionId,
+                new StudioCompileDraftCandidateRequest("tenant-a", "assembly-flow", sessionId, revision, true,
+                        containerPolicy()));
+        assertThat(response.status()).as(response.reason() + ": " + response.details()).isEqualTo("COMPILED");
+        assertThat(response.compileRecord().signed()).isTrue();
+        return response.compileRecord();
+    }
+
+    /** Fixture command: applies one REMOVE_COMPONENT intent at the supplied revision. */
+    private static void removeComponent(StudioCatalogService service, StudioDraftSession session, String catalogEntryId,
+                                        long revision) {
+        StudioIntentRequest intent = new StudioIntentRequest();
+        intent.tenantId = session.tenantId();
+        intent.assemblyId = session.assemblyId();
+        intent.sessionId = session.sessionId();
+        intent.baseRevision = revision;
+        intent.type = "REMOVE_COMPONENT";
+        intent.collaboratorId = "alice";
+        intent.put("catalogEntryId", catalogEntryId);
+        assertThat(service.applyIntent(session.tenantId(), session.assemblyId(), session.sessionId(), intent).status())
+                .isEqualTo("VALID");
+    }
+
+    /** Fixture policy: asks the deployment resolver for in-process shapes. */
+    private static StudioDeploymentPolicyDraft inProcessPolicy() {
+        return new StudioDeploymentPolicyDraft(List.of("IN_PROCESS_LIBRARY"), List.of(), List.of(),
+                new StudioDeploymentRuntimeDraft("21", true, true, true, null));
     }
 
     private static final String COMPANION = "com.example:broker-http:1.0.0";

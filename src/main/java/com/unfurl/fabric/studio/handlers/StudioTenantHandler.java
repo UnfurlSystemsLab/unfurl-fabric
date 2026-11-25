@@ -13,6 +13,7 @@ import com.unfurl.fabric.studio.StudioCollaborator;
 import com.unfurl.fabric.studio.StudioCompileDraftCandidateRequest;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
 import com.unfurl.fabric.studio.StudioCreateDraftCompositionRequest;
+import com.unfurl.fabric.studio.StudioDeploymentPolicyDraft;
 import com.unfurl.fabric.studio.StudioDcpProjectionRequest;
 import com.unfurl.fabric.studio.StudioIntentRequest;
 import com.unfurl.fabric.studio.StudioLayoutStateRequest;
@@ -21,11 +22,13 @@ import com.unfurl.fabric.studio.StudioPrincipal;
 import com.unfurl.fabric.studio.StudioSaveDraftRequest;
 import com.unfurl.fabric.studio.StudioSessionEvent;
 import com.unfurl.fabric.studio.StudioSessionEventSubscription;
+import com.unfurl.fabric.studio.StudioVerifyRequest;
 
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -310,6 +313,20 @@ public final class StudioTenantHandler {
                         exchange.getRequestBody(),
                         StudioCompileDraftCandidateRequest.class);
                 write(exchange, 200, service.compileCandidate(route.tenantId(), route.assemblyId(), route.sessionId(), request));
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.sessionContractDiff()) {
+                write(exchange, 200, service.contractDiff(route.tenantId(), route.assemblyId(), route.sessionId(),
+                        requiredRevision(exchange, "baseRevision"), optionalRevision(exchange, "revision"),
+                        requestPolicy(exchange)));
+                return;
+            }
+            if ("POST".equals(exchange.getRequestMethod()) && route.sessionVerify()) {
+                byte[] body = exchange.getRequestBody().readAllBytes();
+                StudioVerifyRequest request = body.length == 0
+                        ? new StudioVerifyRequest(null, null, null)
+                        : mapper.readValue(body, StudioVerifyRequest.class);
+                write(exchange, 200, service.verifyCompile(route.tenantId(), route.assemblyId(), route.sessionId(), request));
                 return;
             }
             write(exchange, 404, Map.of("error", "unknown Studio tenant route"));
@@ -634,9 +651,89 @@ public final class StudioTenantHandler {
             return "assemblies/{assemblyId}/sessions/{sessionId}/compile".equals(tail);
         }
 
+        /** Route predicate: two compile records of a session compared (LLD-fabric-studio-api, Contract diff). */
+        boolean sessionContractDiff() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/contract-diff".equals(tail);
+        }
+
+        /** Route predicate: a compile record's signed envelope verified (LLD-fabric-studio-api, verification). */
+        boolean sessionVerify() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/verify".equals(tail);
+        }
+
         private static String decode(String value) {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * A required revision query parameter, or {@code 400 CONTRACT_DIFF_INVALID} naming it when it is missing or not a
+     * non-negative number.
+     */
+    private static long requiredRevision(HttpExchange exchange, String name) {
+        Long revision = optionalRevision(exchange, name);
+        if (revision == null) {
+            throw new IllegalArgumentException("CONTRACT_DIFF_INVALID: " + name + " is required");
+        }
+        return revision;
+    }
+
+    /** An optional revision query parameter: null when absent, {@code 400 CONTRACT_DIFF_INVALID} when malformed. */
+    private static Long optionalRevision(HttpExchange exchange, String name) {
+        if (!queryParamPresent(exchange, name)) {
+            return null;
+        }
+        String value = queryParam(exchange, name).trim();
+        try {
+            long revision = Long.parseLong(value);
+            if (revision < 0) {
+                throw new NumberFormatException("negative");
+            }
+            return revision;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("CONTRACT_DIFF_INVALID: " + name + " must be a non-negative revision, got '"
+                    + value + "'");
+        }
+    }
+
+    /**
+     * The policy a freshness-checked read would compile with now: the {@code deploymentPolicy} query parameter, URL-
+     * encoded JSON in the {@code StudioDeploymentPolicyDraft} shape (LLD-fabric-studio-api, Compile records and
+     * freshness). Absent means the request names no policy; anything that does not parse as that shape is
+     * {@code 400 DEPLOYMENT_POLICY_INVALID}. Fabric hashes it; the client never does.
+     */
+    private Optional<StudioDeploymentPolicyDraft> requestPolicy(HttpExchange exchange) {
+        if (!queryParamPresent(exchange, "deploymentPolicy")) {
+            return Optional.empty();
+        }
+        String json = queryParam(exchange, "deploymentPolicy");
+        try {
+            StudioDeploymentPolicyDraft policy = json.isBlank() ? null
+                    : mapper.readValue(json, StudioDeploymentPolicyDraft.class);
+            if (policy == null) {
+                throw new IllegalArgumentException("DEPLOYMENT_POLICY_INVALID: deploymentPolicy is empty");
+            }
+            return Optional.of(policy);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalArgumentException("DEPLOYMENT_POLICY_INVALID: deploymentPolicy is not a deployment policy: "
+                    + ex.getOriginalMessage());
+        }
+    }
+
+    /** Whether a query parameter is present at all, even with an empty value. */
+    private static boolean queryParamPresent(HttpExchange exchange, String name) {
+        String query = exchange.getRequestURI().getRawQuery();
+        if (query == null || query.isBlank()) {
+            return false;
+        }
+        for (String pair : query.split("&")) {
+            int equals = pair.indexOf('=');
+            String key = equals < 0 ? pair : pair.substring(0, equals);
+            if (name.equals(URLDecoder.decode(key, StandardCharsets.UTF_8))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String queryParam(HttpExchange exchange, String name) {

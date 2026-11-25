@@ -104,6 +104,37 @@ class StudioDeploymentServiceTest {
         assertThat(response.details()).contains("cand-does-not-exist").contains("valid ids: cand-");
     }
 
+    /**
+     * A filesystem resolve under a trust policy that denies the needed capability: NO_MATCH keeps its details text and
+     * carries the unmet need and the trust rejection typed, from the same presenter (LLD-fabric-studio-api, Structured
+     * match failures and trust rejections).
+     */
+    @Test
+    void noMatchCarriesTypedReasonsAndTrustRejections(@TempDir Path dir) throws Exception {
+        Path catalog = dir.resolve("catalog");
+        writeCatalogJar(catalog, "storage.jar", "storage-s3", "storage.put", containerShapeProfile());
+        Path needs = writeNeeds(dir, "storage.put");
+        com.unfurl.fabric.trust.TrustPolicy denying = new com.unfurl.fabric.trust.TrustPolicy(null, null,
+                com.unfurl.fabric.trust.TrustPolicy.Stability.EXPERIMENTAL, true, false, List.of("*"),
+                List.of("storage.*"), null, null);
+
+        StudioDeploymentResolveResponse response = new StudioDeploymentService().resolveDeployment(
+                new StudioDeploymentResolveRequest(catalog, needs, denying, null, false, containerPolicy()));
+
+        assertThat(response.reason()).isEqualTo("NO_MATCH");
+        assertThat(response.reasons()).singleElement().satisfies(reason -> {
+            assertThat(reason.kind()).isEqualTo(com.unfurl.fabric.matcher.MatchFailureReason.Kind.UNMET_NEED);
+            assertThat(reason.reasonCode()).isEqualTo("REJECTED_BY_TRUST_POLICY");
+            assertThat(reason.capability()).isEqualTo("storage.put");
+            assertThat(response.details()).isEqualTo("no valid composition: "
+                    + com.unfurl.fabric.matcher.NoMatchExplanation.UNMET_PREFIX + reason.message());
+        });
+        assertThat(response.trustRejections()).singleElement().satisfies(rejection -> {
+            assertThat(rejection.coordinates()).isEqualTo("com.unfurl:storage-s3:1.0.0");
+            assertThat(rejection.reasonCode()).isEqualTo("CapabilityDenied");
+        });
+    }
+
     private static StudioDeploymentPolicyDraft containerPolicy() {
         return new StudioDeploymentPolicyDraft(
                 List.of("CONTAINERIZED_SERVICE"),
