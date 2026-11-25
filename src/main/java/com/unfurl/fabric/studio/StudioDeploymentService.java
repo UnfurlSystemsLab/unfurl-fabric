@@ -115,7 +115,7 @@ public final class StudioDeploymentService {
         return new DeploymentShapeResolver().resolve(
                 deploymentComponents(candidate),
                 allShapeSupport(),
-                deploymentPolicy(deploymentPolicy));
+                effectivePolicy(deploymentPolicy));
     }
 
     private Selection selectCandidate(MatchResult result, StudioDeploymentResolveRequest request) {
@@ -140,11 +140,16 @@ public final class StudioDeploymentService {
                     List.of()));
         }
         // Every capability in the needs is mandatory; the message carries each unmet need and conflict with its fix.
-        List<String> reasons = NoMatchExplanation.reasons((MatchResult.NoMatch) result);
+        // The typed causes come from the same presenter and the same causes as the text (LLD-fabric-studio-api,
+        // Structured match failures and trust rejections).
+        MatchResult.NoMatch noMatch = (MatchResult.NoMatch) result;
+        List<String> reasons = NoMatchExplanation.reasons(noMatch);
         return new Selection(null, StudioDeploymentResolveResponse.invalid(
                 "NO_MATCH",
                 "no valid composition: " + String.join("; ", reasons),
-                List.of()));
+                List.of(),
+                NoMatchExplanation.causes(noMatch),
+                NoMatchExplanation.trustRejections(noMatch)));
     }
 
     private List<DeploymentComponent> deploymentComponents(CompositionCandidate candidate) {
@@ -180,7 +185,17 @@ public final class StudioDeploymentService {
         return new SubstrateShapeSupport(EnumSet.allOf(DeploymentShape.class));
     }
 
-    private DeploymentPolicy deploymentPolicy(StudioDeploymentPolicyDraft draft) {
+    /**
+     * The deployment policy resolution actually uses for a Studio policy draft: Fabric's default policy for an absent
+     * draft, otherwise the draft with absent lists empty and absent runtime flags false. Compile records hash this
+     * effective policy ({@link StudioCompileFreshness#policyHash}), so two drafts that resolve alike are one policy.
+     *
+     * <p>Pattern: <b>Adapter</b> from the Studio request shape to the deployment resolver's policy.
+     *
+     * @param draft the request's policy draft, or null.
+     * @return the effective policy.
+     */
+    public DeploymentPolicy effectivePolicy(StudioDeploymentPolicyDraft draft) {
         if (draft == null) {
             return defaultDeploymentPolicy();
         }

@@ -48,8 +48,9 @@ import com.unfurl.fabric.compiler.CompositionContractCodec;
 import com.unfurl.fabric.compiler.SelectionRecord;
 import com.unfurl.fabric.matcher.CandidateValidity;
 import com.unfurl.fabric.matcher.CandidateValidator;
+import com.unfurl.fabric.matcher.MatchFailureReason;
+import com.unfurl.fabric.matcher.NoMatchExplanation;
 import com.unfurl.fabric.matcher.CompositionCandidate;
-import com.unfurl.fabric.matcher.Conflict;
 import com.unfurl.fabric.matcher.DependencyBinding;
 import com.unfurl.fabric.matcher.PlanningWarning;
 import com.unfurl.fabric.matcher.Scorer;
@@ -61,6 +62,15 @@ import com.unfurl.fabric.signing.FabricSigningException;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
 import com.unfurl.fabric.signing.SigningKeyLoader;
+import com.unfurl.fabric.signing.SignatureVerificationResult;
+import com.unfurl.fabric.signing.SignatureVerifier;
+import com.unfurl.fabric.verify.CatalogDriftChecker;
+import com.unfurl.fabric.verify.CatalogDriftReport;
+import com.unfurl.fabric.verify.ContractDiff;
+import com.unfurl.fabric.verify.ContractDiffer;
+import com.unfurl.fabric.verify.FabricVerificationReport;
+import com.unfurl.fabric.verify.TrustKeyDirectoryLoader;
+import com.unfurl.dcp.trust.VerificationKeySet;
 import com.unfurl.fabric.substrate.SubstrateProfileDeriver;
 import com.unfurl.fabric.workflow.WorkflowAnalysisException;
 import com.unfurl.fabric.workflow.WorkflowAnalyzer;
@@ -145,6 +155,12 @@ public final class StudioCatalogService {
     private final StudioClaimAdmissionValidator claimAdmissionValidator = new StudioClaimAdmissionValidator();
     private final ObjectMapper jsonMapper = StudioJson.mapper();
     private final StudioDeploymentService deploymentService = new StudioDeploymentService();
+    /** The one freshness rule for compile-derived values (LLD-fabric-studio-api, Compile records and freshness). */
+    private final StudioCompileFreshness freshness = new StudioCompileFreshness(deploymentService);
+    /** The bytes compile records name, kept per tenant by SHA-256 beside the state file. */
+    private final StudioCompiledContractStore compiledStore;
+    /** Reads a record's stored envelopes back for contract-diff and verify. */
+    private final StudioCompiledContractReader compiledReader;
 
     /**
      * Optional DCP authoring proposer. When Fabric is configured with a DCP transport to
@@ -171,6 +187,8 @@ public final class StudioCatalogService {
         this.assetRoot = assetRoot == null ? null : assetRoot.toAbsolutePath().normalize();
         this.eventBus = eventBus == null ? new InMemoryStudioSessionEventBus() : eventBus;
         this.companionStore = StudioCompanionStore.forState(store);
+        this.compiledStore = StudioCompiledContractStore.forState(store);
+        this.compiledReader = new StudioCompiledContractReader(compiledStore);
         if (store != null) {
             StudioStateStore.State state = store.load();
             entriesByTenant.putAll(state.entriesByTenant());
@@ -3364,7 +3382,11 @@ public final class StudioCatalogService {
                         session.status(),
                         session.createdAt(),
                         session.updatedAt(),
-                        session.lastOpenedAt()))
+                        session.lastOpenedAt(),
+                        // Compile records are facts of the Studio that compiled: nothing in the compiled bytes proves
+                        // which revision or policy they came from, so a snapshot never carries them in and the imported
+                        // draft is compiled again here (LLD-fabric-studio-api, Compile records and freshness).
+                        List.of()))
                 .sorted(Comparator.comparing(StudioDraftSession::sessionId))
                 .toList();
 
@@ -3532,7 +3554,8 @@ public final class StudioCatalogService {
                 "OPEN",
                 now,
                 now,
-                now);
+                now,
+                List.of());
         sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
         if (selectedCatalog != null) {
             linkFileToSession(tenant, sessionId, "", selectedCatalog.fileId(), "INPUT");
@@ -3637,7 +3660,8 @@ public final class StudioCatalogService {
                 "OPEN",
                 current.createdAt(),
                 now,
-                now);
+                now,
+                current.compileRecords());
         putSession(updated);
         updateAssemblyRevision(updated);
         persist();
@@ -3671,7 +3695,8 @@ public final class StudioCatalogService {
                 current.status(),
                 current.createdAt(),
                 current.updatedAt(),
-                Instant.now());
+                Instant.now(),
+                current.compileRecords());
         putSession(updated);
         persist();
         publishSessionEvent(updated);
@@ -3694,9 +3719,13 @@ public final class StudioCatalogService {
         Need need = needForSession(session, request.needsId(), request.needsYaml());
         CandidateBuild build = candidateForSession(session, need);
         if (build.invalid() != null) {
+            // Session mode applies no trust classification (LLD gap: a session's trust policy is not applied), so a
+            // session NO_MATCH carries conflicts and no trust rejections.
             return StudioDeploymentResolveResponse.invalid(
                     build.invalid().reason(),
                     build.invalid().details(),
+                    List.of(),
+                    build.invalid().reasons(),
                     List.of());
         }
         return deploymentService.resolveDeployment(build.candidate(), request);
@@ -3775,6 +3804,7 @@ public final class StudioCatalogService {
         List<StudioExportArtifact> supportArtifacts = new ArrayList<>();
         List<StudioExportArtifact> diagnosticArtifacts = new ArrayList<>();
         StudioExportArtifact signed = null;
+        byte[] signedEnvelopeBytes = null;
         Optional<FabricContractSigner> compileSigner = Optional.empty();
         if (request != null && request.sign()) {
             compileSigner = studioSigner();
@@ -3792,6 +3822,7 @@ public final class StudioCatalogService {
                 if (signedEnvelope.invalid() != null) {
                     warnings.add(signedEnvelope.invalid().details());
                 } else {
+                    signedEnvelopeBytes = signedEnvelope.bytes();
                     supportArtifacts.add(exportArtifact(
                             session.tenantId(),
                             "signed-compiled-contract-" + session.sessionId(),
@@ -3834,7 +3865,18 @@ public final class StudioCatalogService {
                     "application/json",
                     jsonBytes(hostedAudit)));
         }
-        StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
+        // The compile record (LLD-fabric-studio-api, Compile records and freshness). Its envelopes go to the
+        // content-addressed store first, so a record never names bytes that were not stored.
+        StudioCompileRecord record = new StudioCompileRecord(
+                session.sceneRevision(),
+                freshness.policyHash(request == null ? null : request.deploymentPolicy()),
+                contractHash(compiled.contract()),
+                compiledStore.put(session.tenantId(), compiled.compiledEnvelopeBytes()),
+                compiledStore.put(session.tenantId(), compiled.profileBytes()),
+                signedEnvelopeBytes == null ? null : compiledStore.put(session.tenantId(), signedEnvelopeBytes),
+                null,
+                Instant.now());
+        StudioCompileDraftCandidateResponse responseSnapshot = new StudioCompileDraftCandidateResponse(
                 "COMPILED",
                 build.candidate().candidateId(),
                 contract,
@@ -3844,41 +3886,286 @@ public final class StudioCatalogService {
                 "",
                 "",
                 session.sceneRevision(),
-                expected);
-        StudioCompileDraftCandidateResponse responseSnapshot = new StudioCompileDraftCandidateResponse(
-                response.status(),
-                response.candidateId(),
-                response.contractArtifact(),
-                response.substrateProfileArtifact(),
-                response.signedContractArtifact(),
-                response.warnings(),
-                response.reason(),
-                response.details(),
-                response.expectedRevision(),
-                response.receivedRevision(),
+                expected,
                 supportArtifacts,
-                diagnosticArtifacts);
+                diagnosticArtifacts,
+                List.of(),
+                List.of(),
+                record);
         diagnosticArtifacts.add(diagnosticArtifact(
                 session.tenantId(),
                 "compile-response",
                 "compile-response.json",
                 responseSnapshot));
         registerCompileFiles(session, contract, profile, signed, supportArtifacts, diagnosticArtifacts);
-        markSessionStatus(session, "COMPILED");
+        StudioDraftSession compiledSession = session.withCompileRecord(record, "COMPILED", record.compiledAt());
+        putSession(compiledSession);
+        publishSessionEvent(compiledSession);
         persist();
         return new StudioCompileDraftCandidateResponse(
-                response.status(),
-                response.candidateId(),
-                response.contractArtifact(),
-                response.substrateProfileArtifact(),
-                response.signedContractArtifact(),
-                response.warnings(),
-                response.reason(),
-                response.details(),
-                response.expectedRevision(),
-                response.receivedRevision(),
+                responseSnapshot.status(),
+                responseSnapshot.candidateId(),
+                responseSnapshot.contractArtifact(),
+                responseSnapshot.substrateProfileArtifact(),
+                responseSnapshot.signedContractArtifact(),
+                responseSnapshot.warnings(),
+                responseSnapshot.reason(),
+                responseSnapshot.details(),
+                responseSnapshot.expectedRevision(),
+                responseSnapshot.receivedRevision(),
                 supportArtifacts,
-                diagnosticArtifacts);
+                diagnosticArtifacts,
+                List.of(),
+                List.of(),
+                record);
+    }
+
+    /**
+     * The compiled contract's canonical hash: SHA-256 of {@code CompiledContractCodec.canonicalBytes}, the bytes Fabric's
+     * signer signs, in the signer's form (lower-case hex without a prefix), so a signed envelope's {@code canonicalHash}
+     * equals it and the reader can prove a record against its bytes.
+     */
+    private String contractHash(CompiledContract compiled) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(new CompiledContractCodec().canonicalBytes(compiled)));
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
+    }
+
+    /**
+     * Read model: compares two compile records of a session (LLD-fabric-studio-api, <i>Contract diff and
+     * verification</i>). The base is the latest record at {@code baseRevision}; the target is the current record, or
+     * the latest at {@code revision}. Against the current record the freshness rule applies, so a diff is never
+     * returned for a draft or policy that has moved on. Never changes the session.
+     *
+     * <p>Pattern: <b>Facade</b> over {@link StudioCompileFreshness}, {@link StudioCompiledContractReader} and
+     * {@link ContractDiffer}, the one comparison {@code fabric diff} also prints.
+     *
+     * @param tenantId      the tenant.
+     * @param assemblyId    the assembly.
+     * @param sessionId     the draft session.
+     * @param baseRevision  the revision of the base record.
+     * @param revision      the revision of the target record, or null for the current record.
+     * @param requestPolicy the policy the request would compile with now, if it names one.
+     * @return the diff, or why there is none.
+     */
+    public synchronized StudioContractDiff contractDiff(String tenantId, String assemblyId, String sessionId,
+                                                        long baseRevision, Long revision,
+                                                        Optional<StudioDeploymentPolicyDraft> requestPolicy) {
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        Optional<StudioCompileRecord> current = freshness.currentRecord(session);
+        if (current.isEmpty()) {
+            StudioCompileFreshness.Verdict verdict = freshness.of(session, null, requestPolicy);
+            return diffResponse(session, new StudioContractDiff(false,
+                    new StudioAbsentReason(StudioAbsentReason.COMPILE_REQUIRED, verdict.message()),
+                    null, null, false, null, List.of()));
+        }
+        Optional<StudioCompileRecord> base = latestRecordAt(session, baseRevision);
+        if (base.isEmpty()) {
+            return diffResponse(session, new StudioContractDiff(false, noRecordAt(session, baseRevision),
+                    null, null, false, null, List.of()));
+        }
+        StudioCompileRecord target;
+        if (revision == null) {
+            target = current.get();
+        } else {
+            Optional<StudioCompileRecord> named = latestRecordAt(session, revision);
+            if (named.isEmpty()) {
+                return diffResponse(session, new StudioContractDiff(false, noRecordAt(session, revision),
+                        StudioCompileProvenance.of(base.get()), null, true, null, List.of()));
+            }
+            target = named.get();
+        }
+        boolean historical = !target.equals(current.get());
+        if (!historical) {
+            StudioCompileFreshness.Verdict verdict = freshness.of(session, target, requestPolicy);
+            if (!verdict.current()) {
+                return diffResponse(session, new StudioContractDiff(false,
+                        new StudioAbsentReason(verdict.state().name(), verdict.message()),
+                        StudioCompileProvenance.of(base.get()), StudioCompileProvenance.of(target), false, null,
+                        List.of()));
+            }
+        }
+        ContractDiff diff;
+        try {
+            // Both records are proved against their bytes first, so the diff compares the contracts it names.
+            StudioCompiledContractReader.Loaded from = compiledReader.load(session.tenantId(), base.get(), false);
+            StudioCompiledContractReader.Loaded to = compiledReader.load(session.tenantId(), target, false);
+            diff = new ContractDiffer().diff(base.get().contractHash(), from.compiled(), target.contractHash(),
+                    to.compiled(), from.profile(), to.profile());
+        } catch (StudioCompiledContractReader.Unavailable | StudioCompiledContractReader.Inconsistent ex) {
+            return diffResponse(session, new StudioContractDiff(false, recordProblem(ex),
+                    StudioCompileProvenance.of(base.get()), StudioCompileProvenance.of(target), historical, null,
+                    List.of()));
+        }
+        return diffResponse(session, new StudioContractDiff(true, null, StudioCompileProvenance.of(base.get()),
+                StudioCompileProvenance.of(target), historical, diff, List.of()));
+    }
+
+    /**
+     * Read model: verifies a compile record's signed envelope with Studio's trust keys, and checks its selections
+     * against the tenant's admitted catalog (LLD-fabric-studio-api, <i>Contract diff and verification</i>). With nothing
+     * named it verifies the current record, under the freshness rule; a named past record is historical. An unsigned
+     * compile is {@code NOT_SIGNED}, and without a configured trust-key directory the answer is
+     * {@code TRUST_KEYS_UNAVAILABLE}: the signing key is never used to verify its own signature. Never changes the
+     * session.
+     *
+     * <p>Pattern: <b>Facade</b> over {@link StudioCompileFreshness}, {@link StudioCompiledContractReader},
+     * {@link SignatureVerifier} and {@link CatalogDriftChecker}, the checks {@code fabric verify} runs.
+     *
+     * @param tenantId   the tenant.
+     * @param assemblyId the assembly.
+     * @param sessionId  the draft session.
+     * @param request    which record to verify, and the policy the request would compile with now.
+     * @return the result, or why there is none.
+     */
+    public synchronized StudioVerificationResult verifyCompile(String tenantId, String assemblyId, String sessionId,
+                                                               StudioVerifyRequest request) {
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        StudioVerifyRequest safe = request == null ? new StudioVerifyRequest(null, null, null) : request;
+        Optional<StudioCompileRecord> current = freshness.currentRecord(session);
+        if (current.isEmpty()) {
+            StudioCompileFreshness.Verdict verdict = freshness.of(session, null, safe.requestPolicy());
+            return verifyResponse(session, unverified(StudioAbsentReason.COMPILE_REQUIRED, verdict.message(), null, false));
+        }
+        Optional<StudioCompileRecord> chosen;
+        if (safe.revision() != null) {
+            chosen = latestRecordAt(session, safe.revision());
+            if (chosen.isEmpty()) {
+                return verifyResponse(session, new StudioVerificationResult(false, noRecordAt(session, safe.revision()),
+                        null, true, null, null, null, List.of()));
+            }
+        } else if (safe.contractHash() != null) {
+            chosen = session.compileRecords().reversed().stream()
+                    .filter(record -> record.contractHash().equals(safe.contractHash()))
+                    .findFirst();
+            if (chosen.isEmpty()) {
+                return verifyResponse(session, unverified(StudioAbsentReason.COMPILE_RECORD_UNAVAILABLE,
+                        "no compile of session " + session.sessionId() + " produced contract " + safe.contractHash(),
+                        null, true));
+            }
+        } else {
+            chosen = current;
+        }
+        StudioCompileRecord record = chosen.get();
+        StudioCompileProvenance provenance = StudioCompileProvenance.of(record);
+        boolean historical = !record.equals(current.get());
+        if (!historical) {
+            StudioCompileFreshness.Verdict verdict = freshness.of(session, record, safe.requestPolicy());
+            if (!verdict.current()) {
+                return verifyResponse(session, unverified(verdict.state().name(), verdict.message(), provenance, false));
+            }
+        }
+        if (!record.signed()) {
+            return verifyResponse(session, unverified(StudioAbsentReason.NOT_SIGNED, "the compile at revision "
+                    + record.revision() + " was not signed; compile with signing to verify it", provenance, historical));
+        }
+        String keysDir = configValue("unfurl.studio.trust.keysDir", "UNFURL_STUDIO_TRUST_KEYS_DIR");
+        if (keysDir.isBlank()) {
+            return verifyResponse(session, unverified(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
+                    "no trust-key directory is configured (unfurl.studio.trust.keysDir or UNFURL_STUDIO_TRUST_KEYS_DIR)",
+                    provenance, historical));
+        }
+        VerificationKeySet keys;
+        try {
+            keys = new TrustKeyDirectoryLoader().load(Path.of(keysDir));
+        } catch (RuntimeException ex) {
+            return verifyResponse(session, unverified(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
+                    "the trust-key directory " + keysDir + " cannot be read: " + ex.getMessage(), provenance, historical));
+        }
+        SignedFabricContract signed;
+        try {
+            // The signed envelope is proved to be for the record's contract before it is verified, so the result
+            // attests to the hash its provenance names and to nothing else.
+            signed = compiledReader.load(session.tenantId(), record, true).signed();
+        } catch (StudioCompiledContractReader.Unavailable | StudioCompiledContractReader.Inconsistent ex) {
+            StudioAbsentReason problem = recordProblem(ex);
+            return verifyResponse(session, unverified(problem.code(), problem.message(), provenance, historical));
+        }
+        SignatureVerificationResult signature = new SignatureVerifier().verify(signed, keys);
+        CatalogDriftReport drift = new CatalogDriftChecker().check(signed.contract(), admittedCatalog(session.tenantId()));
+        FabricVerificationReport report = FabricVerificationReport.of(signature, drift);
+        return verifyResponse(session, new StudioVerificationResult(true, null, provenance, historical,
+                signatureOf(report.signature()), report.catalogDrift().orElseThrow(), report.overallOk(), List.of()));
+    }
+
+    /** An unavailable verification result. */
+    private static StudioVerificationResult unverified(String code, String message, StudioCompileProvenance provenance,
+                                                       boolean historical) {
+        return new StudioVerificationResult(false, new StudioAbsentReason(code, message), provenance, historical,
+                null, null, null, List.of());
+    }
+
+    /** The signature check as Studio shows it: whether it verified, the result variant, and its explanation. */
+    private static StudioVerificationResult.Signature signatureOf(SignatureVerificationResult result) {
+        return switch (result) {
+            case SignatureVerificationResult.Ok ok -> new StudioVerificationResult.Signature(true, "Ok",
+                    "signed by key " + ok.fingerprint() + " with " + ok.algorithm());
+            case SignatureVerificationResult.KeyNotPinned miss ->
+                    new StudioVerificationResult.Signature(false, "KeyNotPinned", miss.detail());
+            case SignatureVerificationResult.SignatureInvalid bad ->
+                    new StudioVerificationResult.Signature(false, "SignatureInvalid", bad.detail());
+            case SignatureVerificationResult.HashMismatch mismatch ->
+                    new StudioVerificationResult.Signature(false, "HashMismatch", mismatch.detail());
+        };
+    }
+
+    /**
+     * The tenant's current admitted catalog for the drift check: every catalog entry {@code catalogEntryForVisual}
+     * grounds (a display-only entry is not admitted, so it is not part of it), with the tenant's stored companions.
+     */
+    private com.unfurl.fabric.catalog.Catalog admittedCatalog(String tenantId) {
+        String tenant = normalizeTenant(tenantId);
+        List<CatalogEntry> entries = new ArrayList<>();
+        for (StudioVisualCatalogEntry visual : entriesByTenant.getOrDefault(tenant, List.of())) {
+            try {
+                entries.add(catalogEntryForVisual(tenant, visual));
+            } catch (CatalogEntryNotAdmittedException notAdmitted) {
+                // Display-only or mismatched entries are not part of the admitted catalog.
+            }
+        }
+        Map<String, com.unfurl.fabric.catalog.CompanionArtifact> companions = new java.util.TreeMap<>();
+        companionsByTenant.getOrDefault(tenant, Map.of()).forEach((coordinates, record) -> {
+            Path stored = companionStore.path(tenant, record.sha256());
+            // A companion whose bytes are gone is not available, so the drift check reports it missing.
+            if (Files.isRegularFile(stored)) {
+                companions.put(coordinates, new com.unfurl.fabric.catalog.CompanionArtifact(coordinates,
+                        record.sha256(), stored, List.of(stored)));
+            }
+        });
+        return new com.unfurl.fabric.catalog.Catalog(entries, companions);
+    }
+
+    /** The absent reason for a record whose bytes cannot be read, or do not belong to it. */
+    private static StudioAbsentReason recordProblem(RuntimeException ex) {
+        return new StudioAbsentReason(ex instanceof StudioCompiledContractReader.Inconsistent
+                ? StudioAbsentReason.COMPILE_RECORD_INCONSISTENT
+                : StudioAbsentReason.COMPILE_RECORD_UNAVAILABLE, ex.getMessage());
+    }
+
+    /** The session's latest compile record at a revision. */
+    private static Optional<StudioCompileRecord> latestRecordAt(StudioDraftSession session, long revision) {
+        return session.compileRecords().reversed().stream().filter(record -> record.revision() == revision).findFirst();
+    }
+
+    /** The absent reason for a revision with no compile record. */
+    private static StudioAbsentReason noRecordAt(StudioDraftSession session, long revision) {
+        return new StudioAbsentReason(StudioAbsentReason.COMPILE_RECORD_UNAVAILABLE,
+                "no compile is recorded at revision " + revision + " of session " + session.sessionId());
+    }
+
+    /** Attaches the hash-pinned diagnostic snapshot of a contract-diff response. */
+    private StudioContractDiff diffResponse(StudioDraftSession session, StudioContractDiff response) {
+        return response.withDiagnostics(List.of(
+                diagnosticArtifact(session.tenantId(), "contract-diff", "contract-diff.json", response)));
+    }
+
+    /** Attaches the hash-pinned diagnostic snapshot of a verify response. */
+    private StudioVerificationResult verifyResponse(StudioDraftSession session, StudioVerificationResult response) {
+        return response.withDiagnostics(List.of(
+                diagnosticArtifact(session.tenantId(), "contract-verify", "contract-verify.json", response)));
     }
 
     /**
@@ -3890,6 +4177,8 @@ public final class StudioCatalogService {
             InvalidDraft invalid,
             long receivedRevision
     ) {
+        // A refused compile records nothing; a NO_MATCH carries its typed causes. Session mode applies no trust
+        // classification (LLD gap: a session's trust policy is not applied), so it has no trust rejections.
         StudioCompileDraftCandidateResponse response = new StudioCompileDraftCandidateResponse(
                 "INVALID",
                 "",
@@ -3900,7 +4189,12 @@ public final class StudioCatalogService {
                 invalid.reason(),
                 invalid.details(),
                 session.sceneRevision(),
-                receivedRevision);
+                receivedRevision,
+                List.of(),
+                List.of(),
+                invalid.reasons(),
+                List.of(),
+                null);
         return new StudioCompileDraftCandidateResponse(
                 response.status(),
                 response.candidateId(),
@@ -3912,7 +4206,11 @@ public final class StudioCatalogService {
                 response.details(),
                 response.expectedRevision(),
                 response.receivedRevision(),
-                List.of(diagnosticArtifact(session.tenantId(), "compile-invalid", "compile-response.json", response)));
+                List.of(),
+                List.of(diagnosticArtifact(session.tenantId(), "compile-invalid", "compile-response.json", response)),
+                response.reasons(),
+                response.trustRejections(),
+                null);
     }
 
     /**
@@ -3981,12 +4279,11 @@ public final class StudioCatalogService {
         }
         CandidateValidity validity = new CandidateValidator().validate(selected, need);
         if (!validity.isValid()) {
-            String details = validity.conflicts().stream()
-                    .map(Conflict::detail)
-                    .sorted()
-                    .reduce((left, right) -> left + "; " + right)
-                    .orElse("selected draft inventory does not satisfy the requested needs");
-            return CandidateBuild.invalid(new InvalidDraft("NO_MATCH", details));
+            // The details text and the typed reasons come from the same presenter over the same conflicts
+            // (LLD-fabric-studio-api, Structured match failures and trust rejections).
+            return CandidateBuild.invalid(new InvalidDraft("NO_MATCH",
+                    NoMatchExplanation.draftDetails(validity.conflicts()),
+                    NoMatchExplanation.draftCauses(validity.conflicts())));
         }
         CompositionCandidate candidate = new CompositionCandidate(
                 CompositionCandidate.computeId(selected),
@@ -5347,7 +5644,8 @@ public final class StudioCatalogService {
                 session.status(),
                 session.createdAt(),
                 session.updatedAt(),
-                session.lastOpenedAt());
+                session.lastOpenedAt(),
+                session.compileRecords());
         putSession(pruned);
         persist();
         return pruned;
@@ -5733,7 +6031,8 @@ public final class StudioCatalogService {
                 stringValue(status, session.status()),
                 session.createdAt(),
                 now,
-                now);
+                now,
+                session.compileRecords());
         putSession(updated);
         publishSessionEvent(updated);
     }
@@ -6021,11 +6320,13 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Value object: user-facing invalid draft status for compile/resolve responses.
+     * Value object: user-facing invalid draft status for compile/resolve responses, with the typed causes of a
+     * {@code NO_MATCH} (empty for any other reason).
      */
     private record InvalidDraft(
             String reason,
-            String details
+            String details,
+            List<MatchFailureReason> reasons
     ) {
         /**
          * Invariant constructor: normalizes absent text so JSON responses are stable.
@@ -6033,6 +6334,12 @@ public final class StudioCatalogService {
         InvalidDraft {
             reason = reason == null || reason.isBlank() ? "INVALID_DRAFT" : reason;
             details = details == null ? "" : details;
+            reasons = reasons == null ? List.of() : List.copyOf(reasons);
+        }
+
+        /** An invalid draft without typed causes. */
+        InvalidDraft(String reason, String details) {
+            this(reason, details, List.of());
         }
     }
 

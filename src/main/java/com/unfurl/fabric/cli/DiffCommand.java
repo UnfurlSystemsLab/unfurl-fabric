@@ -1,11 +1,9 @@
 package com.unfurl.fabric.cli;
 
-import com.unfurl.fabric.compiler.CompiledContract;
-import com.unfurl.fabric.compiler.SelectionRecord;
-import com.unfurl.deployment.plan.BindingPlanEntry;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
-import com.unfurl.substrate.api.SubstratePortRequirement;
+import com.unfurl.fabric.verify.ContractDiff;
+import com.unfurl.fabric.verify.ContractDiffer;
 import com.unfurl.substrate.api.SubstrateProfile;
 import com.unfurl.substrate.api.SubstrateProfileCodec;
 
@@ -13,177 +11,86 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.List;
 
+/**
+ * {@code fabric diff}: compares two signed compiled contracts and, optionally, their substrate profiles, and prints the
+ * selection, deployment-shape and substrate-profile deltas.
+ *
+ * <p>Pattern: <b>Presenter</b> over {@link ContractDiffer}, the one comparison Studio's {@code contract-diff} route also
+ * uses (LLD-fabric-studio-api, <i>Contract diff and verification</i>). This class only reads the inputs and prints the
+ * {@link ContractDiff}; it computes nothing itself.
+ */
 final class DiffCommand {
+    /**
+     * Runs the command.
+     *
+     * @param argv {@code --left}, {@code --right}, and optionally {@code --left-profile} with {@code --right-profile}.
+     * @param out  where the diff is printed.
+     * @return 0; a usage or read problem is thrown as a {@link FabricCliException}.
+     */
     int run(String[] argv, PrintStream out) {
         CliArgs args = CliArgs.parse(argv);
         SignedFabricContract left = readSigned(args.requiredPath("left"));
         SignedFabricContract right = readSigned(args.requiredPath("right"));
+        Path leftProfilePath = args.optionalPath("left-profile");
+        Path rightProfilePath = args.optionalPath("right-profile");
+        if ((leftProfilePath == null) != (rightProfilePath == null)) {
+            throw FabricCliException.usage("--left-profile and --right-profile must be provided together");
+        }
+        SubstrateProfile leftProfile = leftProfilePath == null ? null : readProfile(leftProfilePath);
+        SubstrateProfile rightProfile = rightProfilePath == null ? null : readProfile(rightProfilePath);
 
-        out.println("Fabric contract diff");
-        out.println("leftCanonicalHash=" + left.canonicalHash());
-        out.println("rightCanonicalHash=" + right.canonicalHash());
-        out.println("canonicalHashChanged=" + !left.canonicalHash().equals(right.canonicalHash()));
-        out.println("contractIdChanged=" + !Objects.equals(
-                left.contract().contract().contractId(), right.contract().contract().contractId()));
-        out.println();
-
-        printSelectionDelta(out, left.contract(), right.contract());
-        printDeploymentDelta(out, left.contract(), right.contract());
-        printSubstrateDelta(out, left.contract(), right.contract(), args);
+        ContractDiff diff = new ContractDiffer().diff(left.canonicalHash(), left.contract(),
+                right.canonicalHash(), right.contract(), leftProfile, rightProfile);
+        print(diff, out);
         return 0;
     }
 
-    private void printSelectionDelta(PrintStream out, CompiledContract left, CompiledContract right) {
-        Map<String, SelectionRecord> leftSelections = selectionsByCoordinates(left);
-        Map<String, SelectionRecord> rightSelections = selectionsByCoordinates(right);
-        Set<String> keys = union(leftSelections.keySet(), rightSelections.keySet());
+    /** Prints a diff in the command's fixed line format. */
+    private static void print(ContractDiff diff, PrintStream out) {
+        out.println("Fabric contract diff");
+        out.println("leftCanonicalHash=" + diff.leftCanonicalHash());
+        out.println("rightCanonicalHash=" + diff.rightCanonicalHash());
+        out.println("canonicalHashChanged=" + diff.canonicalHashChanged());
+        out.println("contractIdChanged=" + diff.contractIdChanged());
+        out.println();
 
         out.println("Selection delta");
-        printKeys(out, "addedSelections", keys.stream()
-                .filter(key -> !leftSelections.containsKey(key) && rightSelections.containsKey(key))
-                .toList());
-        printKeys(out, "removedSelections", keys.stream()
-                .filter(key -> leftSelections.containsKey(key) && !rightSelections.containsKey(key))
-                .toList());
-        printKeys(out, "changedSelections", keys.stream()
-                .filter(key -> leftSelections.containsKey(key) && rightSelections.containsKey(key))
-                .filter(key -> selectionChanged(leftSelections.get(key), rightSelections.get(key)))
-                .toList());
+        printKeys(out, "addedSelections", diff.addedSelections());
+        printKeys(out, "removedSelections", diff.removedSelections());
+        printKeys(out, "changedSelections", diff.changedSelections());
         out.println();
-    }
-
-    private void printDeploymentDelta(PrintStream out, CompiledContract left, CompiledContract right) {
-        Map<String, BindingPlanEntry> leftEntries = bindingEntries(left);
-        Map<String, BindingPlanEntry> rightEntries = bindingEntries(right);
-        Set<String> keys = union(leftEntries.keySet(), rightEntries.keySet());
 
         out.println("Deployment shape delta");
-        printKeys(out, "addedDeploymentEntries", keys.stream()
-                .filter(key -> !leftEntries.containsKey(key) && rightEntries.containsKey(key))
-                .toList());
-        printKeys(out, "removedDeploymentEntries", keys.stream()
-                .filter(key -> leftEntries.containsKey(key) && !rightEntries.containsKey(key))
-                .toList());
-        java.util.List<String> changed = keys.stream()
-                .filter(key -> leftEntries.containsKey(key) && rightEntries.containsKey(key))
-                .filter(key -> deploymentChanged(leftEntries.get(key), rightEntries.get(key)))
-                .toList();
+        printKeys(out, "addedDeploymentEntries", diff.addedDeploymentEntries());
+        printKeys(out, "removedDeploymentEntries", diff.removedDeploymentEntries());
         out.println("changedDeploymentShapes:");
-        if (changed.isEmpty()) {
+        if (diff.changedDeploymentShapes().isEmpty()) {
             out.println("- none");
         } else {
-            for (String key : changed) {
-                BindingPlanEntry l = leftEntries.get(key);
-                BindingPlanEntry r = rightEntries.get(key);
-                out.println("- " + key + " " + l.deploymentShape() + " -> " + r.deploymentShape()
-                        + " ports " + l.requiredSubstratePorts() + " -> " + r.requiredSubstratePorts());
+            for (ContractDiff.DeploymentShapeChange change : diff.changedDeploymentShapes()) {
+                out.println("- " + change.key() + " " + change.fromShape() + " -> " + change.toShape()
+                        + " ports " + change.fromPorts() + " -> " + change.toPorts());
             }
         }
         out.println();
-    }
 
-    private void printSubstrateDelta(PrintStream out, CompiledContract left, CompiledContract right, CliArgs args) {
         out.println("Substrate profile delta");
-        out.println("leftSubstrateProfileHash=" + value(left.substrateProfileHash()));
-        out.println("rightSubstrateProfileHash=" + value(right.substrateProfileHash()));
-        out.println("substrateProfileHashChanged=" + !Objects.equals(left.substrateProfileHash(), right.substrateProfileHash()));
-
-        Path leftProfilePath = args.optionalPath("left-profile");
-        Path rightProfilePath = args.optionalPath("right-profile");
-        if (leftProfilePath == null && rightProfilePath == null) {
+        out.println("leftSubstrateProfileHash=" + value(diff.leftSubstrateProfileHash()));
+        out.println("rightSubstrateProfileHash=" + value(diff.rightSubstrateProfileHash()));
+        out.println("substrateProfileHashChanged=" + diff.substrateProfileHashChanged());
+        if (diff.ports() == null) {
             out.println("profileDetail=<not provided>");
             return;
         }
-        if (leftProfilePath == null || rightProfilePath == null) {
-            throw FabricCliException.usage("--left-profile and --right-profile must be provided together");
-        }
-        SubstrateProfile leftProfile = readProfile(leftProfilePath);
-        SubstrateProfile rightProfile = readProfile(rightProfilePath);
-        Map<String, SubstratePortRequirement> leftPorts = portsByName(leftProfile);
-        Map<String, SubstratePortRequirement> rightPorts = portsByName(rightProfile);
-        Set<String> keys = union(leftPorts.keySet(), rightPorts.keySet());
-
-        printKeys(out, "addedPorts", keys.stream()
-                .filter(key -> !leftPorts.containsKey(key) && rightPorts.containsKey(key))
-                .toList());
-        printKeys(out, "removedPorts", keys.stream()
-                .filter(key -> leftPorts.containsKey(key) && !rightPorts.containsKey(key))
-                .toList());
-        printKeys(out, "changedPorts", keys.stream()
-                .filter(key -> leftPorts.containsKey(key) && rightPorts.containsKey(key))
-                .filter(key -> portChanged(leftPorts.get(key), rightPorts.get(key)))
-                .toList());
+        printKeys(out, "addedPorts", diff.ports().added());
+        printKeys(out, "removedPorts", diff.ports().removed());
+        printKeys(out, "changedPorts", diff.ports().changed());
     }
 
-    private Map<String, SelectionRecord> selectionsByCoordinates(CompiledContract contract) {
-        Map<String, SelectionRecord> result = new LinkedHashMap<>();
-        contract.selections().stream()
-                .sorted(Comparator.comparing(s -> s.artifact().coordinates()))
-                .forEach(selection -> result.put(selection.artifact().coordinates(), selection));
-        return result;
-    }
-
-    private Map<String, BindingPlanEntry> bindingEntries(CompiledContract contract) {
-        Map<String, BindingPlanEntry> result = new LinkedHashMap<>();
-        if (contract.bindingPlan() == null) {
-            return result;
-        }
-        contract.bindingPlan().entries().stream()
-                .sorted(Comparator.comparing(this::bindingKey))
-                .forEach(entry -> result.put(bindingKey(entry), entry));
-        return result;
-    }
-
-    private Map<String, SubstratePortRequirement> portsByName(SubstrateProfile profile) {
-        Map<String, SubstratePortRequirement> result = new LinkedHashMap<>();
-        profile.portRequirements().stream()
-                .sorted(Comparator.comparing(SubstratePortRequirement::port))
-                .forEach(port -> result.put(port.port(), port));
-        return result;
-    }
-
-    private boolean selectionChanged(SelectionRecord left, SelectionRecord right) {
-        return !Objects.equals(left.artifact().sha256(), right.artifact().sha256())
-                || !Objects.equals(left.claimHash(), right.claimHash())
-                || left.bindingMode() != right.bindingMode()
-                || left.chosenInterfaceKind() != right.chosenInterfaceKind()
-                || left.deploymentShape() != right.deploymentShape();
-    }
-
-    private boolean deploymentChanged(BindingPlanEntry left, BindingPlanEntry right) {
-        return left.deploymentShape() != right.deploymentShape()
-                || left.bindingMode() != right.bindingMode()
-                || !Objects.equals(left.endpointRef(), right.endpointRef())
-                || !Objects.equals(left.requiredSubstratePorts(), right.requiredSubstratePorts());
-    }
-
-    private String bindingKey(BindingPlanEntry entry) {
-        return entry.componentId() + "/" + entry.capability();
-    }
-
-    private boolean portChanged(SubstratePortRequirement left, SubstratePortRequirement right) {
-        return !Objects.equals(left.capability(), right.capability())
-                || !Objects.equals(left.versionRange(), right.versionRange())
-                || left.bindingMode() != right.bindingMode()
-                || left.required() != right.required()
-                || !Objects.equals(left.constraints(), right.constraints());
-    }
-
-    private Set<String> union(Set<String> left, Set<String> right) {
-        TreeSet<String> result = new TreeSet<>();
-        result.addAll(left);
-        result.addAll(right);
-        return result;
-    }
-
-    private void printKeys(PrintStream out, String label, java.util.List<String> keys) {
+    /** Prints a labelled key list, or {@code - none}. */
+    private static void printKeys(PrintStream out, String label, List<String> keys) {
         out.println(label + ":");
         if (keys.isEmpty()) {
             out.println("- none");
@@ -192,7 +99,7 @@ final class DiffCommand {
         keys.forEach(key -> out.println("- " + key));
     }
 
-    private SignedFabricContract readSigned(Path path) {
+    private static SignedFabricContract readSigned(Path path) {
         try {
             return new SignedFabricContractCodec().parse(Files.readAllBytes(path));
         } catch (IOException ex) {
@@ -200,7 +107,7 @@ final class DiffCommand {
         }
     }
 
-    private SubstrateProfile readProfile(Path path) {
+    private static SubstrateProfile readProfile(Path path) {
         try {
             return new SubstrateProfileCodec().parse(Files.readAllBytes(path));
         } catch (IOException ex) {
@@ -208,7 +115,7 @@ final class DiffCommand {
         }
     }
 
-    private String value(String value) {
+    private static String value(String value) {
         return value == null || value.isBlank() ? "<none>" : value;
     }
 }

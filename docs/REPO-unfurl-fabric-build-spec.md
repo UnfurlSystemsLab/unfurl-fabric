@@ -185,7 +185,36 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
     `400 LAYOUT_STATE_INVALID`, and checks a snapshot's layout the same way.
   - `StudioDraftSession` derives `TRUST_POLICY_PERMISSIVE` from a blank `trustPolicyId`.
   - Tests: `StudioLayoutRulesTest`, plus the updated layout cases in `StudioCatalogServiceTest` and `StudioServerTest`.
-  - The P2 read models (views, overlays, emit preview, compile records) are designed in the same LLD and not yet built.
+  - The P2 read models are designed in the same LLD and built in slices. P2a is built; views, overlays and the emit
+    preview are not yet (P2b to P2e).
+- Studio workbench P2a (`LLD-fabric-studio-api.md`, *Compile records and freshness*, *Structured match failures and
+  trust rejections*, *Contract diff and verification*):
+  - Each `COMPILED` compile appends a `StudioCompileRecord` to `StudioDraftSession.compileRecords` and returns it as
+    `compileRecord`.
+  - The compiled envelope, substrate profile and signed envelope are stored by SHA-256 in
+    `StudioCompiledContractStore`: `studio-compiled/` beside the state file, one folder per tenant, written atomically
+    and hash-checked on read.
+  - Every read proves a record against its bytes (`StudioCompiledContractReader`): the envelope's canonical hash is
+    `contractHash`, the profile's hash is the envelope's, and the signed envelope is for that contract; otherwise
+    `COMPILE_RECORD_INCONSISTENT`. Snapshot import gives imported sessions no records.
+  - `StudioCompileFreshness` is the one freshness rule (`CURRENT`, `COMPILE_REQUIRED`, `COMPILE_STALE`). The request
+    policy arrives as `deploymentPolicy` and is hashed only by Fabric.
+  - `verify.ContractDiffer` is the one diff. `fabric diff` prints it with unchanged output, and
+    `GET .../sessions/{sessionId}/contract-diff` serializes it.
+  - `POST .../sessions/{sessionId}/verify` verifies a record's signed envelope:
+    - it uses the keys in `unfurl.studio.trust.keysDir` / `UNFURL_STUDIO_TRUST_KEYS_DIR` (`TRUST_KEYS_UNAVAILABLE`
+      without them; `NOT_SIGNED` for an unsigned compile);
+    - it checks catalog drift against the tenant's admitted catalog.
+  - `NO_MATCH` keeps `details` and adds `reasons[]` and `trustRejections[]`, which `NoMatchExplanation` builds from the
+    same causes.
+  - Tool gateway: `fabric.contract-diff` and `fabric.contract-verify`.
+  - Tests: `StudioCompiledContractStoreTest`, `StudioCompileFreshnessTest`, `ContractDifferTest`,
+    `NoMatchExplanationTest`, the compile-record, diff, verify, record-consistency, snapshot-import and session
+    `NO_MATCH` cases in
+    `StudioCatalogServiceTest`, the filesystem `NO_MATCH` case in `StudioDeploymentServiceTest`, the route and tool
+    cases in `StudioServerTest`, and the unchanged `fabric diff` output in `FabricCliDiffTest`.
+  - `unfurl-deployment`'s `DeploymentPolicy` keeps `disallowedShapes` in declaration order, so the policy hash is the
+    same in every JVM (HLD-D §5.3).
 
 ## Build Outputs
 
