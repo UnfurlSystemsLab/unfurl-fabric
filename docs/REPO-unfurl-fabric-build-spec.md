@@ -185,8 +185,23 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
     `400 LAYOUT_STATE_INVALID`, and checks a snapshot's layout the same way.
   - `StudioDraftSession` derives `TRUST_POLICY_PERMISSIVE` from a blank `trustPolicyId`.
   - Tests: `StudioLayoutRulesTest`, plus the updated layout cases in `StudioCatalogServiceTest` and `StudioServerTest`.
-  - The P2 read models are designed in the same LLD and built in slices. P2a to P2c are built; the emit preview and
-    faults are not yet (P2d, P2e).
+  - The P2 read models are designed in the same LLD and built in slices. P2a to P2d are built; faults are not yet
+    (P2e).
+- Studio workbench P2d (`LLD-fabric-studio-api.md`, *Deployment Environments*, *StudioEmitPlanPreview*):
+  - Deployment environments are tenant state (`environmentsByTenant`) with revision-checked CRUD routes; each holds a
+    `DeploymentTarget` and the runtime-binding inputs, references only, checked on save.
+  - `GET .../sessions/{id}/emit-plan?environment` runs the real `EmitPipeline.emit` in an owner-only temporary folder
+    deleted in a `finally`: the record's signed envelope and profile, the DCP runtime bundle (`DcpRuntimeBundleWriter`),
+    the bindings (`RuntimeBindingSetGenerator`), trust keys and hosted jars, threaded into the target by
+    `EmitTargetInputs` (shared with `fabric deploy`). Answers are cached per record, environment revision and policy.
+  - `RuntimeBindingInputs` reads binding inputs from a map for the environments and the binding tools alike.
+  - Admission keeps admitted jars' bytes in the tenant's content-addressed artifact store, for hosted components.
+  - The Security overlay adds "Identity in the needs"; `StudioCompileRecord` no longer has the never-set `bindingsHash`.
+  - The generator's identity refusals now carry codes (`IDENTITY_BINDING_INCOMPLETE`, `IDENTITY_INPUTS_WITHOUT_IDENTITY`).
+  - Tool: `fabric.emit-plan-preview`. Tests: `StudioDeploymentEnvironmentsTest` (revision checks, every problem with
+    its path), the emit-plan cases in `StudioCatalogServiceTest` (each refusal in order, the real compose emit with
+    bindings on their nodes, cache and environment-save invalidation, identity inputs without identity, folders
+    deleted, persistence), `EmitTargetInputsTest`, and the route and tool cases in `StudioServerTest`.
 - Studio workbench P2c (`LLD-fabric-studio-api.md`, *StudioOverlayAnnotations*):
   - `GET .../overlays/{security,performance,compliance}?sessionId&view` returns `StudioOverlayAnnotations`: annotations
     on `/dynamic-dcp` nodes and overlay-level findings, compile-derived entries with provenance or left out as

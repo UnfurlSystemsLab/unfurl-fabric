@@ -100,8 +100,26 @@ public final class StudioStateStore {
             Map<String, Map<String, StudioFileRecord>> filesByTenant,
             Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant,
             Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant,
-            Map<String, Map<String, StudioCompanionRecord>> companionsByTenant
+            Map<String, Map<String, StudioCompanionRecord>> companionsByTenant,
+            Map<String, Map<String, StudioDeploymentEnvironment>> environmentsByTenant
     ) {
+        /**
+         * Compatibility constructor: a state without deployment environments (LLD-fabric-studio-api, <i>Deployment
+         * Environments</i>); a state file written before environments existed reads with none.
+         */
+        public State(
+                Map<String, List<StudioVisualCatalogEntry>> entriesByTenant,
+                Map<String, Map<String, StudioAssemblySummary>> assembliesByTenant,
+                Map<String, Map<String, StudioLayoutState>> layoutsByTenant,
+                Map<String, Map<String, StudioDraftSession>> sessionsByTenant,
+                Map<String, Map<String, StudioFileRecord>> filesByTenant,
+                Map<String, List<StudioSessionFileLink>> sessionFileLinksByTenant,
+                Map<String, Map<String, StudioCatalogSnapshot>> catalogSnapshotsByTenant,
+                Map<String, Map<String, StudioCompanionRecord>> companionsByTenant) {
+            this(entriesByTenant, assembliesByTenant, layoutsByTenant, sessionsByTenant, filesByTenant,
+                    sessionFileLinksByTenant, catalogSnapshotsByTenant, companionsByTenant, Map.of());
+        }
+
         /**
          * Compatibility constructor: a state without companion records (HLD-in-process-component-hosting §3); a state
          * file written before companions existed reads with none.
@@ -122,7 +140,7 @@ public final class StudioStateStore {
          * Factory: builds an empty normalized state for first-run Studio stores.
          */
         public static State empty() {
-            return new State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+            return new State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
         }
 
         /**
@@ -138,7 +156,17 @@ public final class StudioStateStore {
                     filesByTenant == null ? Map.of() : copyFiles(filesByTenant),
                     sessionFileLinksByTenant == null ? Map.of() : copyLinks(sessionFileLinksByTenant),
                     catalogSnapshotsByTenant == null ? Map.of() : copySnapshots(catalogSnapshotsByTenant),
-                    companionsByTenant == null ? Map.of() : copyCompanions(companionsByTenant));
+                    companionsByTenant == null ? Map.of() : copyCompanions(companionsByTenant),
+                    environmentsByTenant == null ? Map.of() : copyEnvironments(environmentsByTenant));
+        }
+
+        /** Copies the deployment environments per tenant, by name. */
+        private static Map<String, Map<String, StudioDeploymentEnvironment>> copyEnvironments(
+                Map<String, Map<String, StudioDeploymentEnvironment>> source
+        ) {
+            Map<String, Map<String, StudioDeploymentEnvironment>> copy = new HashMap<>();
+            source.forEach((tenant, environments) -> copy.put(tenant, environments == null ? Map.of() : Map.copyOf(environments)));
+            return copy;
         }
 
         private static Map<String, List<StudioVisualCatalogEntry>> copyEntries(

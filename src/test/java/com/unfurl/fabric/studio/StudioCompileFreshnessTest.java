@@ -95,7 +95,7 @@ class StudioCompileFreshnessTest {
     }
 
     private static StudioCompileRecord record(long revision, String policyHash) {
-        return new StudioCompileRecord(revision, policyHash, SHA, SHA, SHA, null, null, Instant.EPOCH);
+        return new StudioCompileRecord(revision, policyHash, SHA, SHA, SHA, null, Instant.EPOCH);
     }
 
     private static StudioDeploymentPolicyDraft policy(List<String> preferred) {

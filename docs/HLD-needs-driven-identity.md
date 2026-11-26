@@ -207,7 +207,9 @@ The environment plays no part.
   | `provider_instance.credentials_ref` | `--identity-client-credentials-ref` | `clientCredentialsRef` |
   | `secret_refs` | `--identity-service-credentials claimUri=secret://…,…`, one per service that calls others as itself | `serviceCredentials` (map) |
 
-  Generation fails, before any YAML is written, when:
+  Generation fails, before any YAML is written, when the following hold. The message starts with its code:
+  `IDENTITY_INPUTS_WITHOUT_IDENTITY` for the second case, `IDENTITY_BINDING_INCOMPLETE` for every other case,
+  which is reported together in one message. Studio's emit-plan preview shows the code as its absent reason.
   - the composition has an `identity-context` contract and any input is missing; the message says the
     needs require `identity-context` and lists every missing input;
   - inputs are supplied but the composition has no identity contract (they are never silently

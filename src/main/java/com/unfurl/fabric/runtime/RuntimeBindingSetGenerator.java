@@ -73,6 +73,13 @@ public final class RuntimeBindingSetGenerator {
     public static final String DOCUMENTATION_SETTINGS_WITHOUT_CATALOG = "DOCUMENTATION_SETTINGS_WITHOUT_CATALOG";
     /** The documentation policy would leave a documented capability without schemas (DCP HLD-C2 G.1). */
     public static final String DOCUMENTATION_GAP = "DOCUMENTATION_GAP";
+    /**
+     * The composition has an {@code identity-context} contract, so its identity binding is mandatory, and the identity
+     * inputs are missing or wrong (HLD-needs-driven-identity §6).
+     */
+    public static final String IDENTITY_BINDING_INCOMPLETE = "IDENTITY_BINDING_INCOMPLETE";
+    /** Identity inputs for a composition with no {@code identity-context} contract, refused rather than dropped. */
+    public static final String IDENTITY_INPUTS_WITHOUT_IDENTITY = "IDENTITY_INPUTS_WITHOUT_IDENTITY";
 
     private final Clock clock;
 
@@ -97,7 +104,8 @@ public final class RuntimeBindingSetGenerator {
      * @param selected the contract's selections resolved in the catalog it was compiled from.
      * @param options  environment-specific binding options.
      * @return generated YAML bytes.
-     * @throws IllegalStateException naming every problem, each starting with its code: identity inputs,
+     * @throws IllegalStateException naming every problem, each starting with its code:
+     *                               {@value #IDENTITY_BINDING_INCOMPLETE}, {@value #IDENTITY_INPUTS_WITHOUT_IDENTITY},
      *                               {@value #SERVICE_BASE_URL_MISSING}, {@value #SERVICE_BASE_URL_UNKNOWN},
      *                               {@value #DOCUMENTATION_SETTINGS_WITHOUT_CATALOG}, {@value #DOCUMENTATION_GAP},
      *                               {@value DisabledBindings#INVALID}, or a DCP
@@ -414,7 +422,7 @@ public final class RuntimeBindingSetGenerator {
         List<CompositionContract> identityContracts = childContracts.stream().filter(IdentityBindingRule::isIdentity).toList();
         if (identityContracts.isEmpty()) {
             if (!identity.absent()) {
-                throw new IllegalStateException("identity inputs were supplied, but the composition has no "
+                throw new IllegalStateException(IDENTITY_INPUTS_WITHOUT_IDENTITY + ": identity inputs were supplied, but the composition has no "
                         + IdentityBindingRule.CAPABILITY + " contract; add " + IdentityBindingRule.CAPABILITY
                         + " to the needs so the identity provider component is selected, or leave the identity inputs out");
             }
@@ -442,7 +450,7 @@ public final class RuntimeBindingSetGenerator {
             }
         }
         if (!problems.isEmpty()) {
-            throw new IllegalStateException("the composition's needs require " + IdentityBindingRule.CAPABILITY
+            throw new IllegalStateException(IDENTITY_BINDING_INCOMPLETE + ": the composition's needs require " + IdentityBindingRule.CAPABILITY
                     + ", so its identity binding is mandatory; " + String.join("; ", problems));
         }
     }

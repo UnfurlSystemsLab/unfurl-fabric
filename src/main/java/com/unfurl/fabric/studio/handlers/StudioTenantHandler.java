@@ -13,6 +13,8 @@ import com.unfurl.fabric.studio.StudioCollaborator;
 import com.unfurl.fabric.studio.StudioCompileDraftCandidateRequest;
 import com.unfurl.fabric.studio.StudioCreateAssemblyRequest;
 import com.unfurl.fabric.studio.StudioCreateDraftCompositionRequest;
+import com.unfurl.fabric.studio.StudioDeploymentEnvironmentRequest;
+import com.unfurl.fabric.studio.StudioDeploymentEnvironments;
 import com.unfurl.fabric.studio.StudioDeploymentPolicyDraft;
 import com.unfurl.fabric.studio.StudioDcpProjectionRequest;
 import com.unfurl.fabric.studio.StudioIntentRequest;
@@ -27,6 +29,7 @@ import com.unfurl.fabric.studio.StudioVerifyRequest;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -340,7 +343,40 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.verifyCompile(route.tenantId(), route.assemblyId(), route.sessionId(), request));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.deploymentEnvironments()) {
+                write(exchange, 200, service.deploymentEnvironments(route.tenantId()));
+                return;
+            }
+            if (route.deploymentEnvironment().isPresent()) {
+                String name = route.deploymentEnvironment().get();
+                switch (exchange.getRequestMethod()) {
+                    case "GET" -> write(exchange, 200, service.deploymentEnvironment(route.tenantId(), name));
+                    case "PUT" -> write(exchange, 200, service.saveDeploymentEnvironment(route.tenantId(), name,
+                            mapper.readValue(exchange.getRequestBody(), StudioDeploymentEnvironmentRequest.class)));
+                    case "DELETE" -> {
+                        service.deleteDeploymentEnvironment(route.tenantId(), name, expectedRevision(exchange));
+                        exchange.sendResponseHeaders(204, -1);
+                        exchange.close();
+                    }
+                    default -> write(exchange, 405, Map.of("error", "deployment environments answer GET, PUT and DELETE"));
+                }
+                return;
+            }
+            if ("GET".equals(exchange.getRequestMethod()) && route.sessionEmitPlan()) {
+                write(exchange, 200, service.emitPlan(route.tenantId(), route.assemblyId(), route.sessionId(),
+                        queryParam(exchange, "environment"), requestPolicy(exchange)));
+                return;
+            }
             write(exchange, 404, Map.of("error", "unknown Studio tenant route"));
+        } catch (StudioDeploymentEnvironments.Invalid ex) {
+            // Every problem with its field path, so the editor can mark each field (LLD, Deployment Environments).
+            write(exchange, 400, Map.of("error", ex.getMessage(), "code", StudioDeploymentEnvironments.INVALID,
+                    "problems", ex.problems()));
+        } catch (StudioDeploymentEnvironments.Conflict ex) {
+            write(exchange, 409, Map.of("error", ex.getMessage(), "code", StudioDeploymentEnvironments.CONFLICT,
+                    "currentRevision", ex.currentRevision()));
+        } catch (StudioDeploymentEnvironments.Unknown ex) {
+            write(exchange, 404, Map.of("error", ex.getMessage(), "code", StudioDeploymentEnvironments.UNKNOWN));
         } catch (JsonProcessingException ex) {
             write(exchange, 400, Map.of("error", "malformed json body"));
         } catch (IllegalStateException ex) {
@@ -693,6 +729,28 @@ public final class StudioTenantHandler {
             return "assemblies/{assemblyId}/sessions/{sessionId}/contract-diff".equals(tail);
         }
 
+        /** Route predicate: the tenant's deployment environments (LLD-fabric-studio-api, Deployment Environments). */
+        boolean deploymentEnvironments() {
+            return "deployment-environments".equals(tail);
+        }
+
+        /**
+         * Route predicate and parameter: one deployment environment, {@code deployment-environments/{name}}. The name is
+         * one path segment; the service checks it.
+         */
+        java.util.Optional<String> deploymentEnvironment() {
+            String prefix = "deployment-environments/";
+            if (!tail.startsWith(prefix) || tail.length() == prefix.length() || tail.indexOf('/', prefix.length()) >= 0) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(decode(tail.substring(prefix.length())));
+        }
+
+        /** Route predicate: a session's emit-plan preview (LLD-fabric-studio-api, StudioEmitPlanPreview). */
+        boolean sessionEmitPlan() {
+            return "assemblies/{assemblyId}/sessions/{sessionId}/emit-plan".equals(tail);
+        }
+
         /** Route predicate: a compile record's signed envelope verified (LLD-fabric-studio-api, verification). */
         boolean sessionVerify() {
             return "assemblies/{assemblyId}/sessions/{sessionId}/verify".equals(tail);
@@ -700,6 +758,20 @@ public final class StudioTenantHandler {
 
         private static String decode(String value) {
             return URLDecoder.decode(value, StandardCharsets.UTF_8);
+        }
+    }
+
+    /**
+     * The {@code expectedRevision} query parameter of a revision-checked delete, or {@code 400 ENVIRONMENT_INVALID} when
+     * it is missing or not a whole number.
+     */
+    private static long expectedRevision(HttpExchange exchange) {
+        String value = queryParam(exchange, "expectedRevision");
+        try {
+            return Long.parseLong(value == null ? "" : value.trim());
+        } catch (NumberFormatException notANumber) {
+            throw new StudioDeploymentEnvironments.Invalid(List.of(new StudioDeploymentEnvironments.Problem(
+                    "expectedRevision", "a delete names the revision it expects, as a whole number")));
         }
     }
 

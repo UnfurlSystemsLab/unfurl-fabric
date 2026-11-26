@@ -19,6 +19,7 @@ import com.unfurl.deploy.spi.EmittedArtifact;
 import com.unfurl.deploy.spi.EmitterConfig;
 import com.unfurl.deployment.policy.DeploymentTarget;
 import com.unfurl.deployment.serialization.DeploymentTargetCodec;
+import com.unfurl.fabric.deploy.EmitTargetInputs;
 import com.unfurl.fabric.signing.SignedFabricContract;
 import com.unfurl.fabric.signing.SignedFabricContractCodec;
 import com.unfurl.fabric.verify.TrustKeyDirectoryLoader;
@@ -32,7 +33,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -109,20 +109,12 @@ final class DeployCliSupport {
     }
 
     /**
-     * Threads the operator's signed-contract, substrate-profile, and optional
-     * Flowfoundry deployment-root handoff paths into a {@code local-compose}
-     * target's options. The compose backend uses these options to emit a STRICT
-     * runtime profile and, when the full handoff set is present, a Flow
-     * deployment root. Public DCP trust keys are also threaded through for Flow runtime
-     * verification. Explicit values in the target file win ({@code putIfAbsent}). The catalog folder becomes
-     * {@code componentArtifactsPath} for the admitted-component overlay (HLD-in-process-component-hosting §8).
-     * {@code --flow-config} and {@code --flow-secrets} become {@code flowConfigPath} and {@code flowSecretsPath}, the
-     * operator-owned mounts Flow needs for an identity binding (HLD-needs-driven-identity §8; emitter HLD-E §4.0a).
-     * {@code --service-config}/{@code --service-secrets} become {@code serviceConfigPath.<name>} and
-     * {@code serviceSecretsPath.<name>}, the operator mounts of declared services (emitter HLD-E §4.0d), local compose only.
-     * A {@code k8s} target receives the composition-part inputs alone ({@code runtimeBindingPath},
-     * {@code dcpRuntimeBundlePath}, {@code trustKeysPath}), since its declared parts need them and it cannot deliver
-     * operator mounts (HLD-api-documentation-artifacts §4.1).
+     * Adapter: maps the CLI's handoff flags onto {@link EmitTargetInputs}, the one builder {@code fabric deploy} and Studio's
+     * emit-plan preview thread their paths with. The catalog folder becomes {@code componentArtifactsPath} for the
+     * admitted-component overlay (HLD-in-process-component-hosting §8); {@code --flow-config} and {@code --flow-secrets}
+     * become Flow's operator mounts (HLD-needs-driven-identity §8; emitter HLD-E §4.0a); {@code --service-config} and
+     * {@code --service-secrets} become each declared service's mounts (emitter HLD-E §4.0d). The per-kind rules
+     * (local compose receives every path, k8s only the composition-part inputs) are the builder's.
      */
     static DeploymentTarget withRuntimePaths(
             DeploymentTarget target,
@@ -137,40 +129,19 @@ final class DeployCliSupport {
             Path flowConfig,
             Path flowSecrets,
             Map<String, String> serviceMounts) {
-        if ("k8s".equals(target.kind())) {
-            Map<String, String> options = new LinkedHashMap<>(target.options());
-            putIfPresent(options, "runtimeBindingPath", runtimeBinding);
-            putIfPresent(options, "dcpRuntimeBundlePath", dcpRuntimeBundle);
-            putIfPresent(options, "trustKeysPath", trustKeysPath);
-            return withOptions(target, options);
-        }
-        if (!"local-compose".equals(target.kind())) {
-            return target;
-        }
-        Map<String, String> options = new LinkedHashMap<>(target.options());
-        options.putIfAbsent("fabricContractPath", contract.toAbsolutePath().toString());
-        options.putIfAbsent("substrateProfilePath", profile.toAbsolutePath().toString());
-        putIfPresent(options, "runtimeBindingPath", runtimeBinding);
-        putIfPresent(options, "dcpRuntimeBundlePath", dcpRuntimeBundle);
-        putIfPresent(options, "flowWorkflowsPath", flowWorkflows);
-        putIfPresent(options, "foundryDeploymentRootPath", foundryDeploymentRoot);
-        putIfPresent(options, "componentArtifactsPath", componentArtifacts);
-        putIfPresent(options, "trustKeysPath", trustKeysPath);
-        putIfPresent(options, "flowConfigPath", flowConfig);
-        putIfPresent(options, "flowSecretsPath", flowSecrets);
-        serviceMounts.forEach(options::putIfAbsent);
-        return withOptions(target, options);
-    }
-
-    /** The target with its options replaced, every other field kept. */
-    private static DeploymentTarget withOptions(DeploymentTarget target, Map<String, String> options) {
-        return new DeploymentTarget(
-                target.kind(),
-                target.environment(),
-                target.region(),
-                target.endpoint(),
-                options,
-                target.credentialRefs());
+        return EmitTargetInputs.forTarget(target)
+                .contract(contract)
+                .profile(profile)
+                .runtimeBinding(runtimeBinding)
+                .dcpRuntimeBundle(dcpRuntimeBundle)
+                .flowWorkflows(flowWorkflows)
+                .foundryDeploymentRoot(foundryDeploymentRoot)
+                .componentArtifacts(componentArtifacts)
+                .trustKeys(trustKeysPath)
+                .flowConfig(flowConfig)
+                .flowSecrets(flowSecrets)
+                .serviceMounts(serviceMounts)
+                .build();
     }
 
     /**
@@ -214,16 +185,6 @@ final class DeployCliSupport {
             } catch (IOException ex) {
                 throw FabricCliException.runtime("unable to read " + export.resolve("host.json") + ": " + ex.getMessage());
             }
-        }
-    }
-
-    /**
-     * Option helper: writes optional handoff paths as absolute values while respecting
-     * target-file overrides.
-     */
-    private static void putIfPresent(Map<String, String> options, String key, Path path) {
-        if (path != null) {
-            options.putIfAbsent(key, path.toAbsolutePath().toString());
         }
     }
 

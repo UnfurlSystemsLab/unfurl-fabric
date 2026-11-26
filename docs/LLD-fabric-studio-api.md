@@ -86,6 +86,20 @@ The admitted catalog entry keeps the exact manifest text read from the artifact 
 claim hash and artifact SHA-256, and Studio state persists it, so the claim survives restarts and catalog snapshots
 unchanged. Entries scanned from jars in the asset root keep their manifest text the same way.
 
+[P2d] Admission also keeps the admitted jar's bytes, content-addressed by that SHA-256, in the tenant's artifact store
+(the store companions use, `studio-companions/<sha256(tenant id)>/<sha256>.jar`). The entry is grounded with that
+stored jar, at admission and when it is rebuilt from its manifest after a restart, exactly as a scanned entry carries
+its jar:
+- a signed compile bundles the documentation artifacts the jar carries (`DcpRuntimeBundleWriter`, DCP HLD-C2 A.12);
+  before Studio kept the bytes, a signed compile of a component that ships documentation artifacts, such as the API
+  catalog, failed with `BUNDLE_ARTIFACT_UNAVAILABLE`;
+- the emit-plan preview copies a hosted in-process component's jar from there, because the emitter's
+  admitted-component overlay needs the pinned jar itself.
+
+A jar admitted before Studio kept the bytes is not there: the entry is grounded without a jar as before, and a step
+that needs it fails naming it (`BUNDLE_ARTIFACT_UNAVAILABLE` for a compile, `COMPONENT_ARTIFACT_UNAVAILABLE` for a
+preview), so the operator admits the jar again. Studio never rebuilds a jar from its claim.
+
 When an admission verifies one or more artifacts, Studio also emits a hash-pinned `claimBundleArtifact`. The bundle is a
 ZIP containing the resolved DCP claim YAML for each verified artifact, an `admission-manifest.yaml` index, and
 `diagnostics.json` for the full admission result set. Claims remain separate files inside the bundle; Fabric must not
@@ -391,6 +405,8 @@ runtime authority separation is required.
   `PASS` with the diff when available, `GAP` naming the absent reason otherwise.
 - `fabric.overlay-annotate` [P2c]: the `overlays/{overlay}` route's inputs (`sessionId`, `overlay`, `view`,
   `deploymentPolicy`); `PASS` with the annotations, which state what is unavailable and why.
+- `fabric.emit-plan-preview` [P2d]: the `emit-plan` route's inputs (`sessionId`, `environment`, `deploymentPolicy`);
+  `PASS` with the preview when it is available, `GAP` naming the absent reason otherwise.
 - `fabric.view-project` [P2b]: the `views/{view}` route's inputs (`sessionId`, `view`, `deploymentPolicy`); `PASS`
   with the projection, whose sections state what is unavailable and why.
 - `fabric.contract-verify` [P2a]: the `verify` route's `StudioVerifyRequest`; `PASS` only when the contract verified
@@ -486,6 +502,78 @@ Session mode replays the same complete draft inventory as compile and consumes
 the tenant's admitted catalog/session state. It must never require browser users
 to know server filesystem paths.
 
+## Deployment Environments [P2d]
+
+A deployment environment is what an emit needs besides the contract: where it runs, and the operator's settings for its
+runtime bindings. Studio keeps the tenant's environments, so the emit-plan preview (*StudioEmitPlanPreview*) never asks
+a browser user for server paths or CLI flags. An environment holds **references only, never secret values**: secrets
+are bound by the deploy backend at apply time.
+
+| Method | Path | Request | Response |
+|---|---|---|---|
+| `GET` | `/studio/tenants/{tenantId}/deployment-environments` | | `List<StudioDeploymentEnvironment>` |
+| `GET` | `/studio/tenants/{tenantId}/deployment-environments/{name}` | | `StudioDeploymentEnvironment` |
+| `PUT` | `/studio/tenants/{tenantId}/deployment-environments/{name}` | `StudioDeploymentEnvironmentRequest` | `StudioDeploymentEnvironment` |
+| `DELETE` | `/studio/tenants/{tenantId}/deployment-environments/{name}` | `expectedRevision` | `204` |
+
+**Model.** `StudioDeploymentEnvironment {name, revision, updatedAt, contentSha256, target, bindings}`:
+- `target`: the `DeploymentTarget` the CLI's `--target` file holds, `{kind, environment, region?, endpoint?, options,
+  credentialRefs[]}`. `kind` is an emitter the server runs (`local-compose`, `k8s`, `remote`). The options are the
+  target file's, used unchanged: images (`image.<coordinates>`), and the operator's deployment inputs the emitter renders
+  from, the same option keys `fabric deploy` threads from its flags (`flowWorkflowsPath`, `foundryDeploymentRootPath`,
+  `flowConfigPath`, `flowSecretsPath`, `serviceConfigPath.<name>`, `serviceSecretsPath.<name>`), naming folders on the
+  Studio server. The preview never invents them: without one the emitter's refusal is the absent reason, for example
+  "Flow deployment root requires target option flowWorkflowsPath" (`EMIT_FAILED`) or `COMPOSITION_PART_INPUT_MISSING`.
+  **Reserved options.** The inputs the preview itself produces from the compile record and Studio's configuration are
+  Studio's alone: `fabricContractPath`, `substrateProfilePath`, `runtimeBindingPath`, `dcpRuntimeBundlePath`,
+  `componentArtifactsPath` and `trustKeysPath`. An environment never names them. Otherwise the emitter would read the
+  operator's file while the preview reported what Studio generated (a target file's `putIfAbsent` lets its own options
+  win), so the reported bindings and hashes could describe inputs the emit never used.
+- `bindings`: the inputs `fabric runtime-bindings` takes as flags, read by the same code
+  (`RuntimeBindingInputs`):
+  - `serviceBaseUrls {providerClaimUri: url}`, `timeoutMs?`, `telemetryNamespace?`;
+  - `identity? {issuer, audiences {serviceClaimUri: audience}, tenantClaim, rolesClaim, permissionsClaim,
+    tokenEndpointRef, verificationKeysRef, clientCredentialsRef, serviceCredentials {serviceClaimUri: secretRef}}`;
+  - `componentConfig[]`, entries `<claimUri>#<key>=<value>` for hosted in-process components;
+  - `documentation? {visibilityDefault?, visibility?, observationIntervalMs?, observationMaxBackoffMs?}`, where
+    `visibility` is the text of a documentation-visibility file;
+  - `disabledBindings[]`, entries `<providerClaimUri>#<capability>`.
+- `revision` starts at 1 and grows with each save; `updatedAt` is the save time. The revision is for concurrent
+  editing only: deleting an environment and creating it again starts at revision 1 again, so a revision never
+  identifies content.
+- `contentSha256` is the SHA-256 of the canonical JSON of `{target, bindings}` (object keys sorted, absent values
+  left out), computed by Fabric on every save and every read, never taken from a request. It identifies what an emit
+  reads from the environment: equal content gives an equal hash, whatever the revision.
+
+**Saving.** `PUT` with `StudioDeploymentEnvironmentRequest {expectedRevision, target, bindings}` creates the environment
+when `expectedRevision` is 0 and it does not exist, and replaces it when `expectedRevision` is its revision. Otherwise
+it is `409 ENVIRONMENT_REVISION_CONFLICT` with the current revision, so two editors never overwrite each other. `DELETE`
+takes the same check. A save or delete is all or nothing: the change is kept only once Studio state is written, and
+when writing fails the tenant's previous environments are restored and the request fails, so a retry meets the
+revision it expects and a restart reads what was answered. Each save is checked before it is stored, and a refusal is
+`400 ENVIRONMENT_INVALID` listing every problem with its field path:
+- `name` matches `[a-z0-9][a-z0-9-]{0,62}`;
+- `target` builds as a `DeploymentTarget`, which refuses a blank kind and credential refs that look like secret values,
+  and `kind` is one the server's `EmitterBootstrap` provides;
+- `serviceBaseUrls` parse as `ServiceBaseUrls`, `disabledBindings` as `DisabledBindings`, and `timeoutMs` and the
+  observation intervals are positive whole numbers;
+- every identity reference (`tokenEndpointRef`, `verificationKeysRef`, `clientCredentialsRef`, each service credential)
+  is a `secret://` or `config://` URI, never a value;
+- `target.options` names no reserved option (path `target.options.<key>`).
+
+The preview checks the reserved options too, before it renders anything, because an environment stored before the rule
+can still name one: it is then `ENVIRONMENT_INVALID` naming the option, and no emit runs. So every preview reports
+exactly the inputs the emitter consumed.
+
+Rules that depend on a contract are not save-time rules, because one environment serves many compiles. The preview
+runs them, and their refusal is its absent reason under the generator's own code: identity inputs are required exactly
+when the contract has an `identity-context` contract and refused when it has none (root CLAUDE.md rule 6), hosted
+configuration is checked against the component's packaged schema, and documentation gaps are found.
+
+Environments are tenant state, persisted with the rest of Studio state (`environmentsByTenant`); a state file written
+before environments existed reads with none. An assembly's `defaultDeploymentTarget` stays a display hint and is not an
+environment.
+
 ## Views and Overlays
 
 Studio's workbench is organised by views, perspective overlays and renderers
@@ -499,10 +587,10 @@ They are read models: none of them changes a session, a revision or a contract, 
   P2d, where bindings are generated for the emit plan anyway.
 - **P2c, implemented:** `overlays/{security,performance,compliance}` (*StudioOverlayAnnotations* below). The runtime
   `timeout_ms` override and `audit_enabled` live in runtime bindings, so they arrive with P2d.
-- **P2d and P2e, proposed:**
-  - P2d: `emit-plan`, the Topology view's runtime bindings, and the overlays' runtime-binding facts;
-  - P2e: Resilience & Faults.
-  Each one builds on P2a's compile records.
+- **P2d, implemented:** deployment environments, `emit-plan` (*StudioEmitPlanPreview* below) with the runtime bindings
+  it generates, and the Security overlay's "Identity in the needs" finding. Studio draws the bindings in Substrate &
+  Topology and adds their facts to its overlays.
+- **P2e, proposed:** Resilience & Faults. It builds on P2a's compile records.
 
 **Fabric interprets claims; Studio never does.**
 - Every claim field in these responses is read from the claim Fabric parsed from the artifact, through the
@@ -532,7 +620,7 @@ diff. After an edit they can describe an older composition, so they are never mi
 
 - **Compile records [P2a].** Fabric keeps an append-only list of compile records per session, in
   `StudioDraftSession.compileRecords`:
-  `StudioCompileRecord {revision, deploymentPolicyHash, contractHash, compiledEnvelopeSha256, substrateProfileSha256, signedEnvelopeSha256?, bindingsHash?, compiledAt}`.
+  `StudioCompileRecord {revision, deploymentPolicyHash, contractHash, compiledEnvelopeSha256, substrateProfileSha256, signedEnvelopeSha256?, compiledAt}`.
   - There is one record per successful compile (`COMPILED`). A refused, failed or stale compile records nothing.
   - `revision` is the session revision that was compiled.
   - `deploymentPolicyHash` is the canonical hash of the deployment policy the compile was requested with. The policy
@@ -545,8 +633,9 @@ diff. After an edit they can describe an older composition, so they are never mi
     and, when the compile was signed, the signed envelope (`signed-compiled-contract.yaml`). They address the bytes in
     the compiled-contract store below. `signedEnvelopeSha256` is absent when signing was not requested, and when the
     request asked for it but it failed, for example with no Studio signing keys.
-  - `bindingsHash` is set when runtime bindings were generated from that contract. It stays absent until P2b links
-    binding generation to a session.
+  - A record names no runtime bindings. Bindings belong to a deployment environment, not to a compile, and one
+    compile can be previewed for several environments; the emit-plan preview reports the bindings it generated
+    (P2d). A state file that still holds the former, never-set `bindingsHash` field reads unchanged.
   - The latest record is the *current compile record*.
   - Records are stored and kept with the session, exactly like its intent log, and are never edited. A state file
     written before records existed reads with none.
@@ -613,7 +702,7 @@ diff. After an edit they can describe an older composition, so they are never mi
 |---|---|---|---|
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId`, optional `deploymentPolicy` | `StudioViewProjection` [P2b] |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view`, optional `deploymentPolicy` | `StudioOverlayAnnotations` [P2c] |
-| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `target`, `environment` | `StudioEmitPlanPreview` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `environment`, optional `deploymentPolicy` | `StudioEmitPlanPreview` [P2d] |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision`, optional `deploymentPolicy` | `StudioContractDiff` [P2a] |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/verify` | body `StudioVerifyRequest {revision?, contractHash?, deploymentPolicy?}` | `StudioVerificationResult` [P2a] |
 
@@ -692,7 +781,7 @@ annotations[], findings[], staleSources[], diagnostics[], diagnosticArtifacts}`.
 
 | Overlay | Reads | Annotations and findings | Absent reason |
 |---|---|---|---|
-| `security` | the typed A.9 `authentication` and `authorization` ports of each grounded claim, and whether a node provides `identity-context` | One `AUTHENTICATION` and one `AUTHORIZATION` annotation per node declaring them. The label states `enforced` when identity is in the composition and `trusted network` when it is not (root CLAUDE.md rule 6). The detail names the accepted modes, or the decision owner and permission prefixes. A finding states whether identity is in the composition. Trust rejections stay empty in session mode (*Gap: a session's trust policy is not applied*). | `NO_AUTH_PORTS_DECLARED` |
+| `security` | the typed A.9 `authentication` and `authorization` ports of each grounded claim, and whether a node provides `identity-context` | One `AUTHENTICATION` and one `AUTHORIZATION` annotation per node declaring them. The label states `enforced` when identity is in the composition and `trusted network` when it is not (root CLAUDE.md rule 6). The detail names the accepted modes, or the decision owner and permission prefixes. A finding states whether identity is in the composition, and [P2d] an "Identity in the needs" finding whether the session's need requires `identity-context` (the need compile uses). Trust rejections stay empty in session mode (*Gap: a session's trust policy is not applied*). | `NO_AUTH_PORTS_DECLARED` |
 | `performance` | each child contract's `expectations.timeout_ms` in the current compile record | One `TIMEOUT` annotation on the child contract's provider node: "timeout N ms" for its capability. The runtime `timeout_ms` override arrives with P2d. | the compile's reason (`COMPILE_REQUIRED`, `COMPILE_STALE`, `COMPILE_RECORD_*`), or `NO_TIMEOUTS_DECLARED` |
 | `compliance` | the current compile's decision audit; each claim's `telemetry.signals`; the session's trust policy | Findings for the decision audit (selection mode, alternatives considered, selection reasons, score breakdown, planning warnings) with provenance; a contract whose audit records no selection mode reads "not recorded", never a placeholder value. One `AUDIT_EVENTS` annotation per node whose telemetry declares `AUDIT_EVENTS`. A trust-policy finding: the named policy, or permissive, always stated as not applied while that gap stands. The runtime `audit_enabled` arrives with P2d. | never absent: the trust-policy finding is always present |
 
@@ -714,39 +803,70 @@ and reports it as the absent reason.
   - An unsigned compile: `NOT_SIGNED`.
 - **Trust keys:** the tenant's configured public keys, which `EmitPipeline` verifies the contract with. Without them
   the preview is `TRUST_KEYS_UNAVAILABLE`.
-- **Target:** `target` names a deployment target from the tenant's configuration, and `environment` the target
-  environment. The target file's own options are used unchanged.
+- **Environment:** `environment` names one of the tenant's deployment environments (*Deployment Environments*); an
+  unknown name is `ENVIRONMENT_UNKNOWN`. Its target is used with its own options unchanged, and its binding inputs
+  generate the bindings.
+- **Signing key:** the DCP runtime bundle is signed with Studio's signing key, as compile signs it. Without the key the
+  preview is `SIGNING_KEY_REQUIRED`.
 - **Composition-part inputs:** a target that renders a declared composition part (HLD-E §4.0d) needs
   `dcpRuntimeBundlePath`, `runtimeBindingPath` and `trustKeysPath`. The preview generates them with the code a deploy
   uses, and never guesses them:
-  - the bundle from `DcpRuntimeBundleWriter` over the tenant catalog;
-  - the bindings from `RuntimeBindingSetGenerator` for `environment`;
-  - the tenant's public keys.
+  - the bundle from `DcpRuntimeBundleWriter` over the contract's selections resolved in the tenant's admitted catalog;
+  - the bindings from `RuntimeBindingSetGenerator` with the environment's binding inputs;
+  - the tenant's public keys;
+  - for hosted in-process components, their pinned jars and companions from the tenant's artifact store
+    (`COMPONENT_ARTIFACT_UNAVAILABLE` when a jar is not there).
 
   A generation failure is the absent reason under its own code, for example `SERVICE_BASE_URL_MISSING`,
   `DOCUMENTATION_GAP` or `CATALOG_ENTRY_MISSING`.
-- **Operator mounts:** operator directories (`serviceConfigPath.*`, `serviceSecretsPath.*`) are the operator's, so the
-  preview never supplies them. When the composition needs them, the emitter's own refusal becomes the absent reason:
-  `COMPOSITION_PART_INPUT_MISSING` on Compose, `OPERATOR_MOUNT_TARGET_UNSUPPORTED` on Kubernetes.
+- **Operator inputs:** operator directories (`serviceConfigPath.*`, `serviceSecretsPath.*`, Flow's workflows and the
+  Foundry deployment root) are the operator's, so the preview never generates them: they come only from the
+  environment's target options, as from a target file. When the composition needs one the environment does not name,
+  the emitter's own refusal becomes the absent reason: `COMPOSITION_PART_INPUT_MISSING` on Compose,
+  `OPERATOR_MOUNT_TARGET_UNSUPPORTED` on Kubernetes, or the emitter's message under `EMIT_FAILED`.
 
 **Isolated output.**
 - Each run gets a fresh temporary directory owned by Fabric, with owner-only permissions. Its name is unique to the
   run. It holds the generated inputs and the emitter's output.
 - It is deleted in a `finally`, whatever the outcome, and nothing in it is served or returned except the fields
   below.
-- At most one preview runs per session at a time. Concurrent requests for the same session, revision, target and
-  environment share one run.
+- At most one preview runs per session at a time. Concurrent requests for the same inputs share one run.
+- **Cache.** The answer is kept per session, keyed by the record's `contractHash` and the environment's name and
+  `contentSha256` (the record is current, so it was compiled with the request's policy). Asking again does not render
+  again. A new compile record, or an environment whose content changed (edited, or deleted and created again with
+  other settings), changes the key; the revision is not part of it, because a re-created environment reuses revisions.
+  Only the response is kept, never the rendered files.
 
-**Response.**
-- `available` and `absentReason?`;
-- `sourceRevision` and `contractHash`;
-- `targetKind`;
-- `artifacts[] {path, kind, sha256}`;
-- `requiredSecrets[] {name, boundComponentId, targetStoreHint}`, the `SecretRequest` records (HLD-E §5.3);
-- `emitManifestSha256`.
+**Response.** `StudioEmitPlanPreview {tenantId, assemblyId, sessionId, revision, environment, environmentRevision?,
+environmentSha256?, provenance?, available, absentReason?, targetKind?, artifacts[], requiredSecrets[], runtimeBindings[], bindingsSha256?,
+emitManifestSha256?, diagnosticArtifacts}`:
+- `provenance` is the compile record the preview read, current or not, as for the other compile-derived answers; absent
+  before any compile. `environmentRevision` and `environmentSha256` are the revision and `contentSha256` of the
+  environment the preview read, absent when it is unknown; Studio pins the answer to the content hash.
+- `targetKind`, `artifacts[] {path, kind, sha256}`, `requiredSecrets[] {name, boundComponentId, targetStoreHint}` (the
+  `SecretRequest` records, HLD-E §5.3) and `emitManifestSha256` come from the emit.
+- `runtimeBindings[]` lists the generated set's bindings, each `{bindingId, contractId, capability, providerComponent,
+  providerNodeId?, deploymentKind, baseUrl?, enabled, timeoutMs, auditEnabled, telemetryNamespace, secretRefNames[],
+  configRefNames[]}`. `providerNodeId` is the draft node of the provider (the root binding has none).
+  `secretRefNames` and `configRefNames` are the configuration keys whose values are references, never the references'
+  targets. `bindingsSha256` is the generated set's SHA-256.
+- An unavailable preview keeps `provenance`, `environment` and `environmentRevision`, and has empty lists.
+- **Absent reasons.** Each refusal keeps its own code: `COMPILE_REQUIRED`, `COMPILE_STALE`, `COMPILE_RECORD_*`,
+  `NOT_SIGNED`, `TRUST_KEYS_UNAVAILABLE`, `SIGNING_KEY_REQUIRED`, `ENVIRONMENT_UNKNOWN`,
+  `COMPONENT_ARTIFACT_UNAVAILABLE`, `CATALOG_ENTRY_MISSING` (a selection the admitted catalog no longer holds),
+  `HOSTED_CONFIGURATION_<reason>` (HLD-in-process-component-hosting §6); the generator's codes
+  (`SERVICE_BASE_URL_MISSING`, `SERVICE_BASE_URL_UNKNOWN`, `DOCUMENTATION_GAP`, `DOCUMENTATION_SETTINGS_WITHOUT_CATALOG`,
+  `BINDING_DISABLE_INVALID`, `IDENTITY_BINDING_INCOMPLETE`, `IDENTITY_INPUTS_WITHOUT_IDENTITY`); the emitter's codes
+  (`SERVICE_NAME_CONFLICT`, `COMPOSITION_PART_INPUT_MISSING`, `OPERATOR_MOUNT_TARGET_UNSUPPORTED`, ...);
+  `EMIT_PREFLIGHT_FAILED` for a signature preflight refusal; `EMIT_TARGET_UNSUPPORTED` for a kind with no installed
+  emitter; `EMIT_SHAPE_UNSUPPORTED` with the shapes the target cannot emit. The code is read from the `CODE: message`
+  prefix the generator and emitter write. A failure that names no code takes its stage's code:
+  `DCP_RUNTIME_BUNDLE_FAILED`, `RUNTIME_BINDING_FAILED` or `EMIT_FAILED`, with its message.
+- Tool: `fabric.emit-plan-preview`.
 
-Paths, kinds and secret requests describe what a deploy of this contract to this target emits. The per-artifact
-`sha256` and `emitManifestSha256` describe this preview run only. Rendered files can hold host paths (HLD-E §4.0a), so
+Paths, kinds, secret requests and bindings describe what a deploy of this contract to this environment emits. The
+per-artifact `sha256`, `bindingsSha256` and `emitManifestSha256` describe this preview run only (the bindings carry their
+generation time). Rendered files can hold host paths (HLD-E §4.0a), so
 an operator's emit can hash differently. Studio labels them "preview hashes" and never compares them with a deployed
 manifest.
 

@@ -100,7 +100,7 @@ class StudioViewProjectorTest {
     /** A draft without components says so on every claim section. */
     @Test
     void anEmptyDraftHasNoComponents() {
-        StudioViewContext empty = new StudioViewContext(List.of(), () -> compileRequired(), () -> notSigned());
+        StudioViewContext empty = new StudioViewContext(List.of(), () -> compileRequired(), () -> notSigned(), () -> false);
 
         assertThat(StudioViewProjector.FLOW.project(empty).externalOwners.absentReason().code()).isEqualTo("NO_COMPONENTS");
         assertThat(StudioViewProjector.DATA.project(empty).ownedState.absentReason().code()).isEqualTo("NO_COMPONENTS");
@@ -126,7 +126,8 @@ class StudioViewProjectorTest {
     }
 
     private static StudioViewContext context(StudioViewContext.GroundedNode... nodes) {
-        return new StudioViewContext(List.of(nodes), StudioViewProjectorTest::compileRequired, StudioViewProjectorTest::notSigned);
+        return new StudioViewContext(List.of(nodes), StudioViewProjectorTest::compileRequired, StudioViewProjectorTest::notSigned,
+                () -> false);
     }
 
     private static StudioViewContext.CompiledView compileRequired() {

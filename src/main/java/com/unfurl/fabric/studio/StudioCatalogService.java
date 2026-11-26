@@ -148,6 +148,22 @@ public final class StudioCatalogService {
     private final Map<String, Map<String, CatalogEntry>> catalogEntriesByTenant = new ConcurrentHashMap<>();
     /** Admitted companion jars per tenant, by coordinates (HLD-in-process-component-hosting §3); bytes in companionStore. */
     private final Map<String, Map<String, StudioCompanionRecord>> companionsByTenant = new ConcurrentHashMap<>();
+    /** The tenants' deployment environments, by name (LLD-fabric-studio-api, Deployment Environments). */
+    private final Map<String, Map<String, StudioDeploymentEnvironment>> environmentsByTenant = new ConcurrentHashMap<>();
+    /**
+     * Runs emit-plan previews in isolated, deleted folders (LLD-fabric-studio-api, StudioEmitPlanPreview), with the
+     * emitters the server installs; {@link #useEmitters} replaces the discovery.
+     */
+    private volatile StudioEmitPlanRunner emitPlanRunner = new StudioEmitPlanRunner();
+    /** One lock per session, so at most one preview runs per session at a time. */
+    private final Map<String, Object> emitPlanLocks = new ConcurrentHashMap<>();
+    /** The last preview answered per session, with the key it was answered for. */
+    private final Map<String, CachedEmitPlan> emitPlanCache = new ConcurrentHashMap<>();
+    /** Revision-checked access to {@link #environmentsByTenant}, with the save-time check. */
+    private final StudioDeploymentEnvironments environments = new StudioDeploymentEnvironments(environmentsByTenant,
+            this::persist, java.time.Clock.systemUTC(),
+            () -> new com.unfurl.deploy.core.EmitterBootstrap().installedTargetKinds());
+    /** The tenant's content-addressed jar store: admitted companions and admitted components' jars. */
     private final StudioCompanionStore companionStore;
     private final Map<String, Map<String, Need>> needsByTenant = new ConcurrentHashMap<>();
     private final StudioStateStore store;
@@ -208,6 +224,8 @@ public final class StudioCatalogService {
                     catalogSnapshotsByTenant.put(tenant, new ConcurrentHashMap<>(snapshots)));
             state.companionsByTenant().forEach((tenant, records) ->
                     companionsByTenant.put(tenant, new ConcurrentHashMap<>(records)));
+            state.environmentsByTenant().forEach((tenant, environments) ->
+                    environmentsByTenant.put(tenant, new ConcurrentHashMap<>(environments)));
         }
     }
 
@@ -397,10 +415,14 @@ public final class StudioCatalogService {
                 continue;
             }
             String entryId = "uploaded:" + artifact.fileName().replace('\\', '/');
+            // The jar itself is kept, content-addressed, and the entry is grounded with it, so a signed compile bundles
+            // the documentation artifacts it carries and an emit can deliver a hosted component's pinned bytes
+            // (LLD-fabric-studio-api, Tenant Catalog and Assets [P2d]).
+            Path storedJar = companionStore.store(tenant, validation.artifactBytes());
             String claimHash = "sha256:" + new com.unfurl.fabric.catalog.CatalogManifestCodec()
                     .computeClaimHash(validation.claim());
             String artifactSha = validation.artifactSha();
-            CatalogEntry runtimeEntry = catalogEntryFromManifest(validation.claimYaml(), artifactSha);
+            CatalogEntry runtimeEntry = catalogEntryFromManifest(validation.claimYaml(), artifactSha, storedJar);
             StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha,
                     validation.claimYaml());
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
@@ -467,7 +489,7 @@ public final class StudioCatalogService {
                 return new StudioClaimVerificationResult(fileName, "REJECTED", "", "", List.of(message), List.of(
                         new StudioDcpDiagnostic("ERROR", com.unfurl.fabric.catalog.CompanionCoordinates.CONFLICT, "artifact", message)));
             }
-            companionStore.store(tenant, validation.companionBytes());
+            companionStore.store(tenant, validation.artifactBytes());
             if (stored == null) {
                 records.put(coordinates, new StudioCompanionRecord(coordinates, sha, fileName));
             }
@@ -632,10 +654,12 @@ public final class StudioCatalogService {
      *
      * @param manifestYaml the {@code META-INF/unfurl-catalog.yaml} text read from the artifact.
      * @param artifactSha  the artifact hash, {@code sha256:<hex>} or bare hex.
+     * @param jar          the admitted jar in the tenant's artifact store, or null when its bytes are not kept; the
+     *                     entry carries it as a scanned entry carries its jar (documentation artifacts, hosted jars).
      * @return the catalog entry, with the claim hash computed from the manifest's claim.
      * @throws CatalogScanException when the manifest is malformed or incomplete.
      */
-    private CatalogEntry catalogEntryFromManifest(String manifestYaml, String artifactSha) {
+    private CatalogEntry catalogEntryFromManifest(String manifestYaml, String artifactSha, Path jar) {
         CatalogManifestCodec codec = new CatalogManifestCodec();
         ParsedManifest parsed = codec.parse(manifestYaml.getBytes(StandardCharsets.UTF_8));
         ArtifactDescriptor artifact = new ArtifactDescriptor(
@@ -650,7 +674,18 @@ public final class StudioCatalogService {
                 // The full catalog metadata, hosting blocks included, so Studio places hosted components as the CLI does.
                 parsed.metadata(),
                 parsed.componentShapeProfile(),
-                null);
+                jar);
+    }
+
+    /**
+     * The admitted jar of an artifact hash in the tenant's artifact store (LLD-fabric-studio-api, Tenant Catalog and
+     * Assets [P2d]), or null when Studio does not hold its bytes (a jar admitted before Studio kept them).
+     */
+    private Path storedJar(String tenant, String artifactSha) {
+        String sha = bareSha(artifactSha);
+        if (sha == null || !sha.matches("[0-9a-f]{64}")) return null;
+        Path stored = companionStore.path(tenant, sha);
+        return Files.isRegularFile(stored) ? stored : null;
     }
 
     /**
@@ -3876,7 +3911,6 @@ public final class StudioCatalogService {
                 compiledStore.put(session.tenantId(), compiled.compiledEnvelopeBytes()),
                 compiledStore.put(session.tenantId(), compiled.profileBytes()),
                 signedEnvelopeBytes == null ? null : compiledStore.put(session.tenantId(), signedEnvelopeBytes),
-                null,
                 Instant.now());
         StudioCompileDraftCandidateResponse responseSnapshot = new StudioCompileDraftCandidateResponse(
                 "COMPILED",
@@ -4064,19 +4098,11 @@ public final class StudioCatalogService {
             return verifyResponse(session, unverified(StudioAbsentReason.NOT_SIGNED, "the compile at revision "
                     + record.revision() + " was not signed; compile with signing to verify it", provenance, historical));
         }
-        String keysDir = configValue("unfurl.studio.trust.keysDir", "UNFURL_STUDIO_TRUST_KEYS_DIR");
-        if (keysDir.isBlank()) {
-            return verifyResponse(session, unverified(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
-                    "no trust-key directory is configured (unfurl.studio.trust.keysDir or UNFURL_STUDIO_TRUST_KEYS_DIR)",
-                    provenance, historical));
+        TrustKeys trust = trustKeys();
+        if (trust.problem() != null) {
+            return verifyResponse(session, unverified(trust.problem().code(), trust.problem().message(), provenance, historical));
         }
-        VerificationKeySet keys;
-        try {
-            keys = new TrustKeyDirectoryLoader().load(Path.of(keysDir));
-        } catch (RuntimeException ex) {
-            return verifyResponse(session, unverified(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
-                    "the trust-key directory " + keysDir + " cannot be read: " + ex.getMessage(), provenance, historical));
-        }
+        VerificationKeySet keys = trust.keys();
         SignedFabricContract signed;
         try {
             // The signed envelope is proved to be for the record's contract before it is verified, so the result
@@ -4091,6 +4117,280 @@ public final class StudioCatalogService {
         FabricVerificationReport report = FabricVerificationReport.of(signature, drift);
         return verifyResponse(session, new StudioVerificationResult(true, null, provenance, historical,
                 signatureOf(report.signature()), report.catalogDrift().orElseThrow(), report.overallOk(), List.of()));
+    }
+
+    /**
+     * The configured public trust keys, or why there are none: {@code TRUST_KEYS_UNAVAILABLE} when no folder is
+     * configured ({@code unfurl.studio.trust.keysDir} or {@code UNFURL_STUDIO_TRUST_KEYS_DIR}) or it cannot be read.
+     * {@code verify} and the emit-plan preview read the same keys.
+     *
+     * @param dir     the configured folder, when there is one.
+     * @param keys    the loaded keys, when they could be read.
+     * @param problem why not, when they could not.
+     */
+    private record TrustKeys(Path dir, VerificationKeySet keys, StudioAbsentReason problem) {
+    }
+
+    /** Loads the configured trust keys ({@link TrustKeys}). */
+    private TrustKeys trustKeys() {
+        String keysDir = configValue("unfurl.studio.trust.keysDir", "UNFURL_STUDIO_TRUST_KEYS_DIR");
+        if (keysDir.isBlank()) {
+            return new TrustKeys(null, null, new StudioAbsentReason(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
+                    "no trust-key directory is configured (unfurl.studio.trust.keysDir or UNFURL_STUDIO_TRUST_KEYS_DIR)"));
+        }
+        try {
+            return new TrustKeys(Path.of(keysDir), new TrustKeyDirectoryLoader().load(Path.of(keysDir)), null);
+        } catch (RuntimeException ex) {
+            return new TrustKeys(Path.of(keysDir), null, new StudioAbsentReason(StudioAbsentReason.TRUST_KEYS_UNAVAILABLE,
+                    "the trust-key directory " + keysDir + " cannot be read: " + ex.getMessage()));
+        }
+    }
+
+    /**
+     * Dependency injection seam: the emit-plan preview uses exactly these emitters instead of discovering the installed
+     * ones, so a test can pin the real backend for a target kind when its classpath also registers stand-ins.
+     *
+     * @param bootstrap the emitter discovery every later preview uses.
+     */
+    void useEmitters(com.unfurl.deploy.core.EmitterBootstrap bootstrap) {
+        this.emitPlanRunner = new StudioEmitPlanRunner(com.unfurl.fabric.runtime.RuntimeBindingSetGenerator::new, () -> bootstrap);
+    }
+
+    /** A cached preview and the key it was answered for: the record's contract hash and the environment's revision. */
+    private record CachedEmitPlan(String key, StudioEmitPlanPreview response) {
+    }
+
+    /**
+     * What {@link #emitPlan} gathered under the service lock: the response's fixed fields, and either the refusal found
+     * before any emit or the runner's inputs and the cache key.
+     */
+    private record PreparedEmitPlan(StudioDraftSession session, String environment, Long environmentRevision,
+                                    String environmentSha256, StudioCompileProvenance provenance, StudioAbsentReason refusal,
+                                    StudioEmitPlanRunner.Inputs inputs, String cacheKey) {
+    }
+
+    /**
+     * Read model: what a deploy of the session's current compile to one of the tenant's deployment environments emits
+     * (LLD-fabric-studio-api, <i>StudioEmitPlanPreview</i>), produced by the deploy emitter's real pipeline.
+     *
+     * <p>Pattern: <b>Facade</b>. Inputs are gathered and checked under the service lock ({@link #prepareEmitPlan}); the
+     * emit runs outside it, under a per-session lock, so a preview never blocks other Studio requests and at most one runs
+     * per session. The answer is cached per session by the record's contract hash and the environment's name and content
+     * hash (the record is current, so it was compiled with the request's policy at the session's revision); asking again
+     * returns it without rendering, and a new record or any change to the environment's settings changes the key. The
+     * revision is not part of the key: an environment deleted and created again reuses revisions.
+     *
+     * @param tenantId      the tenant.
+     * @param assemblyId    the assembly.
+     * @param sessionId     the draft session.
+     * @param environment   the deployment environment's name (required).
+     * @param requestPolicy the policy the request would compile with now, if it names one.
+     * @return the preview, or why it is not available.
+     * @throws IllegalArgumentException {@code ENVIRONMENT_REQUIRED} when no environment is named.
+     */
+    public StudioEmitPlanPreview emitPlan(String tenantId, String assemblyId, String sessionId, String environment,
+                                          Optional<StudioDeploymentPolicyDraft> requestPolicy) {
+        if (environment == null || environment.isBlank()) {
+            throw new IllegalArgumentException("ENVIRONMENT_REQUIRED: an emit-plan preview names a deployment environment");
+        }
+        PreparedEmitPlan prepared;
+        synchronized (this) {
+            prepared = prepareEmitPlan(tenantId, assemblyId, sessionId, environment.trim(), requestPolicy);
+        }
+        if (prepared.refusal() != null) {
+            return emitPlanResponse(prepared, StudioEmitPlanRunner.Outcome.refused(prepared.refusal().code(),
+                    prepared.refusal().message()));
+        }
+        String sessionKey = prepared.session().tenantId() + "\u0000" + prepared.session().sessionId();
+        Object lock = emitPlanLocks.computeIfAbsent(sessionKey, ignored -> new Object());
+        synchronized (lock) {
+            CachedEmitPlan cached = emitPlanCache.get(sessionKey);
+            if (cached != null && cached.key().equals(prepared.cacheKey())) {
+                return cached.response();
+            }
+            StudioEmitPlanPreview response = emitPlanResponse(prepared, emitPlanRunner.run(prepared.inputs()));
+            emitPlanCache.put(sessionKey, new CachedEmitPlan(prepared.cacheKey(), response));
+            return response;
+        }
+    }
+
+    /**
+     * Gathers and checks a preview's inputs, in the order a refusal is reported: the environment exists; the current
+     * record is current and consistent (the P2a rules, through {@link #viewContext}); it was signed; the trust keys and
+     * Studio's signing key are configured; its selections are in the admitted catalog; and every jar its hosted contracts
+     * pin is in the tenant's artifact store.
+     */
+    private PreparedEmitPlan prepareEmitPlan(String tenantId, String assemblyId, String sessionId, String environmentName,
+                                             Optional<StudioDeploymentPolicyDraft> requestPolicy) {
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        String tenant = session.tenantId();
+        Optional<StudioDeploymentEnvironment> environment = environments.find(tenant, environmentName);
+        StudioViewContext.CompiledView compiled = viewContext(session, requestPolicy, new ArrayList<>()).compile().get();
+        Long environmentRevision = environment.map(StudioDeploymentEnvironment::revision).orElse(null);
+        String environmentSha256 = environment.map(StudioDeploymentEnvironment::contentSha256).orElse(null);
+        java.util.function.Function<StudioAbsentReason, PreparedEmitPlan> refuse = reason -> new PreparedEmitPlan(session,
+                environmentName, environmentRevision, environmentSha256, compiled.provenance(), reason, null, null);
+        if (environment.isEmpty()) {
+            return refuse.apply(new StudioAbsentReason(StudioDeploymentEnvironments.UNKNOWN,
+                    "the tenant has no deployment environment named " + environmentName));
+        }
+        // The preview generates these inputs; an environment stored before the rule may still name one, and the emitter
+        // would read it instead, so nothing renders until it is removed (LLD, Deployment Environments, Reserved options).
+        List<StudioDeploymentEnvironments.Problem> reserved =
+                StudioDeploymentEnvironments.reservedOptionProblems(environment.get().target());
+        if (!reserved.isEmpty()) {
+            return refuse.apply(new StudioAbsentReason(StudioDeploymentEnvironments.INVALID, String.join("; ",
+                    reserved.stream().map(problem -> problem.path() + " " + problem.message()).toList())));
+        }
+        if (compiled.contract() == null) {
+            return refuse.apply(compiled.absentReason());
+        }
+        StudioCompileRecord record = freshness.currentRecord(session).orElseThrow();
+        if (!record.signed()) {
+            return refuse.apply(new StudioAbsentReason(StudioAbsentReason.NOT_SIGNED, "the compile at revision "
+                    + record.revision() + " was not signed; an emit needs a signed contract, so compile with signing"));
+        }
+        TrustKeys trust = trustKeys();
+        if (trust.problem() != null) {
+            return refuse.apply(trust.problem());
+        }
+        Optional<FabricContractSigner> signer = studioSigner();
+        if (signer.isEmpty()) {
+            return refuse.apply(new StudioAbsentReason("SIGNING_KEY_REQUIRED",
+                    "the DCP runtime bundle is signed with Studio's signing key, and none is configured"));
+        }
+        StudioCompiledContractReader.Loaded loaded;
+        byte[] signedEnvelope;
+        byte[] profileBytes;
+        try {
+            loaded = compiledReader.load(tenant, record, true);
+            signedEnvelope = compiledStore.get(tenant, record.signedEnvelopeSha256()).orElseThrow();
+            profileBytes = compiledStore.get(tenant, record.substrateProfileSha256()).orElseThrow();
+        } catch (StudioCompiledContractReader.Unavailable | StudioCompiledContractReader.Inconsistent ex) {
+            return refuse.apply(recordProblem(ex));
+        }
+        com.unfurl.fabric.catalog.SelectedCatalogEntries selected;
+        try {
+            selected = com.unfurl.fabric.catalog.SelectedCatalogEntries.resolve(loaded.compiled(), admittedCatalog(tenant));
+        } catch (com.unfurl.fabric.catalog.SelectedCatalogEntries.Refusal refusal) {
+            return refuse.apply(new StudioAbsentReason("CATALOG_ENTRY_MISSING", refusal.getMessage()));
+        }
+        Map<String, Path> hostedCatalogJars = new java.util.TreeMap<>();
+        Map<String, Path> pinnedJars = new java.util.TreeMap<>();
+        Optional<StudioAbsentReason> missingJar = hostedJars(tenant, loaded.compiled(), hostedCatalogJars, pinnedJars);
+        if (missingJar.isPresent()) {
+            return refuse.apply(missingJar.get());
+        }
+        StudioDeploymentEnvironment env = environment.get();
+        return new PreparedEmitPlan(session, environmentName, environmentRevision, environmentSha256, compiled.provenance(), null,
+                new StudioEmitPlanRunner.Inputs(tenant, env, loaded.compiled(), loaded.signed(), signedEnvelope,
+                        loaded.profile(), profileBytes, selected, signer.get(), trust.dir(), trust.keys(),
+                        hostedCatalogJars, pinnedJars, compiled.providerNodes()),
+                // Content, not revision: a deleted and re-created environment reuses revisions (LLD, Cache).
+                record.contractHash() + "|" + env.name() + "|" + env.contentSha256());
+    }
+
+    /**
+     * Finds the jars the contract's hosted in-process contracts pin (HLD-in-process-component-hosting §8), as the emitter
+     * reads them ({@code ProviderArtifactPin.fromExtensions(...).all()}), in the tenant's artifact store, under the file
+     * names they were admitted with. Each hosted component's own jar also goes in {@code hostedCatalogJars}, where its
+     * packaged configuration schema is read.
+     *
+     * @return {@code COMPONENT_ARTIFACT_UNAVAILABLE} naming the first pinned jar that is not stored; empty when all are.
+     */
+    private Optional<StudioAbsentReason> hostedJars(String tenant, CompiledContract compiled,
+                                                    Map<String, Path> hostedCatalogJars, Map<String, Path> pinnedJars) {
+        if (compiled.bindingPlan() == null) {
+            return Optional.empty();
+        }
+        Map<String, String> fileNames = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry visual : entriesByTenant.getOrDefault(tenant, List.of())) {
+            if (visual.catalogEntryId().startsWith("uploaded:")) {
+                fileNames.putIfAbsent(bareSha(visual.artifactSha256()), visual.catalogEntryId().substring("uploaded:".length()));
+            }
+        }
+        companionsByTenant.getOrDefault(tenant, Map.of()).values()
+                .forEach(companion -> fileNames.putIfAbsent(companion.sha256(), companion.fileName()));
+        for (CompositionContract child : compiled.childContracts()) {
+            Map<String, Object> extensions = child.metadata() == null ? Map.of() : child.metadata().extensions();
+            boolean hosted = compiled.bindingPlan().entries().stream().anyMatch(entry -> entry.host().isPresent()
+                    && entry.artifactCoordinates().equals(extensions.get("artifactCoordinates"))
+                    && entry.capability().equals(child.binding().providerCapability()));
+            if (!hosted) continue;
+            Optional<com.unfurl.dcp.host.ProviderArtifactPin> pin = com.unfurl.dcp.host.ProviderArtifactPin.fromExtensions(extensions);
+            if (pin.isEmpty()) continue; // the emitter refuses a hosted contract without a pin, naming it
+            for (com.unfurl.dcp.host.ArtifactPin artifact : pin.get().all()) {
+                Path stored = companionStore.path(tenant, artifact.sha256());
+                String fileName = fileNames.get(artifact.sha256());
+                if (!Files.isRegularFile(stored) || fileName == null) {
+                    return Optional.of(new StudioAbsentReason("COMPONENT_ARTIFACT_UNAVAILABLE", artifact.coordinates()
+                            + " (sha256 " + artifact.sha256() + ") is pinned by hosted contract " + child.contractId()
+                            + " but its jar is not in the tenant's artifact store; admit "
+                            + (fileName == null ? "it" : fileName) + " again"));
+                }
+                pinnedJars.put(fileName, stored);
+                if (artifact.equals(pin.get().claimArtifact())) {
+                    hostedCatalogJars.put(fileName, stored);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** A SHA-256 as lower-case hex without its {@code sha256:} prefix. */
+    private static String bareSha(String sha) {
+        return sha != null && sha.startsWith("sha256:") ? sha.substring("sha256:".length()) : sha;
+    }
+
+    /** The preview response for prepared inputs and the run's (or the refusal's) outcome, with its diagnostic snapshot. */
+    private StudioEmitPlanPreview emitPlanResponse(PreparedEmitPlan prepared, StudioEmitPlanRunner.Outcome outcome) {
+        StudioDraftSession session = prepared.session();
+        StudioEmitPlanPreview response = new StudioEmitPlanPreview(session.tenantId(), session.assemblyId(),
+                session.sessionId(), session.sceneRevision(), prepared.environment(), prepared.environmentRevision(),
+                prepared.environmentSha256(),
+                prepared.provenance(), outcome.absentReason() == null, outcome.absentReason(), outcome.targetKind(),
+                outcome.artifacts(), outcome.requiredSecrets(), outcome.runtimeBindings(), outcome.bindingsSha256(),
+                outcome.emitManifestSha256(), List.of());
+        return response.withDiagnosticArtifacts(List.of(diagnosticArtifact(session.tenantId(), "emit-plan",
+                "emit-plan.json", response)));
+    }
+
+    /**
+     * Query: the tenant's deployment environments, by name (LLD-fabric-studio-api, <i>Deployment Environments</i>).
+     */
+    public List<StudioDeploymentEnvironment> deploymentEnvironments(String tenantId) {
+        return environments.list(normalizeTenant(tenantId));
+    }
+
+    /**
+     * Query: one deployment environment.
+     *
+     * @throws StudioDeploymentEnvironments.Unknown when the tenant has none with that name.
+     */
+    public StudioDeploymentEnvironment deploymentEnvironment(String tenantId, String name) {
+        return environments.find(normalizeTenant(tenantId), name)
+                .orElseThrow(() -> new StudioDeploymentEnvironments.Unknown(name));
+    }
+
+    /**
+     * Command: creates or replaces a deployment environment, revision-checked, after the save-time check.
+     *
+     * @throws StudioDeploymentEnvironments.Conflict when the expected revision is not the stored one.
+     * @throws StudioDeploymentEnvironments.Invalid  listing every problem of the content.
+     */
+    public StudioDeploymentEnvironment saveDeploymentEnvironment(String tenantId, String name,
+                                                                 StudioDeploymentEnvironmentRequest request) {
+        return environments.save(normalizeTenant(tenantId), name, request);
+    }
+
+    /**
+     * Command: deletes a deployment environment, revision-checked.
+     *
+     * @throws StudioDeploymentEnvironments.Unknown  when there is none with that name.
+     * @throws StudioDeploymentEnvironments.Conflict when the expected revision is not the stored one.
+     */
+    public void deleteDeploymentEnvironment(String tenantId, String name, long expectedRevision) {
+        environments.delete(normalizeTenant(tenantId), name, expectedRevision);
     }
 
     /**
@@ -4201,7 +4501,9 @@ public final class StudioCatalogService {
         return new StudioViewContext(nodes,
                 () -> currentCompiledView(session, requestPolicy, providerNodes),
                 () -> verifyCompile(tenant, session.assemblyId(), session.sessionId(),
-                        new StudioVerifyRequest(null, null, requestPolicy.orElse(null))));
+                        new StudioVerifyRequest(null, null, requestPolicy.orElse(null))),
+                () -> needForSession(session, "", "").requiredCapabilities().stream()
+                        .anyMatch(requirement -> StudioOverlayProjector.IDENTITY_CAPABILITY.equals(requirement.capability())));
     }
 
     /**
@@ -4541,7 +4843,8 @@ public final class StudioCatalogService {
         }
         CatalogEntry rebuilt;
         try {
-            rebuilt = catalogEntryFromManifest(entry.catalogManifest(), entry.artifactSha256());
+            rebuilt = catalogEntryFromManifest(entry.catalogManifest(), entry.artifactSha256(),
+                    storedJar(tenant, entry.artifactSha256()));
         } catch (CatalogScanException ex) {
             throw new CatalogEntryNotAdmittedException(entry.catalogEntryId() + " has an unreadable catalog manifest: "
                     + ex.getMessage());
@@ -5106,7 +5409,8 @@ public final class StudioCatalogService {
                 Map.copyOf(filesByTenant),
                 Map.copyOf(sessionFileLinksByTenant),
                 Map.copyOf(catalogSnapshotsByTenant),
-                Map.copyOf(companionsByTenant)));
+                Map.copyOf(companionsByTenant),
+                Map.copyOf(environmentsByTenant)));
     }
 
     /**
