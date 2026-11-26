@@ -1438,8 +1438,13 @@ class StudioCatalogServiceTest {
                 .satisfies(stale -> assertThat(stale.reason().code()).isEqualTo("COMPILE_STALE"));
         assertThat(moved.provenance().contractHash()).as("the stale record it describes").isEqualTo(record.contractHash());
 
-        assertThatThrownBy(() -> service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "resilience", "flow",
-                Optional.empty())).hasMessageStartingWith("OVERLAY_NOT_BUILT");
+        StudioOverlayAnnotations resilience = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "resilience", "flow", Optional.empty());
+        assertThat(resilience.provenance()).as("resilience reads claims only").isNull();
+        assertThat(resilience.available() ? "available" : resilience.absentReason().code())
+                .isIn("available", "NO_FAULTS_DECLARED");
+        assertThatThrownBy(() -> service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "cost", "flow",
+                Optional.empty())).hasMessageStartingWith("OVERLAY_UNKNOWN");
         assertThatThrownBy(() -> service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "security", "graph",
                 Optional.empty())).hasMessageStartingWith("VIEW_UNKNOWN");
     }

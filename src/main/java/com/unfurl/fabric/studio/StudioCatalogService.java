@@ -4512,12 +4512,22 @@ public final class StudioCatalogService {
                                           List<StudioDcpDiagnostic> diagnostics) {
         String tenant = session.tenantId();
         List<StudioViewContext.GroundedNode> nodes = new ArrayList<>();
-        for (StudioDynamicDcpNode node : dynamicDcpProjection(tenant, session.assemblyId(), session.sessionId()).nodes()) {
+        StudioDynamicDcpProjection projection = dynamicDcpProjection(tenant, session.assemblyId(), session.sessionId());
+        // Where each node sits in the CONTAINS tree, from the projection's own edges, so an annotated parent edge is one
+        // the view draws (P2e, Resilience & Faults).
+        Map<String, String> labels = new LinkedHashMap<>();
+        projection.nodes().forEach(node -> labels.put(node.nodeId(), node.label()));
+        Map<String, String> containedBy = new LinkedHashMap<>();
+        projection.edges().stream().filter(edge -> "CONTAINS".equals(edge.relationship()))
+                .forEach(edge -> containedBy.putIfAbsent(edge.toNodeId(), edge.fromNodeId()));
+        for (StudioDynamicDcpNode node : projection.nodes()) {
             if (node.catalogEntryId() == null || node.catalogEntryId().isBlank()) {
                 continue;
             }
+            String parent = containedBy.get(node.nodeId());
             groundedClaim(tenant, node.catalogEntryId()).ifPresentOrElse(
-                    claim -> nodes.add(new StudioViewContext.GroundedNode(node.nodeId(), claim)),
+                    claim -> nodes.add(new StudioViewContext.GroundedNode(node.nodeId(), claim, node.label(), parent,
+                            parent == null ? null : labels.getOrDefault(parent, parent))),
                     () -> diagnostics.add(new StudioDcpDiagnostic("ERROR", "CATALOG_ENTRY_NOT_ADMITTED",
                             "nodes[" + node.nodeId() + "]", "catalog entry " + node.catalogEntryId()
                             + " has no admitted claim; nothing is projected for it")));

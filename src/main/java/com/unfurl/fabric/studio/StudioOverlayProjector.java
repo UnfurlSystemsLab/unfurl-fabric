@@ -6,6 +6,9 @@ import com.unfurl.dcp.claim.IntegrationPorts;
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.claim.TelemetrySignal;
 import com.unfurl.dcp.contract.CompositionContract;
+import com.unfurl.dcp.fault.FaultDeclaration;
+import com.unfurl.dcp.fault.FaultSeverity;
+import com.unfurl.dcp.fault.ParentImpact;
 import com.unfurl.fabric.compiler.DecisionAudit;
 
 import java.util.ArrayList;
@@ -109,6 +112,61 @@ enum StudioOverlayProjector {
     },
 
     /**
+     * Resilience & Faults (P2e): each component's declared faults (DCP HLD-C2 A.10), and, for a fault whose
+     * {@code parent_impact} is {@code DEGRADED} or {@code BLOCKED}, its propagation path up the {@code CONTAINS} tree to
+     * the immediate parent: the edge and the parent. Further escalation is the parent's own policy, known at runtime, so
+     * it is not drawn. Claims only: no compile is read.
+     */
+    RESILIENCE("resilience") {
+        @Override
+        Result project(StudioViewContext context, StudioDraftSession session) {
+            List<StudioOverlayAnnotations.Annotation> annotations = new ArrayList<>();
+            int declared = 0;
+            int propagating = 0;
+            List<String> unparented = new ArrayList<>();
+            for (StudioViewContext.GroundedNode node : context.nodes()) {
+                if (node.claim().faults() == null) continue;
+                for (FaultDeclaration fault : node.claim().faults().emitted()) {
+                    declared++;
+                    annotations.add(claimAnnotation(node, "FAULT", faultSeverity(fault.severity()), "fault " + fault.code(),
+                            faultDetail(fault), "claim.faults.emitted[" + fault.code() + "]"));
+                    ParentImpact impact = fault.propagation().parentImpact();
+                    if (impact == null || impact == ParentImpact.NONE) continue;
+                    propagating++;
+                    if (node.parentNodeId() == null) {
+                        unparented.add(node.label() + " (" + fault.code() + ")");
+                        continue;
+                    }
+                    String severity = impact == ParentImpact.BLOCKED ? "ERROR" : "WARNING";
+                    String label = impact.name().toLowerCase(java.util.Locale.ROOT) + " by " + fault.code();
+                    String detail = node.label() + "'s fault " + fault.code() + " leaves " + node.parentLabel() + " "
+                            + impact.name().toLowerCase(java.util.Locale.ROOT) + " when "
+                            + fault.propagation().propagatesWhen()
+                            + (blank(fault.propagation().suppressesWhen()) ? ""
+                            : "; suppressed when " + fault.propagation().suppressesWhen());
+                    String source = "claim.faults.emitted[" + fault.code() + "].propagation";
+                    annotations.add(new StudioOverlayAnnotations.Annotation(node.containsEdgeId(), "EDGE",
+                            "FAULT_PROPAGATION", severity, label, detail, source, null, null));
+                    annotations.add(new StudioOverlayAnnotations.Annotation(node.parentNodeId(), "NODE",
+                            "FAULT_PROPAGATION", severity, label, detail, source, null, null));
+                }
+            }
+            if (declared == 0) {
+                return new Result(List.of(), List.of(), List.of(), new StudioAbsentReason("NO_FAULTS_DECLARED",
+                        "no selected component declares a fault (faults.emitted)"), null);
+            }
+            List<StudioOverlayAnnotations.Finding> findings = new ArrayList<>();
+            findings.add(new StudioOverlayAnnotations.Finding("Declared faults", declared + " declared, " + propagating
+                    + " propagating to a parent", "claim.faults.emitted", null, null));
+            if (!unparented.isEmpty()) {
+                findings.add(new StudioOverlayAnnotations.Finding("Propagation not drawn", "no parent in the draft for "
+                        + String.join(", ", unparented), "dynamic-dcp edges[CONTAINS]", null, null));
+            }
+            return new Result(annotations, findings, List.of(), null, null);
+        }
+    },
+
+    /**
      * Compliance & Governance: the current compile's decision audit, which components emit audit events, and the trust
      * policy's provenance. The trust-policy finding is always present, so the overlay is never empty; the runtime
      * {@code audit_enabled} flag is P2d.
@@ -183,8 +241,7 @@ enum StudioOverlayProjector {
     /**
      * The projector for a route's overlay id.
      *
-     * @throws IllegalArgumentException {@code OVERLAY_NOT_BUILT} for {@code resilience} (P2e), {@code OVERLAY_UNKNOWN}
-     *                                  for anything else.
+     * @throws IllegalArgumentException {@code OVERLAY_UNKNOWN} for anything but the four overlays.
      */
     static StudioOverlayProjector forOverlay(String overlay) {
         for (StudioOverlayProjector projector : values()) {
@@ -192,10 +249,7 @@ enum StudioOverlayProjector {
                 return projector;
             }
         }
-        if ("resilience".equals(overlay)) {
-            throw new IllegalArgumentException("OVERLAY_NOT_BUILT: resilience arrives with the DCP fault reconciliation (P2e)");
-        }
-        throw new IllegalArgumentException("OVERLAY_UNKNOWN: overlay must be security, performance or compliance, got '"
+        throw new IllegalArgumentException("OVERLAY_UNKNOWN: overlay must be security, performance, resilience or compliance, got '"
                 + overlay + "'");
     }
 
@@ -223,6 +277,39 @@ enum StudioOverlayProjector {
     static boolean identityInComposition(StudioViewContext context) {
         return context.nodes().stream().anyMatch(node -> node.claim().offers().stream()
                 .map(Offer::capability).anyMatch(IDENTITY_CAPABILITY::equals));
+    }
+
+    /** A DCP fault severity as an overlay severity: info stays info, warning and degraded warn, critical and blocking are errors. */
+    static String faultSeverity(FaultSeverity severity) {
+        if (severity == null) return "WARNING";
+        return switch (severity) {
+            case INFO -> "INFO";
+            case WARNING, DEGRADED -> "WARNING";
+            case CRITICAL, BLOCKING -> "ERROR";
+        };
+    }
+
+    /** What a declared fault says, in one line: category, severity, description, affected surfaces, evidence, actions. */
+    private static String faultDetail(FaultDeclaration fault) {
+        List<String> parts = new ArrayList<>();
+        parts.add((fault.category() == null ? "uncategorized" : fault.category().name()) + ", "
+                + (fault.severity() == null ? "no severity" : fault.severity().name()) + ": " + fault.description());
+        if (!fault.affects().needs().isEmpty()) parts.add("affects needs " + String.join(", ", fault.affects().needs()));
+        if (!fault.affects().offers().isEmpty()) parts.add("affects offers " + String.join(", ", fault.affects().offers()));
+        if (!fault.affects().constraints().isEmpty()) {
+            parts.add("affects constraints " + String.join(", ", fault.affects().constraints()));
+        }
+        if (fault.evidence() != null && !fault.evidence().signals().isEmpty()) {
+            parts.add("evidence " + fault.evidence().signals().stream().map(Enum::name).collect(Collectors.joining(", ")));
+        }
+        if (fault.remediation() != null && !fault.remediation().allowedActions().isEmpty()) {
+            parts.add("allowed actions " + String.join(", ", fault.remediation().allowedActions()));
+        }
+        return String.join("; ", parts);
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
     }
 
     private static StudioOverlayAnnotations.Annotation claimAnnotation(StudioViewContext.GroundedNode node, String kind,

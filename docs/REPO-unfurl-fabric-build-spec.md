@@ -185,8 +185,13 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
     `400 LAYOUT_STATE_INVALID`, and checks a snapshot's layout the same way.
   - `StudioDraftSession` derives `TRUST_POLICY_PERMISSIVE` from a blank `trustPolicyId`.
   - Tests: `StudioLayoutRulesTest`, plus the updated layout cases in `StudioCatalogServiceTest` and `StudioServerTest`.
-  - The P2 read models are designed in the same LLD and built in slices. P2a to P2d are built; faults are not yet
-    (P2e).
+  - The P2 read models are designed in the same LLD and built in slices. P2a to P2e are built.
+- Studio workbench P2e (`LLD-fabric-studio-api.md`, *StudioOverlayAnnotations*, `resilience`):
+  - `StudioOverlayProjector.RESILIENCE` annotates each grounded node's declared faults (DCP HLD-C2 A.10) and, for
+    `parent_impact` `DEGRADED` or `BLOCKED`, the `CONTAINS` edge to its parent and the parent (`elementKind: EDGE`,
+    id `RELATIONSHIP:from->to`). The view context carries each node's parent and label. Claims only.
+  - Tests: the resilience cases in `StudioOverlayProjectorTest` (propagation, no parent, no faults, severity mapping)
+    and the overlay cases in `StudioCatalogServiceTest` and `StudioServerTest`.
 - Studio workbench P2d (`LLD-fabric-studio-api.md`, *Deployment Environments*, *StudioEmitPlanPreview*):
   - Deployment environments are tenant state (`environmentsByTenant`) with revision-checked CRUD routes; each holds a
     `DeploymentTarget` and the runtime-binding inputs, references only, checked on save.
@@ -206,7 +211,7 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
 - Studio workbench P2c (`LLD-fabric-studio-api.md`, *StudioOverlayAnnotations*):
   - `GET .../overlays/{security,performance,compliance}?sessionId&view` returns `StudioOverlayAnnotations`: annotations
     on `/dynamic-dcp` nodes and overlay-level findings, compile-derived entries with provenance or left out as
-    `staleSources`. `resilience` answers `OVERLAY_NOT_BUILT` until P2e.
+    `staleSources`. `resilience` was added in P2e.
   - `StudioOverlayProjector` (one Strategy per overlay) reads the same `StudioViewContext` as the views (shared
     `viewContext`): Security pairs the A.9 auth ports with identity in the composition (enforced / trusted network);
     Performance reads child-contract timeouts; Compliance reads the decision audit, audit-event emitters, and the
