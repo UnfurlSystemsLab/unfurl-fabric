@@ -315,6 +315,12 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.compileCandidate(route.tenantId(), route.assemblyId(), route.sessionId(), request));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.overlay().isPresent()) {
+                write(exchange, 200, service.overlayAnnotations(route.tenantId(), route.assemblyId(),
+                        queryParam(exchange, "sessionId"), route.overlay().get(), queryParam(exchange, "view"),
+                        requestPolicy(exchange)));
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.view().isPresent()) {
                 write(exchange, 200, service.viewProjection(route.tenantId(), route.assemblyId(),
                         queryParam(exchange, "sessionId"), route.view().get(), requestPolicy(exchange)));
@@ -654,6 +660,19 @@ public final class StudioTenantHandler {
 
         boolean sessionCompile() {
             return "assemblies/{assemblyId}/sessions/{sessionId}/compile".equals(tail);
+        }
+
+        /**
+         * Route predicate and parameter: one perspective overlay, {@code assemblies/{assemblyId}/overlays/{overlay}}
+         * (LLD-fabric-studio-api, StudioOverlayAnnotations). The overlay id is one path segment; the service refuses an
+         * unknown or unbuilt overlay.
+         */
+        java.util.Optional<String> overlay() {
+            String prefix = "assemblies/{assemblyId}/overlays/";
+            if (!tail.startsWith(prefix) || tail.length() == prefix.length() || tail.indexOf('/', prefix.length()) >= 0) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(decode(tail.substring(prefix.length())));
         }
 
         /**

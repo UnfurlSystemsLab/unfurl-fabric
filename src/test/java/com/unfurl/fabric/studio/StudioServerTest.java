@@ -523,6 +523,22 @@ class StudioServerTest {
             assertThat(noRecord.path("absentReason").path("code").asText()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
             assertThat(noRecord.path("historical").asBoolean()).isTrue();
 
+            // P2c: the overlay route, its refusals, and the overlay tool.
+            String overlays = "/studio/tenants/tenant-a/assemblies/assembly-demo/overlays/";
+            JsonNode compliance = mapper.readTree(get(server, overlays + "compliance?view=flow&sessionId=" + sessionId).body());
+            assertThat(compliance.path("overlay").asText()).isEqualTo("compliance");
+            assertThat(compliance.path("available").asBoolean()).isTrue();
+            assertThat(compliance.path("findings").get(0).path("label").asText()).isEqualTo("Trust policy");
+            HttpResponse<String> unbuilt = get(server, overlays + "resilience?view=flow&sessionId=" + sessionId);
+            assertThat(unbuilt.statusCode()).isEqualTo(400);
+            assertThat(unbuilt.body()).contains("OVERLAY_NOT_BUILT");
+            JsonNode security = mapper.readTree(post(server, "/studio/tools/fabric.overlay-annotate",
+                    "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
+                            + sessionId + "\",\"overlay\":\"security\",\"view\":\"flow\"}}").body());
+            assertThat(security.path("output").path("status").asText()).isEqualTo("PASS");
+            assertThat(security.path("output").path("response").path("absentReason").path("code").asText())
+                    .isEqualTo("NO_AUTH_PORTS_DECLARED");
+
             // P2b: the view route, its refusals, and the view tool.
             String views = "/studio/tenants/tenant-a/assemblies/assembly-demo/views/";
             JsonNode topology = mapper.readTree(get(server, views + "topology?sessionId=" + sessionId).body());

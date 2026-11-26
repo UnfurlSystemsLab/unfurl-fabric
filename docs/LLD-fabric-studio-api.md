@@ -225,6 +225,11 @@ responses echo `expectedRevision` and `receivedRevision` with the revision
 checked by the server; stale responses use `expectedRevision` for the current
 server revision and `receivedRevision` for the caller-supplied revision.
 
+The compiled decision audit records the selection mode exactly as the CLI does
+(`AUTO_SINGLE` and `AUTO_BEST_SCORE` when the planner picked the candidate,
+`MANUAL` when an operator did). A Studio draft is composed by the operator's own
+intents, so every Studio compile records `MANUAL`.
+
 Grounding uses only claims read from artifacts. Each draft component resolves to
 its admitted or scanned catalog entry; after a restart or a snapshot load the
 entry is rebuilt by parsing its persisted `catalogManifest` and is used only when
@@ -384,6 +389,8 @@ runtime authority separation is required.
 - `fabric.candidate-compile`
 - `fabric.contract-diff` [P2a]: the `contract-diff` route's inputs (`baseRevision`, `revision`, `deploymentPolicy`);
   `PASS` with the diff when available, `GAP` naming the absent reason otherwise.
+- `fabric.overlay-annotate` [P2c]: the `overlays/{overlay}` route's inputs (`sessionId`, `overlay`, `view`,
+  `deploymentPolicy`); `PASS` with the annotations, which state what is unavailable and why.
 - `fabric.view-project` [P2b]: the `views/{view}` route's inputs (`sessionId`, `view`, `deploymentPolicy`); `PASS`
   with the projection, whose sections state what is unavailable and why.
 - `fabric.contract-verify` [P2a]: the `verify` route's `StudioVerifyRequest`; `PASS` only when the contract verified
@@ -490,9 +497,10 @@ They are read models: none of them changes a session, a revision or a contract, 
   structured match failures.
 - **P2b, implemented:** `views/{flow,data,topology,runtime}` (*StudioViewProjection* below). Runtime bindings moved to
   P2d, where bindings are generated for the emit plan anyway.
-- **P2c to P2e, proposed:**
-  - P2c: `overlays/*`;
-  - P2d: `emit-plan`, and the Topology view's runtime bindings;
+- **P2c, implemented:** `overlays/{security,performance,compliance}` (*StudioOverlayAnnotations* below). The runtime
+  `timeout_ms` override and `audit_enabled` live in runtime bindings, so they arrive with P2d.
+- **P2d and P2e, proposed:**
+  - P2d: `emit-plan`, the Topology view's runtime bindings, and the overlays' runtime-binding facts;
   - P2e: Resilience & Faults.
   Each one builds on P2a's compile records.
 
@@ -604,7 +612,7 @@ diff. After an edit they can describe an older composition, so they are never mi
 | Method | Path | Query | Response |
 |---|---|---|---|
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId`, optional `deploymentPolicy` | `StudioViewProjection` [P2b] |
-| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view` | `StudioOverlayAnnotations` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view`, optional `deploymentPolicy` | `StudioOverlayAnnotations` [P2c] |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `target`, `environment` | `StudioEmitPlanPreview` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision`, optional `deploymentPolicy` | `StudioContractDiff` [P2a] |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/verify` | body `StudioVerifyRequest {revision?, contractHash?, deploymentPolicy?}` | `StudioVerificationResult` [P2a] |
@@ -657,21 +665,36 @@ The `ports` wiring map (A.9) is opaque to DCP and is never projected.
 
 ### `StudioOverlayAnnotations`
 
-`overlay` is one of `security`, `performance`, `resilience`, `compliance`. The response is
-`{overlay, view, available, absentReason?, annotations[], staleSources[]}`. Each annotation is
-`{elementId, elementKind NODE|EDGE|PORT|SUBSTRATE_PORT, kind, severity?, label, detail, source, sourceRevision?, contractHash?}`.
-The last two are present exactly when the annotation comes from a compile, and such an annotation is returned only
-when it is current.
+[P2c] `overlay` is one of `security`, `performance`, `compliance`; `resilience` answers `400 OVERLAY_NOT_BUILT` until
+P2e, and any other value `400 OVERLAY_UNKNOWN`. `sessionId` is required (`400 VIEW_SESSION_REQUIRED`), and `view` is
+one of the four view ids (`400 VIEW_UNKNOWN`).
 
-An overlay annotates elements that the view's projection already contains. It never introduces an element id that is
-not in that projection.
+**Response:** `{overlay, view, tenantId, assemblyId, sessionId, revision, provenance?, available, absentReason?,
+annotations[], findings[], staleSources[], diagnostics[], diagnosticArtifacts}`.
+- **Provenance.** `provenance` (`{sourceRevision, contractHash, compiledAt}`) names the compile record an overlay that
+  reads the compile (`performance`, `compliance`) was answered from, current or not, whenever the session has one, even
+  when nothing came of it (for example `NO_TIMEOUTS_DECLARED`), as a compile-derived view section does. It is absent
+  before any compile, and always absent for `security`, which reads claims only. Studio pins a compile-reading overlay's
+  answer to it, and never pins `security` to a compile.
+- **Annotation:** `{elementId, elementKind, kind, severity, label, detail, source, sourceRevision?, contractHash?}`.
+  Annotations are on `/dynamic-dcp` node ids only (`elementKind: NODE`), so Studio's guard can keep only those of the
+  active view's model.
+- **Finding** (overlay-level, for what belongs to no element, such as the decision audit): `{label, value, source,
+  sourceRevision?, contractHash?}`.
+- **Provenance and staleness.** `sourceRevision` and `contractHash` are present exactly on compile-derived entries,
+  which are returned only while the current compile record is current and consistent (P2a rules). Otherwise they are
+  left out, and the record is named in `staleSources[] {source, sourceRevision?, contractHash?, reason}`.
+- **Availability.** `available` is true exactly when there is at least one annotation or finding. Otherwise
+  `absentReason` says why: the overlay's own code, or the compile's reason when its only data is compile-derived.
+- **Grounding.** Nodes are grounded as for views (a node that does not ground is a `CATALOG_ENTRY_NOT_ADMITTED`
+  diagnostic, and nothing is projected for it). The overlay never introduces an element id that is not a node of the
+  draft's projection.
 
-Sources per overlay are listed in the Studio LLD §4:
-- `security`: identity-context, authentication and authorization ports, trust rejections, signing and verification
-  state;
-- `performance`: contract and runtime timeouts;
-- `resilience`: declared faults and their propagation up `CONTAINS`;
-- `compliance`: decision audit, audit flags, trust policy provenance.
+| Overlay | Reads | Annotations and findings | Absent reason |
+|---|---|---|---|
+| `security` | the typed A.9 `authentication` and `authorization` ports of each grounded claim, and whether a node provides `identity-context` | One `AUTHENTICATION` and one `AUTHORIZATION` annotation per node declaring them. The label states `enforced` when identity is in the composition and `trusted network` when it is not (root CLAUDE.md rule 6). The detail names the accepted modes, or the decision owner and permission prefixes. A finding states whether identity is in the composition. Trust rejections stay empty in session mode (*Gap: a session's trust policy is not applied*). | `NO_AUTH_PORTS_DECLARED` |
+| `performance` | each child contract's `expectations.timeout_ms` in the current compile record | One `TIMEOUT` annotation on the child contract's provider node: "timeout N ms" for its capability. The runtime `timeout_ms` override arrives with P2d. | the compile's reason (`COMPILE_REQUIRED`, `COMPILE_STALE`, `COMPILE_RECORD_*`), or `NO_TIMEOUTS_DECLARED` |
+| `compliance` | the current compile's decision audit; each claim's `telemetry.signals`; the session's trust policy | Findings for the decision audit (selection mode, alternatives considered, selection reasons, score breakdown, planning warnings) with provenance; a contract whose audit records no selection mode reads "not recorded", never a placeholder value. One `AUDIT_EVENTS` annotation per node whose telemetry declares `AUDIT_EVENTS`. A trust-policy finding: the named policy, or permissive, always stated as not applied while that gap stands. The runtime `audit_enabled` arrives with P2d. | never absent: the trust-policy finding is always present |
 
 ### `StudioEmitPlanPreview`
 
