@@ -831,11 +831,20 @@ and reports it as the absent reason.
 - It is deleted in a `finally`, whatever the outcome, and nothing in it is served or returned except the fields
   below.
 - At most one preview runs per session at a time. Concurrent requests for the same inputs share one run.
-- **Cache.** The answer is kept per session, keyed by the record's `contractHash` and the environment's name and
-  `contentSha256` (the record is current, so it was compiled with the request's policy). Asking again does not render
-  again. A new compile record, or an environment whose content changed (edited, or deleted and created again with
-  other settings), changes the key; the revision is not part of it, because a re-created environment reuses revisions.
-  Only the response is kept, never the rendered files.
+- **Cache.** Only an available answer is kept, per session. A refusal is never kept: it can come from an input
+  outside Studio state, such as a missing workflow folder, and answering it again shows a repair at once.
+  - **Key:** the record's `contractHash` (the record is current, so it was compiled with the request's policy), the
+    environment's name and `contentSha256`, and a fingerprint of every input the run reads from outside Studio state:
+    the trust-key folder, Studio's signing key files, and each operator path the environment's target options name
+    (`flowWorkflowsPath`, `foundryDeploymentRootPath`, `flowConfigPath`, `flowSecretsPath`, `serviceConfigPath.<name>`,
+    `serviceSecretsPath.<name>`).
+  - **Fingerprint:** for each path, every file's relative path, size and modification time, walking folders; a
+    missing path is recorded as missing. It reads metadata only and never opens a file, so a secrets folder's content
+    is never read.
+  - **What changes the key:** a new compile record, an environment whose content changed (edited, or deleted and
+    created again with other settings), or an edited, added or removed file in one of those paths. The revision is
+    not part of it, because a re-created environment reuses revisions.
+  - Asking again with the same key does not render again. Only the response is kept, never the rendered files.
 
 **Response.** `StudioEmitPlanPreview {tenantId, assemblyId, sessionId, revision, environment, environmentRevision?,
 environmentSha256?, provenance?, available, absentReason?, targetKind?, artifacts[], requiredSecrets[], runtimeBindings[], bindingsSha256?,

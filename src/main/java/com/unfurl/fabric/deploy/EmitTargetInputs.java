@@ -48,6 +48,24 @@ public final class EmitTargetInputs {
     /** Target option: Flow's operator secrets mount. */
     public static final String FLOW_SECRETS = "flowSecretsPath";
 
+    /** Target option prefix: a declared service's operator config mount, {@code serviceConfigPath.<name>}. */
+    public static final String SERVICE_CONFIG_PREFIX = "serviceConfigPath.";
+    /** Target option prefix: a declared service's operator secrets mount, {@code serviceSecretsPath.<name>}. */
+    public static final String SERVICE_SECRETS_PREFIX = "serviceSecretsPath.";
+
+    /**
+     * Whether a target option names an operator path the emitter reads: Flow's workflows, the Foundry deployment root,
+     * Flow's config and secrets mounts, or a declared service's mounts. These are the operator's deployment inputs, as
+     * opposed to the generated handoff paths and to plain options such as images.
+     *
+     * @param key a target option key.
+     * @return true for an operator path option.
+     */
+    public static boolean isOperatorPathOption(String key) {
+        return FLOW_WORKFLOWS.equals(key) || FOUNDRY_DEPLOYMENT_ROOT.equals(key) || FLOW_CONFIG.equals(key)
+                || FLOW_SECRETS.equals(key) || key.startsWith(SERVICE_CONFIG_PREFIX) || key.startsWith(SERVICE_SECRETS_PREFIX);
+    }
+
     private final DeploymentTarget target;
     private Path contract;
     private Path profile;

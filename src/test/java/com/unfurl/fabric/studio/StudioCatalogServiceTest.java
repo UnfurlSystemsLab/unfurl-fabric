@@ -1064,6 +1064,58 @@ class StudioCatalogServiceTest {
     }
 
     /**
+     * A refusal that comes from an input outside Studio state is never cached: with only another key trusted the
+     * pipeline's preflight refuses, and once the operator puts the signer's key in the same folder the next preview is
+     * available. An available answer is reused, and replaced as soon as a file in the trust-key folder changes
+     * (LLD-fabric-studio-api, StudioEmitPlanPreview, Cache).
+     */
+    @Test
+    void neverServesAFailureOrAnAnswerForOutsideInputsThatChanged(@TempDir Path dir) throws Exception {
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
+        Path trust = Files.createDirectories(dir.resolve("trust"));
+        writePublicKeyPem(trust, "other.pem", generateStudioSigningKeyPair());
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        String previousKeysDir = System.getProperty("unfurl.studio.trust.keysDir");
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+            System.setProperty("unfurl.studio.trust.keysDir", trust.toString());
+            StudioCatalogService service = flowfoundrySessionService(dir);
+            service.useEmitters(new com.unfurl.deploy.core.EmitterBootstrap(
+                    List.of(new com.unfurl.deploy.compose.ComposeEmitterProvider())));
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            String sessionId = created.session().sessionId();
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+            service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(0, null, null));
+            service.compileCandidate("tenant-a", "assembly-flow", sessionId, new StudioCompileDraftCandidateRequest(
+                    "tenant-a", "assembly-flow", sessionId, 2, true, containerPolicy()));
+            Optional<StudioDeploymentPolicyDraft> policy = Optional.of(containerPolicy());
+
+            StudioEmitPlanPreview untrusted = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(untrusted.available()).isFalse();
+            assertThat(untrusted.absentReason().code()).isEqualTo("EMIT_PREFLIGHT_FAILED");
+
+            writePublicKeyPem(trust, "studio.pem", keys);
+            StudioEmitPlanPreview repaired = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(repaired.available()).as("the repair shows at once: " + repaired.absentReason()).isTrue();
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy)).isSameAs(repaired);
+
+            Files.delete(trust.resolve("other.pem"));
+            StudioEmitPlanPreview changed = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(changed.available()).isTrue();
+            assertThat(changed).as("a changed trust-key folder renders again").isNotSameAs(repaired);
+        } finally {
+            restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+            restoreProperty("unfurl.studio.trust.keysDir", previousKeysDir);
+        }
+    }
+
+    /**
      * Admission keeps each admitted component jar's bytes in the tenant's content-addressed artifact store, under the
      * SHA-256 the catalog entry pins (LLD-fabric-studio-api, Tenant Catalog and Assets [P2d]).
      */
