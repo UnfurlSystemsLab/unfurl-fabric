@@ -802,7 +802,6 @@ class StudioCatalogServiceTest {
         StudioCompileRecord record = compiled.compileRecord();
         assertThat(record.revision()).isEqualTo(2);
         assertThat(record.signed()).isFalse();
-        assertThat(record.bindingsHash()).isNull();
         assertThat(service.draftSession("tenant-a", "assembly-flow", sessionId).compileRecords()).containsExactly(record);
         assertThat(dir.resolve("state").resolve(StudioCompiledContractStore.FOLDER)).isDirectory();
 
@@ -956,6 +955,182 @@ class StudioCatalogServiceTest {
             restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
             restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
             restoreProperty("unfurl.studio.trust.keysDir", previousKeysDir);
+        }
+    }
+
+    // ---- P2d: the emit-plan preview (LLD-fabric-studio-api, StudioEmitPlanPreview) ----
+
+    /**
+     * The emit-plan preview refuses in order, under each step's code (unknown environment, no compile, unsigned, no trust
+     * keys); with a signed compile and trusted keys it runs the real emit and reports the artifacts, the secret requests
+     * by name and the generated bindings on their draft nodes; it answers again from its cache, answers anew after an
+     * environment save, refuses identity inputs for a composition without identity (rule 6, the path without identity in
+     * the contract), is COMPILE_STALE after an edit, and leaves no temporary folder behind.
+     */
+    @Test
+    void previewsTheEmitPlanOfTheCurrentSignedCompile(@TempDir Path dir) throws Exception {
+        KeyPair keys = generateStudioSigningKeyPair();
+        Path privateKey = writePrivateKeyPem(dir, "studio-private.pem", keys);
+        Path publicKey = writePublicKeyPem(dir, "studio-public.pem", keys);
+        Path trusted = Files.createDirectories(dir.resolve("trusted"));
+        writePublicKeyPem(trusted, "studio.pem", keys);
+        String previousPrivateKey = System.getProperty("unfurl.studio.signing.privateKey");
+        String previousPublicKey = System.getProperty("unfurl.studio.signing.publicKey");
+        String previousKeysDir = System.getProperty("unfurl.studio.trust.keysDir");
+        long foldersBefore = emitPlanFolders();
+        try {
+            System.setProperty("unfurl.studio.signing.privateKey", privateKey.toString());
+            System.setProperty("unfurl.studio.signing.publicKey", publicKey.toString());
+            System.clearProperty("unfurl.studio.trust.keysDir");
+            StudioCatalogService service = flowfoundrySessionService(dir);
+            // The real compose backend: this test classpath also registers a stand-in for local-compose.
+            service.useEmitters(new com.unfurl.deploy.core.EmitterBootstrap(
+                    List.of(new com.unfurl.deploy.compose.ComposeEmitterProvider())));
+            StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+            String sessionId = created.session().sessionId();
+            addComponent(service, created.session(), "uploaded:flow.jar", 0);
+            addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+            Optional<StudioDeploymentPolicyDraft> policy = Optional.of(containerPolicy());
+
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy).absentReason().code())
+                    .isEqualTo("ENVIRONMENT_UNKNOWN");
+            service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(0, null, null));
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy).absentReason().code())
+                    .isEqualTo("COMPILE_REQUIRED");
+            compile(service, created.session());
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy).absentReason().code())
+                    .isEqualTo("NOT_SIGNED");
+            StudioCompileRecord signed = service.compileCandidate("tenant-a", "assembly-flow", sessionId,
+                    new StudioCompileDraftCandidateRequest("tenant-a", "assembly-flow", sessionId, 2, true,
+                            containerPolicy())).compileRecord();
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy).absentReason().code())
+                    .isEqualTo("TRUST_KEYS_UNAVAILABLE");
+
+            System.setProperty("unfurl.studio.trust.keysDir", trusted.toString());
+            StudioEmitPlanPreview plan = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(plan.available()).as(String.valueOf(plan.absentReason())).isTrue();
+            assertThat(plan.targetKind()).isEqualTo("local-compose");
+            assertThat(plan.provenance().contractHash()).isEqualTo(signed.contractHash());
+            assertThat(plan.environmentRevision()).isEqualTo(1L);
+            assertThat(plan.artifacts()).isNotEmpty().allSatisfy(artifact -> assertThat(artifact.sha256()).hasSize(64));
+            assertThat(plan.bindingsSha256()).hasSize(64);
+            assertThat(plan.emitManifestSha256()).isNotBlank();
+            assertThat(plan.runtimeBindings()).filteredOn(binding -> binding.capability() != null)
+                    .extracting(StudioEmitPlanPreview.Binding::capability)
+                    .containsExactlyInAnyOrder("workflow.execute", "agent.run");
+            assertThat(plan.runtimeBindings()).filteredOn(binding -> binding.capability() != null).allSatisfy(binding -> {
+                assertThat(binding.providerNodeId()).isNotBlank();
+                assertThat(binding.timeoutMs()).isEqualTo(30000);
+                assertThat(binding.auditEnabled()).isTrue();
+                assertThat(binding.enabled()).isTrue();
+            });
+            assertThat(plan.requiredSecrets()).allSatisfy(secret -> assertThat(secret.name()).doesNotContain("="));
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy))
+                    .as("asked again, the cached answer").isSameAs(plan);
+
+            service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(1, 45000, null));
+            StudioEmitPlanPreview saved = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(saved.environmentRevision()).isEqualTo(2L);
+            assertThat(saved.runtimeBindings()).filteredOn(binding -> binding.capability() != null)
+                    .allSatisfy(binding -> assertThat(binding.timeoutMs()).isEqualTo(45000));
+
+            // Deleted and created again, the environment is at revision 1 again with other settings: the cached answer
+            // for the first revision 1 is not served (the key is the content, not the revision).
+            service.deleteDeploymentEnvironment("tenant-a", "local", 2);
+            service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(0, 50000, null));
+            StudioEmitPlanPreview recreated = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(recreated.environmentRevision()).isEqualTo(1L);
+            assertThat(recreated.environmentSha256()).isNotEqualTo(plan.environmentSha256()).hasSize(64);
+            assertThat(recreated.runtimeBindings()).filteredOn(binding -> binding.capability() != null)
+                    .allSatisfy(binding -> assertThat(binding.timeoutMs()).isEqualTo(50000));
+
+            service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(1, null, new StudioDeploymentEnvironment.Identity(
+                    "https://idp.example/realms/acme", Map.of("urn:unfurl:test:foundry", "foundry"), "tenant", "roles",
+                    "permissions", "config://idp/token-endpoint", "config://idp/keys", "secret://idp/client", Map.of())));
+            StudioEmitPlanPreview stray = service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy);
+            assertThat(stray.absentReason().code()).isEqualTo("IDENTITY_INPUTS_WITHOUT_IDENTITY");
+            assertThat(stray.runtimeBindings()).isEmpty();
+            assertThat(stray.provenance().contractHash()).isEqualTo(signed.contractHash());
+
+            removeComponent(service, created.session(), "uploaded:foundry.jar", 2);
+            assertThat(service.emitPlan("tenant-a", "assembly-flow", sessionId, "local", policy).absentReason().code())
+                    .isEqualTo("COMPILE_STALE");
+            assertThat(emitPlanFolders()).as("every run's folder is deleted").isEqualTo(foldersBefore);
+        } finally {
+            restoreProperty("unfurl.studio.signing.privateKey", previousPrivateKey);
+            restoreProperty("unfurl.studio.signing.publicKey", previousPublicKey);
+            restoreProperty("unfurl.studio.trust.keysDir", previousKeysDir);
+        }
+    }
+
+    /**
+     * Admission keeps each admitted component jar's bytes in the tenant's content-addressed artifact store, under the
+     * SHA-256 the catalog entry pins (LLD-fabric-studio-api, Tenant Catalog and Assets [P2d]).
+     */
+    @Test
+    void admissionKeepsTheAdmittedJar(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioCatalogService service = flowfoundrySessionService(dir, store);
+        String sha = service.listCatalogVisuals("tenant-a").entries().stream()
+                .filter(entry -> entry.catalogEntryId().equals("uploaded:flow.jar")).findFirst().orElseThrow()
+                .artifactSha256().substring("sha256:".length());
+        try (var files = Files.walk(dir.resolve("state").resolve("studio-companions"))) {
+            Path stored = files.filter(path -> path.getFileName().toString().equals(sha + ".jar")).findFirst().orElseThrow();
+            assertThat(StudioCompanionStore.sha256(Files.readAllBytes(stored))).isEqualTo(sha);
+        }
+    }
+
+    /**
+     * An environment stored before the reserved-option rule can still name a generated input; the preview refuses it
+     * with ENVIRONMENT_INVALID naming the option before anything renders, so it never reports bindings the emitter would
+     * not read (LLD-fabric-studio-api, Deployment Environments, Reserved options).
+     */
+    @Test
+    void refusesAPreviewOfAStoredEnvironmentNamingAGeneratedInput(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioDeploymentEnvironment legacy = new StudioDeploymentEnvironment("local", 1, java.time.Instant.EPOCH,
+                new StudioDeploymentEnvironment.Target("local-compose", "local", null, null,
+                        Map.of("runtimeBindingPath", "/operator/bindings.yaml"), List.of()),
+                new StudioDeploymentEnvironment.Bindings(Map.of(), null, null, null, List.of(), null, List.of()));
+        store.save(new StudioStateStore.State(Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                Map.of("tenant-a", Map.of("local", legacy))));
+        StudioCatalogService service = flowfoundrySessionService(dir, store);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+
+        StudioEmitPlanPreview plan = service.emitPlan("tenant-a", "assembly-flow", created.session().sessionId(), "local",
+                Optional.of(containerPolicy()));
+
+        assertThat(plan.absentReason().code()).isEqualTo("ENVIRONMENT_INVALID");
+        assertThat(plan.absentReason().message()).contains("target.options.runtimeBindingPath");
+        assertThat(plan.runtimeBindings()).isEmpty();
+    }
+
+    /** Deployment environments persist with Studio state and come back after a restart. */
+    @Test
+    void deploymentEnvironmentsPersistAcrossRestarts(@TempDir Path dir) throws Exception {
+        StudioStateStore store = new StudioStateStore(dir.resolve("state").resolve("studio-state.json"));
+        StudioCatalogService service = new StudioCatalogService(store, null);
+        StudioDeploymentEnvironment saved = service.saveDeploymentEnvironment("tenant-a", "local", localEnvironment(0, 45000, null));
+
+        StudioCatalogService restarted = new StudioCatalogService(store, null);
+        assertThat(restarted.deploymentEnvironments("tenant-a")).containsExactly(saved);
+        assertThat(restarted.deploymentEnvironments("tenant-b")).isEmpty();
+    }
+
+    /** A local-compose environment for the flow/foundry fixtures, at the expected revision. */
+    private static StudioDeploymentEnvironmentRequest localEnvironment(long expectedRevision, Integer timeoutMs,
+                                                                       StudioDeploymentEnvironment.Identity identity) {
+        return new StudioDeploymentEnvironmentRequest(expectedRevision,
+                new StudioDeploymentEnvironment.Target("local-compose", "local", null, null, Map.of(), List.of()),
+                new StudioDeploymentEnvironment.Bindings(Map.of(
+                        "urn:unfurl:test:flow", "http://flow:8080", "urn:unfurl:test:foundry", "http://foundry:7979"),
+                        timeoutMs, null, identity, List.of(), null, List.of()));
+    }
+
+    /** How many emit-plan folders are in the temporary directory now. */
+    private static long emitPlanFolders() throws IOException {
+        try (var entries = Files.list(Path.of(System.getProperty("java.io.tmpdir")))) {
+            return entries.filter(path -> path.getFileName().toString().startsWith("studio-emit-plan-")).count();
         }
     }
 

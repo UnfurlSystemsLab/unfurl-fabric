@@ -19,8 +19,11 @@ import java.time.Instant;
  * @param substrateProfileSha256 SHA-256 of the stored substrate profile; the envelope carries only its hash.
  * @param signedEnvelopeSha256   SHA-256 of the stored signed envelope, or null when the compile was not signed (not
  *                               requested, or requested and failed).
- * @param bindingsHash           hash of runtime bindings generated from this contract, or null (set from P2b).
  * @param compiledAt             when the compile finished.
+ *
+ * <p>A record names no runtime bindings: bindings belong to a deployment environment, and one compile can be previewed
+ * for several (LLD-fabric-studio-api, <i>StudioEmitPlanPreview</i>). A state file holding the former, never-set
+ * {@code bindingsHash} field reads unchanged, since Studio's JSON ignores unknown fields.
  */
 public record StudioCompileRecord(
         long revision,
@@ -29,7 +32,6 @@ public record StudioCompileRecord(
         String compiledEnvelopeSha256,
         String substrateProfileSha256,
         String signedEnvelopeSha256,
-        String bindingsHash,
         Instant compiledAt
 ) {
     /** Compact constructor: requires the hashes every record has, and blanks optional ones to null. */
@@ -39,7 +41,6 @@ public record StudioCompileRecord(
         requireHash(compiledEnvelopeSha256, "compiledEnvelopeSha256");
         requireHash(substrateProfileSha256, "substrateProfileSha256");
         signedEnvelopeSha256 = signedEnvelopeSha256 == null || signedEnvelopeSha256.isBlank() ? null : signedEnvelopeSha256;
-        bindingsHash = bindingsHash == null || bindingsHash.isBlank() ? null : bindingsHash;
         if (compiledAt == null) {
             throw new IllegalArgumentException("compiledAt is required");
         }

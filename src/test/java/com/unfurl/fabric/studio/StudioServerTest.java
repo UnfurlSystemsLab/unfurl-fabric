@@ -523,6 +523,43 @@ class StudioServerTest {
             assertThat(noRecord.path("absentReason").path("code").asText()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
             assertThat(noRecord.path("historical").asBoolean()).isTrue();
 
+            // P2d: deployment environments (revision-checked, every problem named) and the emit-plan route and tool.
+            String environments = "/studio/tenants/tenant-a/deployment-environments";
+            String localBody = "{\"expectedRevision\":%d,\"target\":{\"kind\":\"local-compose\",\"environment\":\"local\"},"
+                    + "\"bindings\":{\"timeoutMs\":45000}}";
+            HttpResponse<String> createdEnvironment = put(server, environments + "/local", localBody.formatted(0));
+            assertThat(createdEnvironment.statusCode()).as(createdEnvironment.body()).isEqualTo(200);
+            assertThat(mapper.readTree(createdEnvironment.body()).path("revision").asLong()).isEqualTo(1);
+            assertThat(mapper.readTree(get(server, environments).body()).get(0).path("name").asText()).isEqualTo("local");
+            HttpResponse<String> conflict = put(server, environments + "/local", localBody.formatted(0));
+            assertThat(conflict.statusCode()).isEqualTo(409);
+            assertThat(mapper.readTree(conflict.body()).path("currentRevision").asLong()).isEqualTo(1);
+            HttpResponse<String> invalid = put(server, environments + "/Bad_Name",
+                    "{\"expectedRevision\":0,\"target\":{\"kind\":\"nomad\"},\"bindings\":{\"timeoutMs\":-1}}");
+            assertThat(invalid.statusCode()).isEqualTo(400);
+            assertThat(mapper.readTree(invalid.body()).path("code").asText()).isEqualTo("ENVIRONMENT_INVALID");
+            assertThat(mapper.readTree(invalid.body()).path("problems").findValuesAsText("path"))
+                    .contains("name", "target.kind", "bindings.timeoutMs");
+            assertThat(get(server, environments + "/staging").statusCode()).isEqualTo(404);
+            String emitPlan = session + "/emit-plan?environment=";
+            JsonNode unknownEnvironment = mapper.readTree(get(server, emitPlan + "staging").body());
+            assertThat(unknownEnvironment.path("absentReason").path("code").asText()).isEqualTo("ENVIRONMENT_UNKNOWN");
+            JsonNode unsignedPlan = mapper.readTree(get(server, emitPlan + "local").body());
+            assertThat(unsignedPlan.path("available").asBoolean()).isFalse();
+            assertThat(unsignedPlan.path("absentReason").path("code").asText()).isEqualTo("NOT_SIGNED");
+            assertThat(unsignedPlan.path("environmentRevision").asLong()).isEqualTo(1);
+            assertThat(unsignedPlan.path("provenance").path("contractHash").asText())
+                    .isEqualTo(compiled.compileRecord().contractHash());
+            assertThat(get(server, session + "/emit-plan").statusCode()).as("an environment is required").isEqualTo(400);
+            JsonNode planTool = mapper.readTree(post(server, "/studio/tools/fabric.emit-plan-preview",
+                    "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
+                            + sessionId + "\",\"environment\":\"local\"}}").body());
+            assertThat(planTool.path("output").path("status").asText()).isEqualTo("GAP");
+            assertThat(planTool.path("output").path("response").path("absentReason").path("code").asText())
+                    .isEqualTo("NOT_SIGNED");
+            assertThat(delete(server, environments + "/local?expectedRevision=2").statusCode()).isEqualTo(409);
+            assertThat(delete(server, environments + "/local?expectedRevision=1").statusCode()).isEqualTo(204);
+
             // P2c: the overlay route, its refusals, and the overlay tool.
             String overlays = "/studio/tenants/tenant-a/assemblies/assembly-demo/overlays/";
             JsonNode compliance = mapper.readTree(get(server, overlays + "compliance?view=flow&sessionId=" + sessionId).body());
@@ -1520,6 +1557,17 @@ class StudioServerTest {
                         .timeout(Duration.ofSeconds(20))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(body))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** HTTP helper: sends a JSON PUT request to a running StudioServer route. */
+    private HttpResponse<String> put(StudioServer server, String path, String body) throws Exception {
+        return HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(uri(server, path))
+                        .timeout(Duration.ofSeconds(20))
+                        .header("Content-Type", "application/json")
+                        .PUT(HttpRequest.BodyPublishers.ofString(body))
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
     }

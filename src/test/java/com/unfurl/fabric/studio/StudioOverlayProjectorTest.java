@@ -32,9 +32,24 @@ class StudioOverlayProjectorTest {
             assertThat(annotation.contractHash()).isNull();
         });
         assertThat(result.annotations().get(1).detail()).contains("SELF", "flow., dcp.", "no permission is checked");
-        assertThat(result.findings()).singleElement()
-                .satisfies(finding -> assertThat(finding.value()).startsWith("not in the composition"));
+        assertThat(result.findings()).extracting(StudioOverlayAnnotations.Finding::label)
+                .containsExactly("Identity", "Identity in the needs");
+        assertThat(result.findings().get(0).value()).startsWith("not in the composition");
+        assertThat(result.findings().get(1).value()).startsWith("not required");
         assertThat(result.provenance()).as("security reads claims only, never a compile").isNull();
+    }
+
+    /** Whether the needs require identity is its own finding (P2d), read from the need compile uses. */
+    @Test
+    void securityStatesWhetherTheNeedsRequireIdentity() {
+        StudioOverlayProjector.Result required = StudioOverlayProjector.SECURITY.project(
+                context(true, node("flow", SERVICE), node("idp", IDENTITY_PROVIDER)), session(""));
+
+        assertThat(required.findings()).filteredOn(finding -> finding.label().equals("Identity in the needs"))
+                .singleElement().satisfies(finding -> {
+                    assertThat(finding.value()).startsWith("required");
+                    assertThat(finding.source()).isEqualTo("needs.required_capabilities[].capability");
+                });
     }
 
     /** With an identity-context provider in the draft, the same ports are annotated as enforced. */
@@ -102,9 +117,15 @@ class StudioOverlayProjectorTest {
     }
 
     private static StudioViewContext context(StudioViewContext.GroundedNode... nodes) {
+        return context(false, nodes);
+    }
+
+    /** A context without a compile, whose session's need does or does not require identity-context. */
+    private static StudioViewContext context(boolean needsIdentity, StudioViewContext.GroundedNode... nodes) {
         return new StudioViewContext(List.of(nodes), () -> new StudioViewContext.CompiledView(null, null, REQUIRED, Map.of()),
                 () -> new StudioVerificationResult(false, new StudioAbsentReason("NOT_SIGNED", "unsigned"), null, false,
-                        null, null, null, List.of()));
+                        null, null, null, List.of()),
+                () -> needsIdentity);
     }
 
     private static StudioDraftSession session(String trustPolicyId) {

@@ -128,7 +128,7 @@ final class StudioClaimAdmissionValidator {
             return AdmissionValidation.rejected(List.of(error(ErrorCode.CLAIM_MALFORMED.name(),
                     "artifact." + EMBEDDED_CATALOG_MANIFEST_PATH, ex.getMessage())));
         }
-        return AdmissionValidation.verified(claim, diagnostics, manifest.manifestYaml(), artifactSha);
+        return AdmissionValidation.verified(claim, diagnostics, manifest.manifestYaml(), artifactSha, artifactBytes);
     }
 
     /**
@@ -243,6 +243,9 @@ final class StudioClaimAdmissionValidator {
      * @param diagnostics  the admission diagnostics.
      * @param claimYaml    the exact {@code META-INF/unfurl-catalog.yaml} text read from the jar, or empty when rejected.
      * @param artifactSha  {@code sha256:<hex>} of the uploaded bytes, or empty when rejected.
+     * @param companionCoordinates the companion's coordinates, or empty for a component.
+     * @param artifactBytes        the admitted jar's bytes, which Studio keeps in the tenant's artifact store (a
+     *                             component's for hosted emits, a companion's for compile); empty when rejected.
      */
     record AdmissionValidation(
             Claim claim,
@@ -250,26 +253,26 @@ final class StudioClaimAdmissionValidator {
             String claimYaml,
             String artifactSha,
             String companionCoordinates,
-            byte[] companionBytes
+            byte[] artifactBytes
     ) {
         /**
          * Invariant constructor: copied diagnostics prevent mutation after validation. A companion outcome carries
-         * coordinates and bytes and no claim; a component outcome carries a claim and neither.
+         * coordinates and bytes and no claim; a component outcome carries a claim and its bytes; a rejection neither.
          */
         AdmissionValidation {
             diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
             claimYaml = claimYaml == null ? "" : claimYaml;
             artifactSha = artifactSha == null ? "" : artifactSha;
             companionCoordinates = companionCoordinates == null ? "" : companionCoordinates;
-            companionBytes = companionBytes == null ? new byte[0] : companionBytes.clone();
+            artifactBytes = artifactBytes == null ? new byte[0] : artifactBytes.clone();
         }
 
         /**
          * Factory for a verified claim with zero or more warning diagnostics.
          */
         static AdmissionValidation verified(Claim claim, List<StudioDcpDiagnostic> diagnostics, String claimYaml,
-                                            String artifactSha) {
-            return new AdmissionValidation(claim, diagnostics, claimYaml, artifactSha, "", null);
+                                            String artifactSha, byte[] bytes) {
+            return new AdmissionValidation(claim, diagnostics, claimYaml, artifactSha, "", bytes);
         }
 
         /**

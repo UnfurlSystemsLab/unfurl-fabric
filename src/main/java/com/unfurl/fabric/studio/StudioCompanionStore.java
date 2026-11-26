@@ -13,11 +13,13 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
- * Repository: the bytes of companion jars admitted to Studio (HLD-in-process-component-hosting §3), tenant-scoped and
- * content-addressed at {@code <root>/<sha256(tenant id)>/<sha256>.jar}; the tenant folder is named by a hash so any tenant
- * id is a safe, distinct folder name. Writes are write-once: storing bytes whose file already
+ * Repository: the bytes of jars admitted to Studio, tenant-scoped and content-addressed at
+ * {@code <root>/<sha256(tenant id)>/<sha256>.jar}; the tenant folder is named by a hash so any tenant id is a safe, distinct
+ * folder name. It holds companion jars (HLD-in-process-component-hosting §3) and, from P2d, admitted components' jars
+ * (LLD-fabric-studio-api, <i>Tenant Catalog and Assets</i>). Writes are write-once: storing bytes whose file already
  * exists is a no-op, and a file is written to a temporary name and moved into place, so a stored path never holds
- * partial or different bytes. Compile reads companions from here, so the shared-API check sees the admitted bytes.
+ * partial or different bytes. Compile reads companions from here, so the shared-API check sees the admitted bytes; the
+ * emit-plan preview reads hosted components' jars and their companions from here.
  *
  * <p>The root is next to the persisted Studio state; an in-memory Studio (no state store) uses a temporary directory
  * for the process lifetime, matching the rest of its state.
@@ -51,7 +53,7 @@ final class StudioCompanionStore {
      * Stores the bytes and returns their path.
      *
      * @param tenant the normalized tenant id
-     * @param bytes  the companion jar
+     * @param bytes  the admitted jar (a companion or a component)
      * @return the stored file, named by the bytes' SHA-256
      */
     Path store(String tenant, byte[] bytes) {
@@ -72,7 +74,7 @@ final class StudioCompanionStore {
             }
             return target;
         } catch (IOException ex) {
-            throw new UncheckedIOException("unable to store companion " + target.getFileName(), ex);
+            throw new UncheckedIOException("unable to store the admitted jar " + target.getFileName(), ex);
         }
     }
 

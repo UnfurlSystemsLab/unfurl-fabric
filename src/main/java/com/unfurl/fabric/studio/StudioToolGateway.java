@@ -86,6 +86,7 @@ public final class StudioToolGateway {
                 case "fabric.contract-diff" -> contractDiff(toolName, request.arguments());
                 case "fabric.view-project" -> viewProject(toolName, request.arguments());
                 case "fabric.overlay-annotate" -> overlayAnnotate(toolName, request.arguments());
+                case "fabric.emit-plan-preview" -> emitPlanPreview(toolName, request.arguments());
                 case "fabric.contract-verify" -> contractVerify(toolName, request.arguments());
                 case "fabric.export-download" -> exportDownload(toolName, request.arguments());
                 case "fabric.export-download-all" -> exportDownloadAll(toolName, request.arguments());
@@ -348,50 +349,24 @@ public final class StudioToolGateway {
             throw new ToolGap(gap(toolName, "the catalog does not hold the contract's selections: " + refusal.getMessage(), Map.of(),
                     List.of("Point catalogPath at the catalog the contract was compiled from.")));
         }
-        java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration;
+        com.unfurl.fabric.runtime.RuntimeBindingInputs inputs;
         try {
-            componentConfiguration = com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(contract.contract(),
-                    catalog, stringList(value(arguments, "componentConfig")));
-        } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
-            throw new ToolGap(hostedConfigurationGap(toolName, refusal));
-        }
-        RuntimeBindingSetGenerator.Options defaults = RuntimeBindingSetGenerator.Options.defaults();
-        RuntimeBindingSetGenerator.Options options = new RuntimeBindingSetGenerator.Options(
-                signed,
-                "sha256:" + sha256(signedBytes),
-                contract.canonicalHash(),
-                contract.signerKeyFingerprint(),
-                text(arguments, "tenant", text(arguments, "tenantId", defaults.tenant())),
-                text(arguments, "environment", defaults.environment()),
-                text(arguments, "telemetryNamespace", defaults.telemetryNamespace()),
-                text(arguments, "bindingIdPrefix", defaults.bindingIdPrefix()),
-                com.unfurl.fabric.runtime.ServiceBaseUrls.parse(serviceBaseUrlEntries(asMap(value(arguments, "serviceBaseUrls"))),
-                        text(arguments, "flowBaseUrl", ""), text(arguments, "foundryBaseUrl", "")),
-                (int) longValue(firstValue(arguments, "timeoutMs", "timeout-ms"), defaults.timeoutMs()),
-                identityOptions(asMap(value(arguments, "identity"))),
-                componentConfiguration,
-                com.unfurl.fabric.runtime.DocumentationOptions.of(text(arguments, "documentationVisibilityDefault", ""),
-                        text(arguments, "documentationVisibilityPath", "").isBlank() ? null
-                                : resolveExistingPath(text(arguments, "documentationVisibilityPath", "")),
-                        optionalLong(value(arguments, "catalogObservationIntervalMs")),
-                        optionalLong(value(arguments, "catalogObservationMaxBackoffMs"))),
-                disabledBindings(toolName, arguments));
-        return new BindingToolInputs(signed, contract, selected, options);
-    }
-
-    /**
-     * The tool's {@code disableBindings} ({@code ["<provider-claim-uri>#<capability>", ...]}), as {@code fabric
-     * runtime-bindings --disable-binding} reads them (HLD-api-documentation-artifacts §4.4).
-     *
-     * @throws ToolGap with the {@code GAP} result for a malformed entry
-     */
-    private com.unfurl.fabric.runtime.DisabledBindings disabledBindings(String toolName, Map<String, Object> arguments) {
-        try {
-            return com.unfurl.fabric.runtime.DisabledBindings.parse(stringList(value(arguments, "disableBindings")));
-        } catch (IllegalArgumentException invalid) {
+            inputs = com.unfurl.fabric.runtime.RuntimeBindingInputs.fromMap(arguments, this::resolveExistingPath);
+        } catch (com.unfurl.fabric.runtime.RuntimeBindingInputs.Invalid invalid) {
+            if (!"disableBindings".equals(invalid.argument())) throw invalid;
             throw new ToolGap(gap(toolName, invalid.getMessage(), Map.of(),
                     List.of("Name each binding to disable as <provider-claim-uri>#<capability>.")));
         }
+        java.util.Map<java.net.URI, com.unfurl.dcp.runtimebinding.Configuration> componentConfiguration;
+        try {
+            componentConfiguration = com.unfurl.fabric.runtime.HostedComponentConfiguration.forContract(contract.contract(),
+                    catalog, inputs.componentConfig());
+        } catch (com.unfurl.fabric.runtime.HostedComponentConfiguration.Refusal refusal) {
+            throw new ToolGap(hostedConfigurationGap(toolName, refusal));
+        }
+        RuntimeBindingSetGenerator.Options options = inputs.options(signed, sha256(signedBytes), contract,
+                componentConfiguration);
+        return new BindingToolInputs(signed, contract, selected, options);
     }
 
     /** The {@code GAP} a binding tool returns when its inputs cannot be bound, with what to check. */
@@ -405,24 +380,6 @@ public final class StudioToolGateway {
                         "If the needs require identity-context, supply identity in every environment: issuer, audiences, "
                                 + "tenantClaim, rolesClaim, permissionsClaim, tokenEndpointRef, verificationKeysRef and "
                                 + "clientCredentialsRef. Otherwise leave identity out."));
-    }
-
-    /** The {@code serviceBaseUrls} argument ({@code {claimUri: url}}) as {@code claimUri=url} entries for ServiceBaseUrls. */
-    private static List<String> serviceBaseUrlEntries(Map<String, Object> bases) {
-        List<String> entries = new java.util.ArrayList<>();
-        bases.forEach((claim, url) -> entries.add(claim + "=" + (url == null ? "" : url)));
-        return entries;
-    }
-
-    /** An optional whole-number argument: null when absent, refused when not a whole number. */
-    private static Long optionalLong(Object value) {
-        if (value == null || value.toString().isBlank()) return null;
-        if (value instanceof Number number) return number.longValue();
-        try {
-            return Long.parseLong(value.toString().trim());
-        } catch (NumberFormatException notANumber) {
-            throw new IllegalArgumentException("'" + value + "' is not a whole number");
-        }
     }
 
     /**
@@ -443,38 +400,6 @@ public final class StudioToolGateway {
                     List.of("Supply every required deployment key, as a value, config:// or secret:// reference as its type needs.",
                             "Do not change keys the component fixes, and only tighten limits."));
         };
-    }
-
-    /** Argument adapter: a list argument given as a JSON array, or one string; empty when absent. */
-    private static List<String> stringList(Object raw) {
-        if (raw == null) return List.of();
-        if (raw instanceof Collection<?> values) return values.stream().map(String::valueOf).toList();
-        String text = String.valueOf(raw);
-        return text.isBlank() ? List.of() : List.of(text);
-    }
-
-    /**
-     * Argument adapter: maps the step's {@code identity} object (HLD-needs-driven-identity §6) to the generator's identity
-     * options field for field, with no defaults. {@code audiences} is a JSON object from service claim URI to audience, and
-     * {@code serviceCredentials} one from service claim URI to the {@code secret://} reference of its client credentials.
-     */
-    private RuntimeBindingSetGenerator.IdentityOptions identityOptions(Map<String, Object> identity) {
-        Map<String, String> audiences = new LinkedHashMap<>();
-        asMap(identity.get("audiences")).forEach((service, audience) ->
-                audiences.put(service, audience == null ? null : String.valueOf(audience)));
-        Map<String, String> serviceCredentials = new LinkedHashMap<>();
-        asMap(identity.get("serviceCredentials")).forEach((service, ref) ->
-                serviceCredentials.put(service, ref == null ? null : String.valueOf(ref)));
-        return new RuntimeBindingSetGenerator.IdentityOptions(
-                text(identity, "issuer", null),
-                audiences,
-                text(identity, "tenantClaim", null),
-                text(identity, "rolesClaim", null),
-                text(identity, "permissionsClaim", null),
-                text(identity, "tokenEndpointRef", null),
-                text(identity, "verificationKeysRef", null),
-                text(identity, "clientCredentialsRef", null),
-                serviceCredentials);
     }
 
     /**
@@ -1983,6 +1908,20 @@ public final class StudioToolGateway {
         return result("PASS", toolName, Map.of("response", response));
     }
 
+    /**
+     * Read adapter: the emit-plan preview of a session's current compile for one deployment environment, as
+     * {@code GET .../sessions/{sessionId}/emit-plan} returns it (LLD-fabric-studio-api, StudioEmitPlanPreview). Takes
+     * {@code sessionId}, {@code environment} and optionally {@code deploymentPolicy}. PASS when the plan is available;
+     * GAP otherwise, with the response naming why under the refusing step's code.
+     */
+    private StudioToolCallResult emitPlanPreview(String toolName, Map<String, Object> arguments) {
+        ViewArguments viewArguments = typedRequest(arguments, ViewArguments.class);
+        StudioEmitPlanPreview response = service.emitPlan(text(arguments, "tenantId", DEFAULT_TENANT_ID),
+                text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID), text(arguments, "sessionId", ""),
+                text(arguments, "environment", ""), java.util.Optional.ofNullable(viewArguments.deploymentPolicy()));
+        return result(response.available() ? "PASS" : "GAP", toolName, Map.of("response", response));
+    }
+
     /** The optional arguments of {@code fabric.view-project}. @param deploymentPolicy the policy to check freshness with. */
     private record ViewArguments(StudioDeploymentPolicyDraft deploymentPolicy) {
     }
@@ -2318,6 +2257,7 @@ public final class StudioToolGateway {
                 "fabric.contract-verify",
                 "fabric.view-project",
                 "fabric.overlay-annotate",
+                "fabric.emit-plan-preview",
                 "fabric.export-download",
                 "fabric.export-download-all",
                 "fabric.runtime-binding-generate",

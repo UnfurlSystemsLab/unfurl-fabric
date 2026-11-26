@@ -63,11 +63,17 @@ enum StudioOverlayProjector {
                             "claim.integration_ports.authorization"));
                 }
             }
+            // Whether identity is in the composition, and whether the session's need requires it (P2d): the need decides
+            // that identity is mandatory (HLD-needs-driven-identity), the composition shows whether it is provided.
             List<StudioOverlayAnnotations.Finding> findings = annotations.isEmpty() ? List.of() : List.of(
                     new StudioOverlayAnnotations.Finding("Identity", identity
                             ? "in the composition: a component provides identity-context"
                             : "not in the composition: components run unauthenticated on a trusted network",
-                            "claim.offers[].capability", null, null));
+                            "claim.offers[].capability", null, null),
+                    new StudioOverlayAnnotations.Finding("Identity in the needs", context.needsIdentity().get()
+                            ? "required: the session's needs require identity-context, so the composition must provide it"
+                            : "not required: the session's needs do not ask for identity-context",
+                            "needs.required_capabilities[].capability", null, null));
             // Claims only: no compile record is read, so none is named.
             return new Result(annotations, findings, List.of(), new StudioAbsentReason("NO_AUTH_PORTS_DECLARED",
                     "no selected component declares authentication or authorization ports (integration_ports)"), null);
