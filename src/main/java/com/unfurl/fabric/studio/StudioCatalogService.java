@@ -4209,7 +4209,13 @@ public final class StudioCatalogService {
                 return cached.response();
             }
             StudioEmitPlanPreview response = emitPlanResponse(prepared, emitPlanRunner.run(prepared.inputs()));
-            emitPlanCache.put(sessionKey, new CachedEmitPlan(prepared.cacheKey(), response));
+            // Only an available answer is kept: a refusal can come from an input outside Studio state (a missing
+            // operator folder, an untrusted key), and answering again shows its repair at once (LLD, Cache).
+            if (response.available()) {
+                emitPlanCache.put(sessionKey, new CachedEmitPlan(prepared.cacheKey(), response));
+            } else {
+                emitPlanCache.remove(sessionKey);
+            }
             return response;
         }
     }
@@ -4286,8 +4292,32 @@ public final class StudioCatalogService {
                 new StudioEmitPlanRunner.Inputs(tenant, env, loaded.compiled(), loaded.signed(), signedEnvelope,
                         loaded.profile(), profileBytes, selected, signer.get(), trust.dir(), trust.keys(),
                         hostedCatalogJars, pinnedJars, compiled.providerNodes()),
-                // Content, not revision: a deleted and re-created environment reuses revisions (LLD, Cache).
-                record.contractHash() + "|" + env.name() + "|" + env.contentSha256());
+                // Content, not revision: a deleted and re-created environment reuses revisions; and the files the run
+                // reads from outside Studio state, so an edited or repaired one renders again (LLD, Cache).
+                record.contractHash() + "|" + env.name() + "|" + env.contentSha256() + "|" + externalInputs(trust, env));
+    }
+
+    /**
+     * The fingerprint of the files a preview reads from outside Studio state: the trust-key folder, Studio's signing key
+     * files, and each operator path the environment's target options name ({@link StudioPathFingerprint}).
+     */
+    private String externalInputs(TrustKeys trust, StudioDeploymentEnvironment environment) {
+        Map<String, Path> paths = new LinkedHashMap<>();
+        paths.put("trustKeys", trust.dir());
+        paths.put("signingPrivateKey", configPath("unfurl.studio.signing.privateKey", "UNFURL_STUDIO_SIGNING_PRIVATE_KEY"));
+        paths.put("signingPublicKey", configPath("unfurl.studio.signing.publicKey", "UNFURL_STUDIO_SIGNING_PUBLIC_KEY"));
+        environment.target().options().forEach((key, value) -> {
+            if (com.unfurl.fabric.deploy.EmitTargetInputs.isOperatorPathOption(key)) {
+                paths.put("option:" + key, value == null || value.isBlank() ? null : Path.of(value));
+            }
+        });
+        return StudioPathFingerprint.of(paths);
+    }
+
+    /** A configured path, or null when the setting is blank. */
+    private Path configPath(String property, String environmentVariable) {
+        String value = configValue(property, environmentVariable);
+        return value.isBlank() ? null : Path.of(value);
     }
 
     /**

@@ -201,7 +201,8 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
   - Tool: `fabric.emit-plan-preview`. Tests: `StudioDeploymentEnvironmentsTest` (revision checks, every problem with
     its path), the emit-plan cases in `StudioCatalogServiceTest` (each refusal in order, the real compose emit with
     bindings on their nodes, cache and environment-save invalidation, identity inputs without identity, folders
-    deleted, persistence), `EmitTargetInputsTest`, and the route and tool cases in `StudioServerTest`.
+    deleted, persistence; a refusal from an outside input is never cached, and a changed trust-key folder renders
+    again), `StudioPathFingerprintTest`, `EmitTargetInputsTest`, and the route and tool cases in `StudioServerTest`.
 - Studio workbench P2c (`LLD-fabric-studio-api.md`, *StudioOverlayAnnotations*):
   - `GET .../overlays/{security,performance,compliance}?sessionId&view` returns `StudioOverlayAnnotations`: annotations
     on `/dynamic-dcp` nodes and overlay-level findings, compile-derived entries with provenance or left out as
