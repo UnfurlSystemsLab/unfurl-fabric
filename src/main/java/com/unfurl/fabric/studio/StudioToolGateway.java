@@ -85,6 +85,7 @@ public final class StudioToolGateway {
                 case "fabric.candidate-compile" -> candidateCompile(toolName, request.arguments());
                 case "fabric.contract-diff" -> contractDiff(toolName, request.arguments());
                 case "fabric.view-project" -> viewProject(toolName, request.arguments());
+                case "fabric.overlay-annotate" -> overlayAnnotate(toolName, request.arguments());
                 case "fabric.contract-verify" -> contractVerify(toolName, request.arguments());
                 case "fabric.export-download" -> exportDownload(toolName, request.arguments());
                 case "fabric.export-download-all" -> exportDownloadAll(toolName, request.arguments());
@@ -1968,6 +1969,20 @@ public final class StudioToolGateway {
         return result("PASS", toolName, Map.of("response", response));
     }
 
+    /**
+     * Read adapter: one perspective overlay's annotations, as {@code GET .../overlays/{overlay}} returns them
+     * (LLD-fabric-studio-api, StudioOverlayAnnotations). Takes {@code sessionId}, {@code overlay}, {@code view} and
+     * optionally {@code deploymentPolicy}. PASS with the annotations, which state what is unavailable and why.
+     */
+    private StudioToolCallResult overlayAnnotate(String toolName, Map<String, Object> arguments) {
+        ViewArguments viewArguments = typedRequest(arguments, ViewArguments.class);
+        StudioOverlayAnnotations response = service.overlayAnnotations(text(arguments, "tenantId", DEFAULT_TENANT_ID),
+                text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID), text(arguments, "sessionId", ""),
+                text(arguments, "overlay", ""), text(arguments, "view", "flow"),
+                java.util.Optional.ofNullable(viewArguments.deploymentPolicy()));
+        return result("PASS", toolName, Map.of("response", response));
+    }
+
     /** The optional arguments of {@code fabric.view-project}. @param deploymentPolicy the policy to check freshness with. */
     private record ViewArguments(StudioDeploymentPolicyDraft deploymentPolicy) {
     }
@@ -2302,6 +2317,7 @@ public final class StudioToolGateway {
                 "fabric.contract-diff",
                 "fabric.contract-verify",
                 "fabric.view-project",
+                "fabric.overlay-annotate",
                 "fabric.export-download",
                 "fabric.export-download-all",
                 "fabric.runtime-binding-generate",

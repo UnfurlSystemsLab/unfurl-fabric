@@ -185,8 +185,18 @@ plan; tests in `FabricCliDocumentationArtifactsTest` and the Studio and CLI bind
     `400 LAYOUT_STATE_INVALID`, and checks a snapshot's layout the same way.
   - `StudioDraftSession` derives `TRUST_POLICY_PERMISSIVE` from a blank `trustPolicyId`.
   - Tests: `StudioLayoutRulesTest`, plus the updated layout cases in `StudioCatalogServiceTest` and `StudioServerTest`.
-  - The P2 read models are designed in the same LLD and built in slices. P2a and P2b are built; overlays, the emit
-    preview and faults are not yet (P2c to P2e).
+  - The P2 read models are designed in the same LLD and built in slices. P2a to P2c are built; the emit preview and
+    faults are not yet (P2d, P2e).
+- Studio workbench P2c (`LLD-fabric-studio-api.md`, *StudioOverlayAnnotations*):
+  - `GET .../overlays/{security,performance,compliance}?sessionId&view` returns `StudioOverlayAnnotations`: annotations
+    on `/dynamic-dcp` nodes and overlay-level findings, compile-derived entries with provenance or left out as
+    `staleSources`. `resilience` answers `OVERLAY_NOT_BUILT` until P2e.
+  - `StudioOverlayProjector` (one Strategy per overlay) reads the same `StudioViewContext` as the views (shared
+    `viewContext`): Security pairs the A.9 auth ports with identity in the composition (enforced / trusted network);
+    Performance reads child-contract timeouts; Compliance reads the decision audit, audit-event emitters, and the
+    trust policy, which it always states as not applied while that gap stands. Runtime-binding facts arrive with P2d.
+  - Tool: `fabric.overlay-annotate`. Tests: `StudioOverlayProjectorTest` (both identity paths), the overlay cases in
+    `StudioCatalogServiceTest` and `StudioServerTest`.
 - Studio workbench P2b (`LLD-fabric-studio-api.md`, *StudioViewProjection*):
   - `GET .../views/{flow,data,topology,runtime}?sessionId` returns `StudioViewProjection`, one `StudioViewSection` per
     section: items with their `/dynamic-dcp` node id and DCP source path, or the absent reason (never an empty list).

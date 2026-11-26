@@ -1155,6 +1155,68 @@ class StudioCatalogServiceTest {
                 .hasMessageStartingWith("VIEW_SESSION_REQUIRED");
     }
 
+    // ---- P2c: perspective overlays (LLD-fabric-studio-api, StudioOverlayAnnotations) ----
+
+    /**
+     * Compile-derived overlay entries follow the P2a rules: before a compile the decision audit is a stale source and
+     * Performance answers COMPILE_REQUIRED; after it the audit findings carry the record's provenance; after an edit they
+     * are left out again.
+     */
+    @Test
+    void overlaysReadTheCurrentCompileOnly(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        String sessionId = created.session().sessionId();
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioOverlayAnnotations performance = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "performance", "topology", Optional.of(containerPolicy()));
+        assertThat(performance.available()).isFalse();
+        assertThat(performance.absentReason().code()).isEqualTo("COMPILE_REQUIRED");
+        StudioOverlayAnnotations before = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "compliance", "flow", Optional.of(containerPolicy()));
+        assertThat(before.available()).as("the trust-policy finding is always there").isTrue();
+        assertThat(before.staleSources()).singleElement()
+                .satisfies(stale -> assertThat(stale.reason().code()).isEqualTo("COMPILE_REQUIRED"));
+
+        StudioCompileRecord record = compile(service, created.session()).compileRecord();
+        StudioOverlayAnnotations after = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "compliance", "flow", Optional.of(containerPolicy()));
+        assertThat(after.staleSources()).isEmpty();
+        assertThat(after.findings()).anySatisfy(finding -> {
+            assertThat(finding.label()).isEqualTo("Selection mode");
+            assertThat(finding.value()).as("a Studio draft is operator-composed").isEqualTo("MANUAL");
+            assertThat(finding.contractHash()).isEqualTo(record.contractHash());
+            assertThat(finding.sourceRevision()).isEqualTo(record.revision());
+        });
+        assertThat(before.provenance()).as("no compile is recorded yet").isNull();
+        assertThat(after.provenance().contractHash()).isEqualTo(record.contractHash());
+        StudioOverlayAnnotations compiledPerformance = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "performance", "topology", Optional.of(containerPolicy()));
+        assertThat(compiledPerformance.provenance().contractHash())
+                .as("the record is named even when it sets no timeout").isEqualTo(record.contractHash());
+        assertThat(service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "security", "flow",
+                Optional.of(containerPolicy())).provenance()).as("security reads claims only").isNull();
+        assertThat(compiledPerformance.absentReason() == null
+                ? compiledPerformance.annotations().stream().allMatch(a -> record.contractHash().equals(a.contractHash()))
+                : "NO_TIMEOUTS_DECLARED".equals(compiledPerformance.absentReason().code()))
+                .as(String.valueOf(compiledPerformance.absentReason())).isTrue();
+
+        removeComponent(service, created.session(), "uploaded:foundry.jar", 2);
+        StudioOverlayAnnotations moved = service.overlayAnnotations("tenant-a", "assembly-flow", sessionId,
+                "compliance", "flow", Optional.of(containerPolicy()));
+        assertThat(moved.findings()).noneSatisfy(finding -> assertThat(finding.contractHash()).isNotNull());
+        assertThat(moved.staleSources()).singleElement()
+                .satisfies(stale -> assertThat(stale.reason().code()).isEqualTo("COMPILE_STALE"));
+        assertThat(moved.provenance().contractHash()).as("the stale record it describes").isEqualTo(record.contractHash());
+
+        assertThatThrownBy(() -> service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "resilience", "flow",
+                Optional.empty())).hasMessageStartingWith("OVERLAY_NOT_BUILT");
+        assertThatThrownBy(() -> service.overlayAnnotations("tenant-a", "assembly-flow", sessionId, "security", "graph",
+                Optional.empty())).hasMessageStartingWith("VIEW_UNKNOWN");
+    }
+
     /** Fixture command: applies one REMOVE_COMPONENT intent at the supplied revision. */
     private static void removeComponent(StudioCatalogService service, StudioDraftSession session, String catalogEntryId,
                                         long revision) {

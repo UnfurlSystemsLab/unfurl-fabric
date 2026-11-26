@@ -124,6 +124,8 @@ import java.util.zip.ZipOutputStream;
 public final class StudioCatalogService {
     /** An assembly snapshot whose sessions cannot be imported as a whole (LLD-fabric-studio-api, Assembly snapshots). */
     public static final String ASSEMBLY_SNAPSHOT_INVALID = "ASSEMBLY_SNAPSHOT_INVALID";
+    /** The decision audit's selection mode for every Studio compile: the operator composed the draft (CLI's MANUAL). */
+    private static final String STUDIO_SELECTION_MODE = "MANUAL";
     private static final int AUTHORING_CONTEXT_CONVERSATION_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_CATALOG_FILE_LIMIT = 8;
     private static final int AUTHORING_CONTEXT_SESSION_HISTORY_LIMIT = 8;
@@ -4119,8 +4121,68 @@ public final class StudioCatalogService {
         StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
         String tenant = session.tenantId();
         List<StudioDcpDiagnostic> diagnostics = new ArrayList<>();
+        StudioViewContext context = viewContext(session, requestPolicy, diagnostics);
+        StudioViewProjector.Sections sections = projector.project(context);
+        StudioViewProjection response = new StudioViewProjection(projector.id(), tenant, session.assemblyId(), sessionId,
+                session.sceneRevision(), sections.externalOwners, sections.externalProtocolOffers, sections.ownedState,
+                sections.ownedDecisions, sections.operations, sections.dataMappings, sections.transports,
+                sections.monitoring, sections.telemetry, sections.verification, diagnostics, List.of());
+        return response.withDiagnosticArtifacts(List.of(
+                diagnosticArtifact(tenant, "view-" + projector.id(), "view-" + projector.id() + ".json", response)));
+    }
+
+    /**
+     * Read model: one perspective overlay's annotations on the draft's nodes, and its findings (LLD-fabric-studio-api,
+     * <i>StudioOverlayAnnotations</i>). It reads the same context as the views ({@link #viewContext}) and never gates:
+     * nothing here changes a session, a revision or a contract.
+     *
+     * <p>Pattern: <b>Facade</b> over the shared view context; the per-overlay reading is the
+     * {@link StudioOverlayProjector} Strategy.
+     *
+     * @param tenantId      the tenant.
+     * @param assemblyId    the assembly.
+     * @param sessionId     the draft session (required).
+     * @param overlay       {@code security}, {@code performance} or {@code compliance}.
+     * @param view          the view the overlay annotates ({@code flow}, {@code data}, {@code topology}, {@code runtime}).
+     * @param requestPolicy the policy the request would compile with now, if it names one.
+     * @return the overlay's annotations, findings, left-out sources and diagnostics.
+     * @throws IllegalArgumentException {@code OVERLAY_UNKNOWN}, {@code OVERLAY_NOT_BUILT}, {@code VIEW_UNKNOWN}, or
+     *                                  {@code VIEW_SESSION_REQUIRED}.
+     */
+    public synchronized StudioOverlayAnnotations overlayAnnotations(String tenantId, String assemblyId, String sessionId,
+                                                                    String overlay, String view,
+                                                                    Optional<StudioDeploymentPolicyDraft> requestPolicy) {
+        StudioOverlayProjector projector = StudioOverlayProjector.forOverlay(overlay);
+        String viewId = StudioViewProjector.forView(view).id();
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("VIEW_SESSION_REQUIRED: an overlay annotates a draft; sessionId is required");
+        }
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        List<StudioDcpDiagnostic> diagnostics = new ArrayList<>();
+        StudioOverlayProjector.Result result = projector.project(viewContext(session, requestPolicy, diagnostics), session);
+        boolean available = !result.annotations().isEmpty() || !result.findings().isEmpty();
+        StudioOverlayAnnotations response = new StudioOverlayAnnotations(projector.id(), viewId, session.tenantId(),
+                session.assemblyId(), sessionId, session.sceneRevision(), result.provenance(), available,
+                available ? null : result.emptyReason(), result.annotations(), result.findings(), result.staleSources(),
+                diagnostics, List.of());
+        return response.withDiagnosticArtifacts(List.of(diagnosticArtifact(session.tenantId(), "overlay-" + projector.id(),
+                "overlay-" + projector.id() + ".json", response)));
+    }
+
+    /**
+     * The context views and overlays read (LLD-fabric-studio-api, <i>StudioViewProjection</i>, Grounding): each component
+     * node of the draft's {@code /dynamic-dcp} projection grounded to the claim compile uses, the current compile under
+     * the P2a rules, and its verification, both evaluated lazily. A node that does not ground is added to
+     * {@code diagnostics} as {@code CATALOG_ENTRY_NOT_ADMITTED}, and nothing is projected for it.
+     *
+     * <p>Pattern: <b>Factory</b> for {@link StudioViewContext}, shared by {@link #viewProjection} and
+     * {@link #overlayAnnotations} so both read the same grounding.
+     */
+    private StudioViewContext viewContext(StudioDraftSession session, Optional<StudioDeploymentPolicyDraft> requestPolicy,
+                                          List<StudioDcpDiagnostic> diagnostics) {
+        String tenant = session.tenantId();
         List<StudioViewContext.GroundedNode> nodes = new ArrayList<>();
-        for (StudioDynamicDcpNode node : dynamicDcpProjection(tenant, session.assemblyId(), sessionId).nodes()) {
+        for (StudioDynamicDcpNode node : dynamicDcpProjection(tenant, session.assemblyId(), session.sessionId()).nodes()) {
             if (node.catalogEntryId() == null || node.catalogEntryId().isBlank()) {
                 continue;
             }
@@ -4136,17 +4198,10 @@ public final class StudioCatalogService {
                 providerNodes.putIfAbsent(node.claim().identity().uri(), node.nodeId());
             }
         });
-        StudioViewContext context = new StudioViewContext(nodes,
+        return new StudioViewContext(nodes,
                 () -> currentCompiledView(session, requestPolicy, providerNodes),
-                () -> verifyCompile(tenant, session.assemblyId(), sessionId,
+                () -> verifyCompile(tenant, session.assemblyId(), session.sessionId(),
                         new StudioVerifyRequest(null, null, requestPolicy.orElse(null))));
-        StudioViewProjector.Sections sections = projector.project(context);
-        StudioViewProjection response = new StudioViewProjection(projector.id(), tenant, session.assemblyId(), sessionId,
-                session.sceneRevision(), sections.externalOwners, sections.externalProtocolOffers, sections.ownedState,
-                sections.ownedDecisions, sections.operations, sections.dataMappings, sections.transports,
-                sections.monitoring, sections.telemetry, sections.verification, diagnostics, List.of());
-        return response.withDiagnosticArtifacts(List.of(
-                diagnosticArtifact(tenant, "view-" + projector.id(), "view-" + projector.id() + ".json", response)));
     }
 
     /**
@@ -4714,7 +4769,8 @@ public final class StudioCatalogService {
 
     /**
      * Compiler adapter: mirrors the CLI compile/profile pipeline using an already resolved
-     * deployment binding plan.
+     * deployment binding plan. Like the CLI, it records the selection mode in the decision audit: a Studio draft is
+     * composed by the operator's own intents, so the mode is {@code MANUAL} (LLD-fabric-studio-api, Sessions).
      */
     private CompiledArtifacts compileArtifacts(
             CompositionCandidate candidate,
@@ -4735,7 +4791,7 @@ public final class StudioCatalogService {
                 compiled.contract(),
                 compiled.childContracts(),
                 selectionsWithDeploymentShapes(compiled.selections(), bindingPlan),
-                compiled.audit(),
+                compiled.audit().withSelectionMode(STUDIO_SELECTION_MODE),
                 hashedProfile.profileHash(),
                 bindingPlan,
                 compiled.signature());
