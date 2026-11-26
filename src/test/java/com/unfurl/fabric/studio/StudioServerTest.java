@@ -523,6 +523,23 @@ class StudioServerTest {
             assertThat(noRecord.path("absentReason").path("code").asText()).isEqualTo("COMPILE_RECORD_UNAVAILABLE");
             assertThat(noRecord.path("historical").asBoolean()).isTrue();
 
+            // P2b: the view route, its refusals, and the view tool.
+            String views = "/studio/tenants/tenant-a/assemblies/assembly-demo/views/";
+            JsonNode topology = mapper.readTree(get(server, views + "topology?sessionId=" + sessionId).body());
+            assertThat(topology.path("view").asText()).isEqualTo("topology");
+            assertThat(topology.path("transports").path("available").asBoolean()).isTrue();
+            assertThat(topology.has("ownedState")).as("only the requested view's sections").isFalse();
+            HttpResponse<String> unknownView = get(server, views + "overlays?sessionId=" + sessionId);
+            assertThat(unknownView.statusCode()).isEqualTo(400);
+            assertThat(unknownView.body()).contains("VIEW_UNKNOWN");
+            assertThat(get(server, views + "flow").statusCode()).as("a view needs a session").isEqualTo(400);
+            JsonNode viewTool = mapper.readTree(post(server, "/studio/tools/fabric.view-project",
+                    "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
+                            + sessionId + "\",\"view\":\"runtime\"}}").body());
+            assertThat(viewTool.path("output").path("status").asText()).isEqualTo("PASS");
+            assertThat(viewTool.path("output").path("response").path("monitoring").path("absentReason").path("code").asText())
+                    .isEqualTo("NO_MONITORING_DECLARED");
+
             JsonNode diffTool = mapper.readTree(post(server, "/studio/tools/fabric.contract-diff",
                     "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
                             + sessionId + "\",\"baseRevision\":1}}").body());
