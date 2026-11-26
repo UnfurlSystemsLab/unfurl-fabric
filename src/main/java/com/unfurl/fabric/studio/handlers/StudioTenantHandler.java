@@ -315,6 +315,11 @@ public final class StudioTenantHandler {
                 write(exchange, 200, service.compileCandidate(route.tenantId(), route.assemblyId(), route.sessionId(), request));
                 return;
             }
+            if ("GET".equals(exchange.getRequestMethod()) && route.view().isPresent()) {
+                write(exchange, 200, service.viewProjection(route.tenantId(), route.assemblyId(),
+                        queryParam(exchange, "sessionId"), route.view().get(), requestPolicy(exchange)));
+                return;
+            }
             if ("GET".equals(exchange.getRequestMethod()) && route.sessionContractDiff()) {
                 write(exchange, 200, service.contractDiff(route.tenantId(), route.assemblyId(), route.sessionId(),
                         requiredRevision(exchange, "baseRevision"), optionalRevision(exchange, "revision"),
@@ -649,6 +654,19 @@ public final class StudioTenantHandler {
 
         boolean sessionCompile() {
             return "assemblies/{assemblyId}/sessions/{sessionId}/compile".equals(tail);
+        }
+
+        /**
+         * Route predicate and parameter: a Studio view's typed data, {@code assemblies/{assemblyId}/views/{view}}
+         * (LLD-fabric-studio-api, StudioViewProjection). The view id is one path segment; the service refuses an unknown
+         * one with VIEW_UNKNOWN.
+         */
+        java.util.Optional<String> view() {
+            String prefix = "assemblies/{assemblyId}/views/";
+            if (!tail.startsWith(prefix) || tail.length() == prefix.length() || tail.indexOf('/', prefix.length()) >= 0) {
+                return java.util.Optional.empty();
+            }
+            return java.util.Optional.of(decode(tail.substring(prefix.length())));
         }
 
         /** Route predicate: two compile records of a session compared (LLD-fabric-studio-api, Contract diff). */

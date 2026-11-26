@@ -84,6 +84,7 @@ public final class StudioToolGateway {
                 case "fabric.deployment-resolve" -> deploymentResolve(toolName, request.arguments());
                 case "fabric.candidate-compile" -> candidateCompile(toolName, request.arguments());
                 case "fabric.contract-diff" -> contractDiff(toolName, request.arguments());
+                case "fabric.view-project" -> viewProject(toolName, request.arguments());
                 case "fabric.contract-verify" -> contractVerify(toolName, request.arguments());
                 case "fabric.export-download" -> exportDownload(toolName, request.arguments());
                 case "fabric.export-download-all" -> exportDownloadAll(toolName, request.arguments());
@@ -1952,6 +1953,26 @@ public final class StudioToolGateway {
     }
 
     /**
+     * Read adapter: one Studio view's typed data, as {@code GET .../views/{view}} returns it (LLD-fabric-studio-api,
+     * StudioViewProjection). Takes {@code sessionId}, {@code view} and optionally {@code deploymentPolicy}. PASS with the
+     * projection, whose sections say themselves what is unavailable and why.
+     */
+    private StudioToolCallResult viewProject(String toolName, Map<String, Object> arguments) {
+        String tenantId = text(arguments, "tenantId", DEFAULT_TENANT_ID);
+        String assemblyId = text(arguments, "assemblyId", DEFAULT_ASSEMBLY_ID);
+        String sessionId = text(arguments, "sessionId", "");
+        String view = text(arguments, "view", "");
+        ViewArguments viewArguments = typedRequest(arguments, ViewArguments.class);
+        StudioViewProjection response = service.viewProjection(tenantId, assemblyId, sessionId, view,
+                java.util.Optional.ofNullable(viewArguments.deploymentPolicy()));
+        return result("PASS", toolName, Map.of("response", response));
+    }
+
+    /** The optional arguments of {@code fabric.view-project}. @param deploymentPolicy the policy to check freshness with. */
+    private record ViewArguments(StudioDeploymentPolicyDraft deploymentPolicy) {
+    }
+
+    /**
      * The arguments of {@code fabric.contract-diff}: the two revisions and the policy the caller would compile with.
      *
      * @param baseRevision     the base record's revision (required).
@@ -2280,6 +2301,7 @@ public final class StudioToolGateway {
                 "fabric.candidate-compile",
                 "fabric.contract-diff",
                 "fabric.contract-verify",
+                "fabric.view-project",
                 "fabric.export-download",
                 "fabric.export-download-all",
                 "fabric.runtime-binding-generate",

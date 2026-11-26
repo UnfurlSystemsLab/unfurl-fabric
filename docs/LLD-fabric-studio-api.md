@@ -384,6 +384,8 @@ runtime authority separation is required.
 - `fabric.candidate-compile`
 - `fabric.contract-diff` [P2a]: the `contract-diff` route's inputs (`baseRevision`, `revision`, `deploymentPolicy`);
   `PASS` with the diff when available, `GAP` naming the absent reason otherwise.
+- `fabric.view-project` [P2b]: the `views/{view}` route's inputs (`sessionId`, `view`, `deploymentPolicy`); `PASS`
+  with the projection, whose sections state what is unavailable and why.
 - `fabric.contract-verify` [P2a]: the `verify` route's `StudioVerifyRequest`; `PASS` only when the contract verified
   and the catalog is clean, `GAP` otherwise.
 - `fabric.export-download`
@@ -486,10 +488,11 @@ They are read models: none of them changes a session, a revision or a contract, 
 **Status.** P2 is built in slices (Studio LLD §10):
 - **P2a, implemented:** compile records and freshness, durable compiled contracts, `contract-diff`, `verify`, and
   structured match failures.
-- **P2b to P2e, proposed:**
-  - P2b: `views/*`;
+- **P2b, implemented:** `views/{flow,data,topology,runtime}` (*StudioViewProjection* below). Runtime bindings moved to
+  P2d, where bindings are generated for the emit plan anyway.
+- **P2c to P2e, proposed:**
   - P2c: `overlays/*`;
-  - P2d: `emit-plan`;
+  - P2d: `emit-plan`, and the Topology view's runtime bindings;
   - P2e: Resilience & Faults.
   Each one builds on P2a's compile records.
 
@@ -600,7 +603,7 @@ diff. After an edit they can describe an older composition, so they are never mi
 
 | Method | Path | Query | Response |
 |---|---|---|---|
-| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId` | `StudioViewProjection` |
+| `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/views/{view}` | `sessionId`, optional `deploymentPolicy` | `StudioViewProjection` [P2b] |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/overlays/{overlay}` | `sessionId`, `view` | `StudioOverlayAnnotations` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/emit-plan` | `target`, `environment` | `StudioEmitPlanPreview` |
 | `GET` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/sessions/{sessionId}/contract-diff` | `baseRevision`, optional `revision`, optional `deploymentPolicy` | `StudioContractDiff` [P2a] |
@@ -611,14 +614,46 @@ a base revision for `contract-diff` from them without another route.
 
 ### `StudioViewProjection`
 
-`view` is one of `flow`, `data`, `topology`, `runtime`. Each adds to `/dynamic-dcp` and does not duplicate it.
+[P2b] `view` is one of `flow`, `data`, `topology`, `runtime`. Each adds to `/dynamic-dcp` and does not duplicate it.
+`sessionId` is required: the views describe a draft. An unknown view is `400 VIEW_UNKNOWN`.
 
-| View | Adds |
-|---|---|
-| `flow` | `externalOwners[] {boundaryNodeId, owner, dependency, neededByNodeId}`, from dependencies whose `owner` qualifier binds them outside the catalog (HLD-unfurl-fabric Core Flow step 3). `boundaryNodeId` is derived deterministically from `owner`. Also `externalProtocolOffers[] {nodeId, capability, protocol}` (DCP HLD-C2 A.6). |
-| `data` | `ownedState[] {nodeId, concern, resource, description, sensitivity}` and `ownedDecisions[] {nodeId, concern, decision, authority}` (A.3.2, A.3.3); `operations[] {nodeId, capability, operation, requestSchema, responseSchema}`. Also `dataMappings[] {childContractId, inbound, outbound}` from the current compile record's contract (§B). That section follows the freshness rules: `COMPILE_REQUIRED` before a compile, `COMPILE_STALE` after an edit. |
-| `topology` | `transports[] {childContractId, kind, details}` from the current compile record's contract. Also `runtimeBindings[] {bindingId, environment, deploymentKind, instanceName}` when that record has bindings (`bindingsHash`). Both sections follow the freshness rules. Shapes stay in `/studio/deployment/resolve`; emitted facts are in `emit-plan`. |
-| `runtime` | `monitoring[] {nodeId, healthEndpoints, readinessRequired, livenessRequired}` and `telemetry[] {nodeId, signals, correlationIdRequired}` (A.9). Also `verification`: the `StudioVerificationResult` for the current compile record's signed contract. It follows the freshness rules, and is `NOT_SIGNED` for an unsigned compile. |
+**Response:** `StudioViewProjection {view, tenantId, assemblyId, sessionId, revision, <the view's sections>,
+diagnostics[], diagnosticArtifacts}`. Each section is `StudioViewSection {available, absentReason?, provenance?,
+items[]}`:
+- `items` is present and non-empty exactly when `available` is true. A section with nothing to show is
+  `available: false` with its reason, never an empty list.
+- every item carries `source`, the DCP field path it was read from (for example
+  `claim.domain.concerns[0].owns_state[1]`), and the `/dynamic-dcp` node id of the element it belongs to;
+- `provenance` is set on compile-derived sections only: the compile record's `{sourceRevision, contractHash,
+  compiledAt}`.
+
+**Grounding.** The view projects the draft's `/dynamic-dcp` projection for `sessionId` (the same replay), and grounds
+each component node's `catalogEntryId` through the claim compile uses (`catalogEntryForVisual`, then companions). A node
+that does not ground is one diagnostic (`CATALOG_ENTRY_NOT_ADMITTED`, `path: nodes[<nodeId>]`), and nothing is
+projected for it; nothing is approximated from visual metadata. A draft with no component node gives every claim section
+`NO_COMPONENTS`.
+
+**Compile-derived sections** read the current compile record's contract through `StudioCompiledContractReader.load`,
+so they follow every P2a rule:
+- `COMPILE_REQUIRED`, `COMPILE_STALE` (the request's `deploymentPolicy` included), and `COMPILE_RECORD_UNAVAILABLE` /
+  `COMPILE_RECORD_INCONSISTENT`;
+- a child contract is mapped to a node by its provider party's `claim_uri`, and only while the record is current; an
+  unmapped one has no node id.
+
+| View | Section | Items, and the absent reason when there are none |
+|---|---|---|
+| `flow` | `externalOwners` | `{boundaryNodeId, owner, dependency, neededByNodeId, source}`, one per claim dependency (`needs` and `optional`) whose `owner=` qualifier (`Dependencies.ownerOf`) is non-blank. `boundaryNodeId` is `owner:<owner>`, so every node needing the same owner points at one boundary node. `NO_EXTERNAL_OWNERS`. |
+| `flow` | `externalProtocolOffers` | `{nodeId, capability, protocol, source}` for each `external_protocol` offer (A.6). `NO_EXTERNAL_PROTOCOL_OFFERS`. |
+| `data` | `ownedState` | `{nodeId, concern, resource, description, sensitivity, source}` (A.3.2). `NO_OWNED_STATE_DECLARED`. |
+| `data` | `ownedDecisions` | `{nodeId, concern, decision, description, authority, source}` (A.3.3). `NO_OWNED_DECISIONS_DECLARED`. |
+| `data` | `operations` | `{nodeId, capability, operation, summary?, requestSchema, responseSchema, source}`, the schemas as the claim's `artifact_ref`s (A.6). `NO_OPERATIONS_DOCUMENTED`. |
+| `data` | `dataMappings` | compile-derived: `{childContractId, providerNodeId?, inbound, outbound, source}` for each child contract whose mapping is not empty (§B). `NO_DATA_MAPPINGS`. |
+| `topology` | `transports` | compile-derived: `{childContractId, providerNodeId?, kind, details, source}` for each child contract (§B). Shapes stay in `/studio/deployment/resolve`; emitted facts and runtime bindings arrive in P2d. |
+| `runtime` | `monitoring` | `{nodeId, required, healthEndpoints, readinessRequired, livenessRequired, notes?, source}` from the typed A.9 port. `NO_MONITORING_DECLARED`. |
+| `runtime` | `telemetry` | `{nodeId, required, signals, correlationIdRequired, notes?, source}` from the typed A.9 port. `NO_TELEMETRY_DECLARED`. |
+| `runtime` | `verification` | the P2a `verify` result for the current record (`StudioVerificationResult`), computed by the same service method, not a second implementation. |
+
+The `ports` wiring map (A.9) is opaque to DCP and is never projected.
 
 ### `StudioOverlayAnnotations`
 

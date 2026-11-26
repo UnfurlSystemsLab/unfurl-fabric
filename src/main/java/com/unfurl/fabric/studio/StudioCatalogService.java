@@ -4091,6 +4091,105 @@ public final class StudioCatalogService {
                 signatureOf(report.signature()), report.catalogDrift().orElseThrow(), report.overallOk(), List.of()));
     }
 
+    /**
+     * Read model: one Studio workbench view's typed data (LLD-fabric-studio-api, <i>StudioViewProjection</i>). The view
+     * projects the draft's {@code /dynamic-dcp} projection for {@code sessionId}, grounds each component node's claim the
+     * way compile does, and, for compile-derived sections, reads the current compile record under the P2a freshness and
+     * consistency rules. Never changes the session and is never a validity source.
+     *
+     * <p>Pattern: <b>Facade</b> over the {@code /dynamic-dcp} projection, claim grounding, {@link StudioCompileFreshness},
+     * {@link StudioCompiledContractReader} and {@link #verifyCompile}; the per-view reading is the
+     * {@link StudioViewProjector} Strategy.
+     *
+     * @param tenantId      the tenant.
+     * @param assemblyId    the assembly.
+     * @param sessionId     the draft session (required).
+     * @param view          {@code flow}, {@code data}, {@code topology} or {@code runtime}.
+     * @param requestPolicy the policy the request would compile with now, if it names one.
+     * @return the view's sections, diagnostics and diagnostic snapshot.
+     * @throws IllegalArgumentException {@code VIEW_UNKNOWN} for another view, or when {@code sessionId} is blank.
+     */
+    public synchronized StudioViewProjection viewProjection(String tenantId, String assemblyId, String sessionId,
+                                                            String view,
+                                                            Optional<StudioDeploymentPolicyDraft> requestPolicy) {
+        StudioViewProjector projector = StudioViewProjector.forView(view);
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("VIEW_SESSION_REQUIRED: a view describes a draft; sessionId is required");
+        }
+        StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
+        String tenant = session.tenantId();
+        List<StudioDcpDiagnostic> diagnostics = new ArrayList<>();
+        List<StudioViewContext.GroundedNode> nodes = new ArrayList<>();
+        for (StudioDynamicDcpNode node : dynamicDcpProjection(tenant, session.assemblyId(), sessionId).nodes()) {
+            if (node.catalogEntryId() == null || node.catalogEntryId().isBlank()) {
+                continue;
+            }
+            groundedClaim(tenant, node.catalogEntryId()).ifPresentOrElse(
+                    claim -> nodes.add(new StudioViewContext.GroundedNode(node.nodeId(), claim)),
+                    () -> diagnostics.add(new StudioDcpDiagnostic("ERROR", "CATALOG_ENTRY_NOT_ADMITTED",
+                            "nodes[" + node.nodeId() + "]", "catalog entry " + node.catalogEntryId()
+                            + " has no admitted claim; nothing is projected for it")));
+        }
+        Map<java.net.URI, String> providerNodes = new LinkedHashMap<>();
+        nodes.forEach(node -> {
+            if (node.claim().identity() != null && node.claim().identity().uri() != null) {
+                providerNodes.putIfAbsent(node.claim().identity().uri(), node.nodeId());
+            }
+        });
+        StudioViewContext context = new StudioViewContext(nodes,
+                () -> currentCompiledView(session, requestPolicy, providerNodes),
+                () -> verifyCompile(tenant, session.assemblyId(), sessionId,
+                        new StudioVerifyRequest(null, null, requestPolicy.orElse(null))));
+        StudioViewProjector.Sections sections = projector.project(context);
+        StudioViewProjection response = new StudioViewProjection(projector.id(), tenant, session.assemblyId(), sessionId,
+                session.sceneRevision(), sections.externalOwners, sections.externalProtocolOffers, sections.ownedState,
+                sections.ownedDecisions, sections.operations, sections.dataMappings, sections.transports,
+                sections.monitoring, sections.telemetry, sections.verification, diagnostics, List.of());
+        return response.withDiagnosticArtifacts(List.of(
+                diagnosticArtifact(tenant, "view-" + projector.id(), "view-" + projector.id() + ".json", response)));
+    }
+
+    /**
+     * The claim a catalog entry grounds to, exactly as compile reads it ({@code catalogEntryForVisual}), or empty when the
+     * entry is unknown, display-only or no longer matches its pinned hash. Nothing is approximated from visual metadata.
+     */
+    private Optional<com.unfurl.dcp.claim.Claim> groundedClaim(String tenant, String catalogEntryId) {
+        Optional<StudioVisualCatalogEntry> visual = entriesByTenant.getOrDefault(tenant, List.of()).stream()
+                .filter(entry -> catalogEntryId.equals(entry.catalogEntryId()))
+                .findFirst();
+        if (visual.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(catalogEntryForVisual(tenant, visual.get()).claimDescriptor().claim());
+        } catch (CatalogEntryNotAdmittedException notAdmitted) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * The current compile record's contract for compile-derived view sections, under the P2a rules: COMPILE_REQUIRED
+     * without a record, COMPILE_STALE when the draft or the request's policy moved on, and COMPILE_RECORD_UNAVAILABLE or
+     * COMPILE_RECORD_INCONSISTENT when its bytes cannot be read or do not belong to it.
+     */
+    private StudioViewContext.CompiledView currentCompiledView(StudioDraftSession session,
+                                                               Optional<StudioDeploymentPolicyDraft> requestPolicy,
+                                                               Map<java.net.URI, String> providerNodes) {
+        Optional<StudioCompileRecord> current = freshness.currentRecord(session);
+        StudioCompileFreshness.Verdict verdict = freshness.of(session, current.orElse(null), requestPolicy);
+        StudioCompileProvenance provenance = current.map(StudioCompileProvenance::of).orElse(null);
+        if (!verdict.current()) {
+            return new StudioViewContext.CompiledView(null, provenance,
+                    new StudioAbsentReason(verdict.state().name(), verdict.message()), Map.of());
+        }
+        try {
+            CompiledContract contract = compiledReader.load(session.tenantId(), current.get(), false).compiled();
+            return new StudioViewContext.CompiledView(contract, provenance, null, Map.copyOf(providerNodes));
+        } catch (StudioCompiledContractReader.Unavailable | StudioCompiledContractReader.Inconsistent ex) {
+            return new StudioViewContext.CompiledView(null, provenance, recordProblem(ex), Map.of());
+        }
+    }
+
     /** An unavailable verification result. */
     private static StudioVerificationResult unverified(String code, String message, StudioCompileProvenance provenance,
                                                        boolean historical) {

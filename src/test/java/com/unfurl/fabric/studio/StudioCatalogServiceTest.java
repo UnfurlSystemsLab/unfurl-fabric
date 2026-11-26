@@ -1074,6 +1074,87 @@ class StudioCatalogServiceTest {
         return response.compileRecord();
     }
 
+    // ---- P2b: typed view projections (LLD-fabric-studio-api, StudioViewProjection) ----
+
+    /**
+     * Compile-derived view sections follow the P2a rules: COMPILE_REQUIRED before a compile; after it, the transports of
+     * every child contract, each mapped to the /dynamic-dcp node of its provider; COMPILE_STALE after an edit.
+     */
+    @Test
+    void projectsCompileDerivedSectionsUnderTheFreshnessRule(@TempDir Path dir) throws Exception {
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        String sessionId = created.session().sessionId();
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+
+        StudioViewProjection before = service.viewProjection("tenant-a", "assembly-flow", sessionId, "topology",
+                Optional.of(containerPolicy()));
+        assertThat(before.transports().absentReason().code()).isEqualTo("COMPILE_REQUIRED");
+        assertThat(before.view()).isEqualTo("topology");
+        assertThat(before.revision()).isEqualTo(2);
+        assertThat(before.diagnosticArtifacts()).singleElement()
+                .satisfies(artifact -> assertThat(artifact.url()).contains("view-topology.json"));
+
+        StudioCompileRecord record = compile(service, created.session()).compileRecord();
+        StudioViewProjection topology = service.viewProjection("tenant-a", "assembly-flow", sessionId, "topology",
+                Optional.of(containerPolicy()));
+        Set<String> nodeIds = service.dynamicDcpProjection("tenant-a", "assembly-flow", sessionId).nodes().stream()
+                .map(StudioDynamicDcpNode::nodeId).collect(java.util.stream.Collectors.toSet());
+        assertThat(topology.transports().available()).as(String.valueOf(topology.transports().absentReason())).isTrue();
+        assertThat(topology.transports().provenance().contractHash()).isEqualTo(record.contractHash());
+        assertThat(topology.transports().items()).hasSize(2).allSatisfy(transport -> {
+            assertThat(transport.providerNodeId()).isIn(nodeIds);
+            assertThat(transport.kind()).isNotBlank();
+            assertThat(transport.source()).startsWith("contract.child_contracts[");
+        });
+        StudioViewProjection data = service.viewProjection("tenant-a", "assembly-flow", sessionId, "data",
+                Optional.of(containerPolicy()));
+        assertThat(data.dataMappings().provenance().contractHash()).isEqualTo(record.contractHash());
+        assertThat(data.externalOwners()).as("only the requested view's sections are set").isNull();
+
+        removeComponent(service, created.session(), "uploaded:foundry.jar", 2);
+        StudioViewProjection moved = service.viewProjection("tenant-a", "assembly-flow", sessionId, "topology",
+                Optional.of(containerPolicy()));
+        assertThat(moved.transports().absentReason().code()).isEqualTo("COMPILE_STALE");
+        assertThat(moved.transports().items()).isEmpty();
+    }
+
+    /**
+     * A node whose catalog entry has no admitted claim is a diagnostic and nothing is projected for it; the runtime view
+     * carries the verification from the same verify method and says when no component declares monitoring.
+     */
+    @Test
+    void reportsUngroundedNodesAndAbsentRuntimeData(@TempDir Path dir) throws Exception {
+        StudioCatalogService displayOnly = new StudioCatalogService();
+        StudioCreateDraftCompositionResponse demo = displayOnly.createDraftSession("tenant-a", "assembly-demo",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-demo", "sha256:catalog", "", "", "",
+                        "alice", "Alice"));
+        addComponent(displayOnly, demo.session(), "com.unfurl:storage-s3:1.2.0", 0);
+        StudioViewProjection flow = displayOnly.viewProjection("tenant-a", "assembly-demo", demo.session().sessionId(),
+                "flow", Optional.empty());
+        assertThat(flow.diagnostics()).anySatisfy(diagnostic -> {
+            assertThat(diagnostic.code()).isEqualTo("CATALOG_ENTRY_NOT_ADMITTED");
+            assertThat(diagnostic.message()).contains("com.unfurl:storage-s3:1.2.0");
+        });
+        assertThat(flow.externalOwners().absentReason().code()).isEqualTo("NO_COMPONENTS");
+
+        StudioCatalogService service = flowfoundrySessionService(dir);
+        StudioCreateDraftCompositionResponse created = flowfoundryDraftSession(service);
+        addComponent(service, created.session(), "uploaded:flow.jar", 0);
+        addComponent(service, created.session(), "uploaded:foundry.jar", 1);
+        StudioViewProjection runtime = service.viewProjection("tenant-a", "assembly-flow",
+                created.session().sessionId(), "runtime", Optional.empty());
+        assertThat(runtime.monitoring().absentReason().code()).isEqualTo("NO_MONITORING_DECLARED");
+        assertThat(runtime.verification().absentReason().code()).isEqualTo("COMPILE_REQUIRED");
+        assertThat(runtime.diagnostics()).isEmpty();
+
+        assertThatThrownBy(() -> service.viewProjection("tenant-a", "assembly-flow", created.session().sessionId(),
+                "overlays", Optional.empty())).hasMessageStartingWith("VIEW_UNKNOWN");
+        assertThatThrownBy(() -> service.viewProjection("tenant-a", "assembly-flow", "", "flow", Optional.empty()))
+                .hasMessageStartingWith("VIEW_SESSION_REQUIRED");
+    }
+
     /** Fixture command: applies one REMOVE_COMPONENT intent at the supplied revision. */
     private static void removeComponent(StudioCatalogService service, StudioDraftSession session, String catalogEntryId,
                                         long revision) {
