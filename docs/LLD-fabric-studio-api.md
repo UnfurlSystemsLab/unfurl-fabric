@@ -590,7 +590,8 @@ They are read models: none of them changes a session, a revision or a contract, 
 - **P2d, implemented:** deployment environments, `emit-plan` (*StudioEmitPlanPreview* below) with the runtime bindings
   it generates, and the Security overlay's "Identity in the needs" finding. Studio draws the bindings in Substrate &
   Topology and adds their facts to its overlays.
-- **P2e, proposed:** Resilience & Faults. It builds on P2a's compile records.
+- **P2e, implemented:** `overlays/resilience` (*StudioOverlayAnnotations* below): each component's declared faults
+  (DCP HLD-C2 A.10, divergence #5 resolved) and their propagation up the `CONTAINS` tree. It reads claims only.
 
 **Fabric interprets claims; Studio never does.**
 - Every claim field in these responses is read from the claim Fabric parsed from the artifact, through the
@@ -754,8 +755,8 @@ The `ports` wiring map (A.9) is opaque to DCP and is never projected.
 
 ### `StudioOverlayAnnotations`
 
-[P2c] `overlay` is one of `security`, `performance`, `compliance`; `resilience` answers `400 OVERLAY_NOT_BUILT` until
-P2e, and any other value `400 OVERLAY_UNKNOWN`. `sessionId` is required (`400 VIEW_SESSION_REQUIRED`), and `view` is
+[P2c, P2e] `overlay` is one of `security`, `performance`, `resilience`, `compliance`; any other value is
+`400 OVERLAY_UNKNOWN`. `sessionId` is required (`400 VIEW_SESSION_REQUIRED`), and `view` is
 one of the four view ids (`400 VIEW_UNKNOWN`).
 
 **Response:** `{overlay, view, tenantId, assemblyId, sessionId, revision, provenance?, available, absentReason?,
@@ -763,11 +764,13 @@ annotations[], findings[], staleSources[], diagnostics[], diagnosticArtifacts}`.
 - **Provenance.** `provenance` (`{sourceRevision, contractHash, compiledAt}`) names the compile record an overlay that
   reads the compile (`performance`, `compliance`) was answered from, current or not, whenever the session has one, even
   when nothing came of it (for example `NO_TIMEOUTS_DECLARED`), as a compile-derived view section does. It is absent
-  before any compile, and always absent for `security`, which reads claims only. Studio pins a compile-reading overlay's
-  answer to it, and never pins `security` to a compile.
+  before any compile, and always absent for `security` and `resilience`, which read claims only. Studio pins a
+  compile-reading overlay's answer to it, and never pins a claims-only overlay to a compile.
 - **Annotation:** `{elementId, elementKind, kind, severity, label, detail, source, sourceRevision?, contractHash?}`.
-  Annotations are on `/dynamic-dcp` node ids only (`elementKind: NODE`), so Studio's guard can keep only those of the
-  active view's model.
+  Annotations are on `/dynamic-dcp` elements only, so Studio's guard can keep only those of the active view's model:
+  a node id (`elementKind: NODE`), or [P2e] an edge id (`elementKind: EDGE`). An edge's id is formed from its
+  `/dynamic-dcp` edge as `RELATIONSHIP:fromNodeId->toNodeId`, for example `CONTAINS:assembly->flow`, the form Studio
+  already gives its edges.
 - **Finding** (overlay-level, for what belongs to no element, such as the decision audit): `{label, value, source,
   sourceRevision?, contractHash?}`.
 - **Provenance and staleness.** `sourceRevision` and `contractHash` are present exactly on compile-derived entries,
@@ -776,13 +779,14 @@ annotations[], findings[], staleSources[], diagnostics[], diagnosticArtifacts}`.
 - **Availability.** `available` is true exactly when there is at least one annotation or finding. Otherwise
   `absentReason` says why: the overlay's own code, or the compile's reason when its only data is compile-derived.
 - **Grounding.** Nodes are grounded as for views (a node that does not ground is a `CATALOG_ENTRY_NOT_ADMITTED`
-  diagnostic, and nothing is projected for it). The overlay never introduces an element id that is not a node of the
-  draft's projection.
+  diagnostic, and nothing is projected for it). The overlay never introduces an element id that is not a node or edge
+  of the draft's projection.
 
 | Overlay | Reads | Annotations and findings | Absent reason |
 |---|---|---|---|
 | `security` | the typed A.9 `authentication` and `authorization` ports of each grounded claim, and whether a node provides `identity-context` | One `AUTHENTICATION` and one `AUTHORIZATION` annotation per node declaring them. The label states `enforced` when identity is in the composition and `trusted network` when it is not (root CLAUDE.md rule 6). The detail names the accepted modes, or the decision owner and permission prefixes. A finding states whether identity is in the composition, and [P2d] an "Identity in the needs" finding whether the session's need requires `identity-context` (the need compile uses). Trust rejections stay empty in session mode (*Gap: a session's trust policy is not applied*). | `NO_AUTH_PORTS_DECLARED` |
 | `performance` | each child contract's `expectations.timeout_ms` in the current compile record | One `TIMEOUT` annotation on the child contract's provider node: "timeout N ms" for its capability. The runtime `timeout_ms` override arrives with P2d. | the compile's reason (`COMPILE_REQUIRED`, `COMPILE_STALE`, `COMPILE_RECORD_*`), or `NO_TIMEOUTS_DECLARED` |
+| `resilience` [P2e] | each grounded claim's declared faults (`faults.emitted`, DCP HLD-C2 A.10), and the projection's `CONTAINS` edges | One `FAULT` annotation per declared fault on its node, labelled `fault <code>`. Its severity is `INFO` for `INFO`, `WARNING` for `WARNING` and `DEGRADED`, and `ERROR` for `CRITICAL` and `BLOCKING`. The detail gives the category, DCP severity, description, affected needs, offers and constraints, evidence signals and allowed actions. A fault whose `parent_impact` is `DEGRADED` or `BLOCKED` adds a `FAULT_PROPAGATION` annotation on the `CONTAINS` edge from the node's parent to it and on the parent node, labelled `<impact> by <code>`, with `propagates_when` and `suppresses_when` in the detail. Propagation is drawn to the immediate parent only: whether the parent escalates further is its own policy, known at runtime. A node with no parent in the projection gets no propagation annotation, and a finding names it. Findings: how many faults are declared, and how many propagate. Claims only, so no `provenance` and never stale. | `NO_FAULTS_DECLARED` |
 | `compliance` | the current compile's decision audit; each claim's `telemetry.signals`; the session's trust policy | Findings for the decision audit (selection mode, alternatives considered, selection reasons, score breakdown, planning warnings) with provenance; a contract whose audit records no selection mode reads "not recorded", never a placeholder value. One `AUDIT_EVENTS` annotation per node whose telemetry declares `AUDIT_EVENTS`. A trust-policy finding: the named policy, or permissive, always stated as not applied while that gap stands. The runtime `audit_enabled` arrives with P2d. | never absent: the trust-policy finding is always present |
 
 ### `StudioEmitPlanPreview`

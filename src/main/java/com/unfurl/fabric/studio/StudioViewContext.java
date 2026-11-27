@@ -36,12 +36,26 @@ record StudioViewContext(List<GroundedNode> nodes, Supplier<CompiledView> compil
     }
 
     /**
-     * One component node of the draft's {@code /dynamic-dcp} projection and the claim compile grounds it to.
+     * One component node of the draft's {@code /dynamic-dcp} projection and the claim compile grounds it to, with where
+     * it sits in the {@code CONTAINS} tree (P2e).
      *
-     * @param nodeId the {@code /dynamic-dcp} node id.
-     * @param claim  the claim read from the node's admitted artifact.
+     * @param nodeId       the {@code /dynamic-dcp} node id.
+     * @param claim        the claim read from the node's admitted artifact.
+     * @param label        the node's label in the projection.
+     * @param parentNodeId the node that contains it, set only when the projection has a {@code CONTAINS} edge from that
+     *                     parent to this node; null at the top of the tree.
+     * @param parentLabel  the parent's label, when there is a parent.
      */
-    record GroundedNode(String nodeId, Claim claim) {
+    record GroundedNode(String nodeId, Claim claim, String label, String parentNodeId, String parentLabel) {
+        /** A node known by its id and claim alone: labelled by its id, with no parent. */
+        GroundedNode(String nodeId, Claim claim) {
+            this(nodeId, claim, nodeId, null, null);
+        }
+
+        /** The {@code /dynamic-dcp} edge id of the {@code CONTAINS} edge from the parent, when there is a parent. */
+        String containsEdgeId() {
+            return parentNodeId == null ? null : "CONTAINS:" + parentNodeId + "->" + nodeId;
+        }
     }
 
     /**

@@ -566,9 +566,12 @@ class StudioServerTest {
             assertThat(compliance.path("overlay").asText()).isEqualTo("compliance");
             assertThat(compliance.path("available").asBoolean()).isTrue();
             assertThat(compliance.path("findings").get(0).path("label").asText()).isEqualTo("Trust policy");
-            HttpResponse<String> unbuilt = get(server, overlays + "resilience?view=flow&sessionId=" + sessionId);
-            assertThat(unbuilt.statusCode()).isEqualTo(400);
-            assertThat(unbuilt.body()).contains("OVERLAY_NOT_BUILT");
+            HttpResponse<String> resilience = get(server, overlays + "resilience?view=flow&sessionId=" + sessionId);
+            assertThat(resilience.statusCode()).as(resilience.body()).isEqualTo(200);
+            assertThat(mapper.readTree(resilience.body()).path("overlay").asText()).isEqualTo("resilience");
+            HttpResponse<String> unknown = get(server, overlays + "cost?view=flow&sessionId=" + sessionId);
+            assertThat(unknown.statusCode()).isEqualTo(400);
+            assertThat(unknown.body()).contains("OVERLAY_UNKNOWN");
             JsonNode security = mapper.readTree(post(server, "/studio/tools/fabric.overlay-annotate",
                     "{\"arguments\":{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-demo\",\"sessionId\":\""
                             + sessionId + "\",\"overlay\":\"security\",\"view\":\"flow\"}}").body());
