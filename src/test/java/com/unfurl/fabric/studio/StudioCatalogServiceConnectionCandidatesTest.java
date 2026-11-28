@@ -193,7 +193,7 @@ class StudioCatalogServiceConnectionCandidatesTest {
         // "component.customer-policy-validator" as a compatibleDescendant.
         // Hovering that descendant against the bundled-only draft should
         // surface a replacement edge to validation-service.
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioConnectionCandidatesResponse response = service.connectionCandidates(
                 "tenant-bundled",

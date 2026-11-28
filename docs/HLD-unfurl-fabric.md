@@ -35,7 +35,7 @@
 
 ## Core Flow
 
-1. Catalog scan reads component artifacts and produces content-pinned catalog entries. A claim is always the one read from its artifact (DCP HLD-C §3.10): Studio upload admission takes the jar bytes, never a detached claim document, pins the SHA-256 it computes from those bytes, and persists the manifest text it read so restart, snapshot, compile, and deployment resolution use that exact claim and its `catalog.component_shape_profile`. Compilation is the only step that narrows or binds a claim; Fabric never rebuilds a claim from visual metadata, and a display-only catalog entry cannot be compiled.
+1. Catalog scan reads component artifacts and produces content-pinned catalog entries. A claim is always the one read from its artifact (DCP HLD-C §3.10): Studio upload admission takes the jar bytes, never a detached claim document, pins the SHA-256 it computes from those bytes, and persists the manifest text it read so restart, snapshot, compile, and deployment resolution use that exact claim and its `catalog.component_shape_profile`. Compilation is the only step that narrows or binds a claim; Fabric never rebuilds a claim from visual metadata. Every catalog entry carries the claim read from its artifact: Fabric ships no built-in or demo entries, and visual metadata only decorates an entry that exists.
 2. Needs loading parses the required capabilities and constraints. Every capability in the needs is mandatory: one that
    no allowed catalog entry satisfies fails planning and compilation with its reason (not in the catalog, offered only at
    other versions, without the required offer details, or only by trust-rejected entries) and the fix, and an invalid

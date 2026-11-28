@@ -1,17 +1,22 @@
 package com.unfurl.fabric.matcher;
 
+import com.unfurl.dcp.claim.ChildClaim;
 import com.unfurl.dcp.claim.Offer;
 import com.unfurl.dcp.claim.Refusal;
 import com.unfurl.fabric.catalog.CatalogEntry;
 import com.unfurl.fabric.needs.ArtifactConstraint;
 import com.unfurl.fabric.needs.CapabilityRequirement;
 import com.unfurl.fabric.needs.Need;
+import com.unfurl.fabric.graph.StronglyConnectedGroups;
 import com.unfurl.substrate.api.BindingMode;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -122,10 +127,12 @@ public final class CandidateValidator {
      * not component-to-component gates (substrate is derived into a profile; customer deps are host-bound).
      * Only {@code dependencies.needs} gate: a claim's {@code dependencies.optional} entries are satisfied by absence
      * (HLD-unfurl-fabric, Core Flow step 3), and {@link OptionalDependencies} reports the ones left unprovided.
+     * A selected aggregate's required children (DCP HLD-C2 A.14) must be selected too, matched by claim identity; an
+     * optional child may be absent.
      *
      * @param entries   the entries.
      * @param need      the need (unused directly; kept for signature symmetry/extension).
-     * @param conflicts sink for {@link Conflict.DependencyConflict}s.
+     * @param conflicts sink for {@link Conflict.DependencyConflict}s and {@link Conflict.ChildClaimConflict}s.
      * @return true iff all required dependencies resolve.
      */
     private boolean checkRequiredDependencies(List<CatalogEntry> entries, Need need, List<Conflict> conflicts) {
@@ -161,6 +168,37 @@ public final class CandidateValidator {
                 conflicts.add(new Conflict.DependencyConflict(e.artifact().coordinates(), dep, capabilityName));
                 allResolved = false;
             }
+        }
+        // An aggregate's required children are dependencies too: it cannot run without them (DCP HLD-C2 A.14).
+        Set<URI> selectedClaims = new HashSet<>();
+        for (CatalogEntry e : entries) {
+            if (e.claimDescriptor().claim().identity() != null) {
+                selectedClaims.add(e.claimDescriptor().claim().identity().uri());
+            }
+        }
+        for (CatalogEntry e : entries) {
+            for (ChildClaim child : e.claimDescriptor().claim().childClaims()) {
+                if (child.isRequired() && child.claimUri() != null && !selectedClaims.contains(child.claimUri())) {
+                    conflicts.add(new Conflict.ChildClaimConflict(e.artifact().coordinates(), child.claimUri().toString()));
+                    allResolved = false;
+                }
+            }
+        }
+        // Child references among the selected claims, required or optional, never form a cycle (DCP HLD-C2 A.14).
+        Map<URI, String> coordinatesByClaim = new LinkedHashMap<>();
+        Map<URI, Set<URI>> childReferences = new LinkedHashMap<>();
+        for (CatalogEntry e : entries) {
+            if (e.claimDescriptor().claim().identity() == null) continue;
+            URI claimUri = e.claimDescriptor().claim().identity().uri();
+            coordinatesByClaim.putIfAbsent(claimUri, e.artifact().coordinates());
+            Set<URI> children = childReferences.computeIfAbsent(claimUri, ignored -> new LinkedHashSet<>());
+            for (ChildClaim child : e.claimDescriptor().claim().childClaims()) {
+                if (child.claimUri() != null && selectedClaims.contains(child.claimUri())) children.add(child.claimUri());
+            }
+        }
+        for (List<URI> cycle : StronglyConnectedGroups.of(childReferences).cycles(childReferences)) {
+            conflicts.add(new Conflict.ChildClaimCycleConflict(cycle.stream().map(coordinatesByClaim::get).sorted().toList()));
+            allResolved = false;
         }
         return allResolved;
     }

@@ -50,24 +50,24 @@ class StudioCatalogServiceTest {
 
     @Test
     void listsCatalogVisualsPerTenant() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogVisualsResponse first = service.listCatalogVisuals("tenant-a");
         StudioCatalogVisualsResponse second = service.listCatalogVisuals("tenant-b");
 
         assertThat(first.entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .containsExactly("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
+                .containsExactlyInAnyOrder("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
         assertThat(second.entries())
                 .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .containsExactly("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
+                .containsExactlyInAnyOrder("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
         assertThat(first.catalogHash()).startsWith("sha256:");
         assertThat(second.catalogHash()).startsWith("sha256:");
     }
 
     @Test
     void verifiesAndAdmitsComponentClaims(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         String manifest = catalogManifestYaml("payment", "payment.process");
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
@@ -105,7 +105,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void removesCatalogEntriesFromTenantCatalog() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogRemovalResponse response = service.removeCatalogEntry(
                 "tenant-a",
@@ -125,7 +125,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void savesAndLoadsCatalogAndAssemblySnapshots() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogSnapshot catalogSnapshot = service.saveCatalogSnapshot("tenant-a");
         service.removeCatalogEntry("tenant-b", "com.unfurl:storage-s3:1.2.0");
@@ -185,7 +185,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void refusedAssemblySnapshotImportsLeaveStoredStateUnchanged() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioAssemblySnapshot before = seededAssembly(service);
         StudioDraftSession session = before.sessions().get(0);
         StudioAssemblySummary otherSummary = new StudioAssemblySummary("tenant-a", "assembly-checkout", "Replaced Name",
@@ -219,7 +219,7 @@ class StudioCatalogServiceTest {
     @Test
     void assemblySnapshotImportRollsBackWhenPersistingFails(@TempDir Path dir) throws Exception {
         Path statePath = dir.resolve("studio-state.json");
-        StudioCatalogService service = new StudioCatalogService(new StudioStateStore(statePath));
+        StudioCatalogService service = StudioTestCatalog.service(new StudioStateStore(statePath));
         StudioAssemblySnapshot before = seededAssembly(service);
         StudioAssemblySnapshot replacement = new StudioAssemblySnapshot("tenant-a", "assembly-checkout",
                 new StudioAssemblySummary("tenant-a", "assembly-checkout", "Replaced Name", "compose-local", "needs-other",
@@ -270,7 +270,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void rejectsAdmissionWhenDcpClaimValidationFails(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
@@ -310,7 +310,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void rejectsAdmissionWithoutArtifactBytes() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
@@ -335,7 +335,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void refusesDetachedClaimDocuments(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioComponentArtifactDraft jar = jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process"));
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
@@ -361,7 +361,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void refusesArtifactWhoseDeclaredHashDiffers(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioComponentArtifactDraft jar = jarDraft(dir, "payment.jar", catalogManifestYaml("payment", "payment.process"));
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
@@ -383,7 +383,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void refusesJarWhoseManifestHasNoCatalogBlock(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
@@ -405,7 +405,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void admitsJarArtifactByReadingEmbeddedCatalogManifest(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         byte[] jarBytes = jarWithManifest(dir, catalogManifestYaml("jar-payment", "payment.process"));
         String artifactBase64 = Base64.getEncoder().encodeToString(jarBytes);
 
@@ -436,7 +436,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void emitsDownloadableClaimBundleForMultiFileAdmission(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
                 "assembly-checkout",
                 List.of(
@@ -465,7 +465,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void rejectsJarArtifactWhenEmbeddedCatalogManifestIsMissing(@TempDir Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         String artifactBase64 = Base64.getEncoder().encodeToString(jarWithoutManifest(dir));
 
         StudioCatalogAdmissionResponse response = service.admit("tenant-a", new StudioCatalogAdmissionRequest(
@@ -487,7 +487,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void extractsFlowfoundryNeedsFromSourceNames() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioNeedsExtractionResponse response = service.extractNeeds(
                 "tenant-a",
@@ -513,7 +513,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void extractsWorkflowNodeNeedsFromInlineSource() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioNeedsExtractionResponse response = service.extractNeeds(
                 "tenant-a",
@@ -541,7 +541,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void fallsBackToStarterNeedsWhenNoDcpCapabilityCanBeInferred() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioNeedsExtractionResponse response = service.extractNeeds(
                 "tenant-a",
@@ -587,6 +587,13 @@ class StudioCatalogServiceTest {
         assertThat(response.selections())
                 .extracting(selection -> selection.deploymentShape().name())
                 .containsOnly("CONTAINERIZED_SERVICE");
+        // Each selection names the draft's catalog entry it was resolved for, so Studio can place it on that entry's
+        // node; the resolver's own key stays the artifact coordinates.
+        assertThat(response.selections())
+                .extracting(StudioDeploymentSelection::componentId, StudioDeploymentSelection::catalogEntryId)
+                .contains(
+                        org.assertj.core.groups.Tuple.tuple("com.unfurl:flow:1.0.0", "uploaded:flow.jar"),
+                        org.assertj.core.groups.Tuple.tuple("com.unfurl:foundry:1.0.0", "uploaded:foundry.jar"));
     }
 
     /**
@@ -1353,16 +1360,17 @@ class StudioCatalogServiceTest {
      */
     @Test
     void reportsUngroundedNodesAndAbsentRuntimeData(@TempDir Path dir) throws Exception {
-        StudioCatalogService displayOnly = new StudioCatalogService();
-        StudioCreateDraftCompositionResponse demo = displayOnly.createDraftSession("tenant-a", "assembly-demo",
-                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-demo", "sha256:catalog", "", "", "",
+        StudioCatalogService gone = StudioTestCatalog.service();
+        StudioCreateDraftCompositionResponse demo = gone.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "",
                         "alice", "Alice"));
-        addComponent(displayOnly, demo.session(), "com.unfurl:storage-s3:1.2.0", 0);
-        StudioViewProjection flow = displayOnly.viewProjection("tenant-a", "assembly-demo", demo.session().sessionId(),
+        addComponent(gone, demo.session(), StudioTestCatalog.STORAGE_S3, 0);
+        gone.removeCatalogEntry("tenant-a", StudioTestCatalog.STORAGE_S3);
+        StudioViewProjection flow = gone.viewProjection("tenant-a", "assembly-a", demo.session().sessionId(),
                 "flow", Optional.empty());
         assertThat(flow.diagnostics()).anySatisfy(diagnostic -> {
-            assertThat(diagnostic.code()).isEqualTo("CATALOG_ENTRY_NOT_ADMITTED");
-            assertThat(diagnostic.message()).contains("com.unfurl:storage-s3:1.2.0");
+            assertThat(diagnostic.code()).isEqualTo("CATALOG_ENTRY_MISSING");
+            assertThat(diagnostic.message()).contains(StudioTestCatalog.STORAGE_S3);
         });
         assertThat(flow.externalOwners().absentReason().code()).isEqualTo("NO_COMPONENTS");
 
@@ -1530,30 +1538,192 @@ class StudioCatalogServiceTest {
     }
 
     /**
-     * A built-in display-only entry has no claim read from an artifact, so compile refuses it instead of building a
-     * stand-in claim from its visual metadata.
+     * A draft that names an entry the catalog no longer has (LLD-fabric-studio-api, Tenant Catalog and Assets): the
+     * projection draws its other components and names the missing one, resolution refuses it, and removing the component
+     * is allowed and clears it.
      */
     @Test
-    void refusesCompileOfADisplayOnlyEntry() {
-        StudioCatalogService service = new StudioCatalogService();
-        StudioCreateDraftCompositionResponse created = service.createDraftSession(
-                "tenant-a",
-                "assembly-demo",
-                new StudioCreateDraftCompositionRequest(
-                        "tenant-a",
-                        "assembly-demo",
-                        "sha256:catalog",
-                        "",
-                        "trust-prod",
-                        "",
-                        "alice",
-                        "Alice"));
-        addComponent(service, created.session(), "com.unfurl:storage-s3:1.2.0", 0);
+    void aDraftWhoseEntryLeftTheCatalogShowsTheRestAndCanRemoveIt() {
+        StudioCatalogService service = StudioTestCatalog.service();
+        StudioCreateDraftCompositionResponse created = service.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "", "alice", "Alice"));
+        addComponent(service, created.session(), StudioTestCatalog.VALIDATION_SERVICE, 0);
+        addComponent(service, created.session(), StudioTestCatalog.STORAGE_S3, 1);
+        service.removeCatalogEntry("tenant-a", StudioTestCatalog.STORAGE_S3);
 
-        StudioCompileDraftCandidateResponse response = compile(service, created.session());
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-a", created.session().sessionId());
+        assertThat(projection.nodes()).extracting(StudioDynamicDcpNode::catalogEntryId)
+                .contains(StudioTestCatalog.VALIDATION_SERVICE).doesNotContain(StudioTestCatalog.STORAGE_S3);
+        assertThat(projection.warnings()).anySatisfy(warning -> assertThat(warning)
+                .startsWith("CATALOG_ENTRY_MISSING: draft component '" + StudioTestCatalog.STORAGE_S3 + "'")
+                .contains("REMOVE_COMPONENT"));
+        assertThat(service.viewProjection("tenant-a", "assembly-a", created.session().sessionId(), "flow", Optional.empty())
+                .diagnostics()).anySatisfy(diagnostic -> assertThat(diagnostic.code()).isEqualTo("CATALOG_ENTRY_MISSING"));
+        StudioDeploymentResolveResponse refused = service.resolveDeployment(new StudioDeploymentResolveRequest(null, null,
+                null, null, true, null, "tenant-a", "assembly-a", created.session().sessionId(), "", ""));
+        assertThat(refused.reason()).isEqualTo("CATALOG_ENTRY_NOT_FOUND");
+        assertThat(refused.details()).contains(StudioTestCatalog.STORAGE_S3);
 
-        assertThat(response.reason()).isEqualTo("CATALOG_ENTRY_NOT_ADMITTED");
-        assertThat(response.details()).contains("com.unfurl:storage-s3:1.2.0").contains("display-only");
+        removeComponent(service, created.session(), StudioTestCatalog.STORAGE_S3, 2);
+        assertThat(service.dynamicDcpProjection("tenant-a", "assembly-a", created.session().sessionId()).warnings())
+                .noneSatisfy(warning -> assertThat(warning).startsWith("CATALOG_ENTRY_MISSING"));
+    }
+
+    /**
+     * The draft projection nests a component under the component that uses it, from the claims' matched needs and
+     * offers (LLD-fabric-studio-api, Containment derived from bindings), labelled as derived.
+     */
+    @Test
+    void projectsAUsedComponentUnderItsUser(@TempDir Path dir) throws Exception {
+        StudioTestCatalog.writeInto(dir);
+        StudioTestCatalog.writeJar(dir.resolve("checkout.jar"), StudioTestCatalog.manifest("checkout", "1.0.0",
+                List.of("checkout.run"), List.of("validate.order@v1")));
+        StudioCatalogService service = new StudioCatalogService(null, dir);
+        StudioCreateDraftCompositionResponse created = service.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "", "alice", "Alice"));
+        addComponent(service, created.session(), "com.unfurl:checkout:1.0.0", 0);
+        addComponent(service, created.session(), StudioTestCatalog.VALIDATION_SERVICE, 1);
+        addComponent(service, created.session(), StudioTestCatalog.STORAGE_S3, 2);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-a", created.session().sessionId());
+        StudioDynamicDcpNode checkout = projection.nodes().stream()
+                .filter(node -> "com.unfurl:checkout:1.0.0".equals(node.catalogEntryId())).findFirst().orElseThrow();
+        StudioDynamicDcpNode validation = projection.nodes().stream()
+                .filter(node -> StudioTestCatalog.VALIDATION_SERVICE.equals(node.catalogEntryId())).findFirst().orElseThrow();
+        StudioDynamicDcpNode storage = projection.nodes().stream()
+                .filter(node -> StudioTestCatalog.STORAGE_S3.equals(node.catalogEntryId())).findFirst().orElseThrow();
+
+        assertThat(projection.connections()).anySatisfy(connection -> {
+            assertThat(connection.sourceNodeId()).isEqualTo(validation.nodeId());
+            assertThat(connection.targetNodeId()).isEqualTo(checkout.nodeId());
+        });
+        assertThat(validation.parentNodeId()).isEqualTo(checkout.nodeId());
+        assertThat(validation.depth()).isEqualTo(checkout.depth() + 1);
+        assertThat(storage.parentNodeId()).isEqualTo(projection.focusNodeId()).as("nothing uses storage");
+        assertThat(projection.edges()).filteredOn(edge -> edge.toNodeId().equals(validation.nodeId())).singleElement()
+                .satisfies(edge -> {
+                    assertThat(edge.fromNodeId()).isEqualTo(checkout.nodeId());
+                    assertThat(edge.derivation()).isEqualTo(StudioDynamicDcpEdge.DERIVED_FROM_BINDINGS);
+                });
+    }
+
+    /**
+     * An aggregate's children (DCP HLD-C2 A.14): a selected child is drawn under its aggregate as declared containment;
+     * a required child the draft lacks is a projection warning and makes resolution refuse the draft with a CHILD_CLAIM
+     * conflict; an absent optional child is neither (LLD-fabric-studio-api, Aggregate children).
+     */
+    @Test
+    void drawsAnAggregatesChildrenAndRefusesADraftWithoutARequiredOne(@TempDir Path dir) throws Exception {
+        StudioTestCatalog.writeInto(dir);
+        StudioTestCatalog.writeJar(dir.resolve("platform.jar"), StudioTestCatalog.manifest("platform", "1.0.0",
+                List.of("platform.run"), List.of(), Map.of(
+                        "urn:unfurl:test:validation-service", true,
+                        "urn:unfurl:test:storage-s3", false)));
+        StudioCatalogService service = new StudioCatalogService(null, dir);
+
+        StudioCreateDraftCompositionResponse complete = service.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "", "alice", "Alice"));
+        addComponent(service, complete.session(), "com.unfurl:platform:1.0.0", 0);
+        addComponent(service, complete.session(), StudioTestCatalog.VALIDATION_SERVICE, 1);
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-a", complete.session().sessionId());
+        StudioDynamicDcpNode platform = projection.nodes().stream()
+                .filter(node -> "com.unfurl:platform:1.0.0".equals(node.catalogEntryId())).findFirst().orElseThrow();
+        StudioDynamicDcpNode validation = projection.nodes().stream()
+                .filter(node -> StudioTestCatalog.VALIDATION_SERVICE.equals(node.catalogEntryId())).findFirst().orElseThrow();
+        assertThat(validation.parentNodeId()).isEqualTo(platform.nodeId());
+        assertThat(projection.edges()).filteredOn(edge -> edge.toNodeId().equals(validation.nodeId())).singleElement()
+                .satisfies(edge -> assertThat(edge.derivation()).isEqualTo(StudioDynamicDcpEdge.DECLARED));
+        assertThat(projection.warnings()).noneMatch(warning -> warning.startsWith("CHILD_CLAIM_MISSING"))
+                .as("the optional storage child is absent without a warning");
+        assertThat(service.resolveDeployment(new StudioDeploymentResolveRequest(null, null, null, null, true, null,
+                "tenant-a", "assembly-a", complete.session().sessionId(), "", "")).status()).isEqualTo("RESOLVED");
+
+        StudioCreateDraftCompositionResponse incomplete = service.createDraftSession("tenant-a", "assembly-b",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-b", "sha256:catalog", "", "", "", "alice", "Alice"));
+        addComponent(service, incomplete.session(), "com.unfurl:platform:1.0.0", 0);
+        assertThat(service.dynamicDcpProjection("tenant-a", "assembly-b", incomplete.session().sessionId()).warnings())
+                .anySatisfy(warning -> assertThat(warning)
+                        .startsWith("CHILD_CLAIM_MISSING:").contains("urn:unfurl:test:validation-service"));
+        StudioDeploymentResolveResponse refused = service.resolveDeployment(new StudioDeploymentResolveRequest(null, null,
+                null, null, true, null, "tenant-a", "assembly-b", incomplete.session().sessionId(), "", ""));
+        assertThat(refused.reason()).isEqualTo("NO_MATCH");
+        assertThat(refused.reasons()).anySatisfy(reason -> {
+            assertThat(reason.reasonCode()).isEqualTo("CHILD_CLAIM");
+            assertThat(reason.componentCoordinates()).isEqualTo("com.unfurl:platform:1.0.0");
+            assertThat(reason.message()).contains("urn:unfurl:test:validation-service");
+        });
+    }
+
+    /**
+     * Regression: two selected claims naming each other as children (optional, so neither is missing) form a cycle.
+     * Resolution refuses the draft with a CHILD_CLAIM_CYCLE conflict naming both, and the projection keeps both visible
+     * under the assembly with a warning, never nesting along the cycle (LLD-fabric-studio-api, Aggregate children).
+     */
+    @Test
+    void refusesChildClaimsThatFormACycleAndKeepsTheirComponentsVisible(@TempDir Path dir) throws Exception {
+        StudioTestCatalog.writeJar(dir.resolve("cycle-a.jar"), StudioTestCatalog.manifest("cycle-a", "1.0.0",
+                List.of("cycle-a.run"), List.of(), Map.of("urn:unfurl:test:cycle-b", false)));
+        StudioTestCatalog.writeJar(dir.resolve("cycle-b.jar"), StudioTestCatalog.manifest("cycle-b", "1.0.0",
+                List.of("cycle-b.run"), List.of(), Map.of("urn:unfurl:test:cycle-a", false)));
+        StudioCatalogService service = new StudioCatalogService(null, dir);
+        StudioCreateDraftCompositionResponse created = service.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "", "alice", "Alice"));
+        addComponent(service, created.session(), "com.unfurl:cycle-a:1.0.0", 0);
+        addComponent(service, created.session(), "com.unfurl:cycle-b:1.0.0", 1);
+
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-a", created.session().sessionId());
+        assertThat(projection.nodes()).filteredOn(node -> node.catalogEntryId().startsWith("com.unfurl:cycle-"))
+                .hasSize(2)
+                .allSatisfy(node -> assertThat(node.parentNodeId()).isEqualTo(projection.focusNodeId()));
+        assertThat(projection.warnings()).anySatisfy(warning -> assertThat(warning).startsWith("CHILD_CLAIM_CYCLE:"));
+
+        StudioDeploymentResolveResponse refused = service.resolveDeployment(new StudioDeploymentResolveRequest(null, null,
+                null, null, true, null, "tenant-a", "assembly-a", created.session().sessionId(), "", ""));
+        assertThat(refused.reason()).isEqualTo("NO_MATCH");
+        assertThat(refused.reasons()).anySatisfy(reason -> {
+            assertThat(reason.reasonCode()).isEqualTo("CHILD_CLAIM_CYCLE");
+            assertThat(reason.message()).contains("com.unfurl:cycle-a:1.0.0").contains("com.unfurl:cycle-b:1.0.0");
+        });
+    }
+
+    /** A catalog snapshot carrying an entry without a claim is refused whole, and the catalog is left as it was. */
+    @Test
+    void refusesACatalogSnapshotCarryingAnEntryWithoutAClaim() {
+        StudioCatalogService service = StudioTestCatalog.service();
+        StudioVisualCatalogEntry withoutClaim = new StudioVisualCatalogEntry("com.unfurl:pictures-only:1.0.0",
+                "sha256:claim", "sha256:artifact", Map.of(), Map.of(), List.of());
+        StudioVisualCatalogEntry claimed = service.listCatalogVisuals("tenant-a").entries().get(0);
+
+        assertThatThrownBy(() -> service.loadCatalogSnapshot("tenant-a", new StudioCatalogSnapshot("tenant-a", "sha256:x",
+                List.of(claimed, withoutClaim), List.of())))
+                .hasMessageStartingWith("CATALOG_SNAPSHOT_INVALID")
+                .hasMessageContaining("com.unfurl:pictures-only:1.0.0");
+        assertThat(service.listCatalogVisuals("tenant-a").entries()).extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .containsExactlyInAnyOrder(StudioTestCatalog.VALIDATION_SERVICE, StudioTestCatalog.STORAGE_S3);
+    }
+
+    /**
+     * State saved before every entry had to carry a claim may hold entries without one: they are dropped when the state
+     * loads, so the catalog never serves them and a draft cannot add them.
+     */
+    @Test
+    void dropsSavedEntriesWithoutAClaimWhenStateLoads(@TempDir Path dir) {
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService first = StudioTestCatalog.service(store);
+        StudioVisualCatalogEntry claimed = first.listCatalogVisuals("tenant-a").entries().stream()
+                .filter(entry -> entry.catalogEntryId().equals(StudioTestCatalog.VALIDATION_SERVICE)).findFirst().orElseThrow();
+        first.createDraftSession("tenant-a", "assembly-a",
+                new StudioCreateDraftCompositionRequest("tenant-a", "assembly-a", "sha256:catalog", "", "", "", "alice", "Alice"));
+        StudioStateStore.State saved = store.load();
+        StudioVisualCatalogEntry withoutClaim = new StudioVisualCatalogEntry("com.unfurl:storage-s3:1.2.0",
+                "sha256:claim", "sha256:artifact", Map.of(), Map.of(), List.of());
+        store.save(new StudioStateStore.State(Map.of("tenant-a", List.of(claimed, withoutClaim)), saved.assembliesByTenant(),
+                saved.layoutsByTenant(), saved.sessionsByTenant(), saved.filesByTenant(), saved.sessionFileLinksByTenant(),
+                saved.catalogSnapshotsByTenant(), saved.companionsByTenant(), saved.environmentsByTenant()));
+
+        StudioCatalogService restarted = new StudioCatalogService(store, null);
+        assertThat(restarted.listCatalogVisuals("tenant-a").entries()).extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .containsExactly(StudioTestCatalog.VALIDATION_SERVICE);
     }
 
     /**
@@ -1636,7 +1806,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void createsListsAndSavesTenantAssemblies() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioAssemblySummary created = service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
                 "assembly-checkout",
@@ -1655,12 +1825,12 @@ class StudioCatalogServiceTest {
         assertThat(saved.assembly().needsId()).isEqualTo("assembly-checkout-extracted-needs");
         assertThat(service.listAssemblies("tenant-a").assemblies())
                 .extracting(StudioAssemblySummary::assemblyId)
-                .contains("assembly-demo", "assembly-checkout");
+                .containsExactly("assembly-checkout");
     }
 
     @Test
     void projectsDynamicDcpGraphForTenantAssembly() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
                 "assembly-checkout",
                 "Checkout Platform",
@@ -1678,9 +1848,10 @@ class StudioCatalogServiceTest {
                 .filteredOn(StudioDynamicDcpNode::replacementAllowed)
                 .extracting(StudioDynamicDcpNode::catalogEntryId)
                 .contains("com.unfurl:validation-service:1.1.0", "com.unfurl:storage-s3:1.2.0");
+        // Only containment: a dependency between components is its connection, never an invented REQUIRES edge.
         assertThat(projection.edges())
                 .extracting(StudioDynamicDcpEdge::relationship)
-                .contains("CONTAINS", "REQUIRES");
+                .containsOnly("CONTAINS");
     }
 
     /**
@@ -1689,7 +1860,7 @@ class StudioCatalogServiceTest {
      */
     @Test
     void projectsDynamicDcpGraphFromDraftSessionInventory() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         service.createAssembly("tenant-a", new StudioCreateAssemblyRequest(
                 "assembly-checkout",
                 "Checkout Platform",
@@ -1725,6 +1896,11 @@ class StudioCatalogServiceTest {
 
     @Test
     void projectsRecursiveDcpSubtreeFromDcpClaimMetadata(@TempDir Path assetRoot) throws Exception {
+        // Each level is a real jar; the package visual adds the nesting references (REPO-recursive-dcp-projection).
+        for (String level : List.of("city", "colony", "home")) {
+            StudioTestCatalog.writeJar(assetRoot.resolve(level + ".jar"),
+                    StudioTestCatalog.manifest(level, "1.0.0", List.of(level + ".run")));
+        }
         Path manifest = assetRoot.resolve("demo/META-INF/unfurl-studio-visuals.json");
         Files.createDirectories(manifest.getParent());
         Files.writeString(manifest, """
@@ -1805,7 +1981,7 @@ class StudioCatalogServiceTest {
         claims.put(agent, dcpClaim(agent, "fabric-authoring", "AGENT", "AGENT", List.of(tool), List.of("agent.run")));
         claims.put(tool, dcpClaim(tool, "catalog-search", "TOOL", "TOOL", List.of(), List.of("tool.call")));
 
-        StudioDynamicDcpProjection projection = new StudioCatalogService().dynamicDcpProjection(
+        StudioDynamicDcpProjection projection = StudioTestCatalog.service().dynamicDcpProjection(
                 "tenant-a", "assembly-flow", workflow, workflow, claims);
 
         assertThat(projection.nodes())
@@ -1830,7 +2006,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void providesReplacementCandidatesFromDynamicDcpProjection() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioReplacementCandidatesResponse response = service.replacementCandidates(
                 "tenant-a",
@@ -1970,7 +2146,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void exposesHashPinnedVisualAssets() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioVisualAsset asset = service.visualAsset("tenant-a", "validation-service-model");
         StudioVisualAsset missing = service.visualAsset("tenant-a", "missing-model");
@@ -1990,21 +2166,36 @@ class StudioCatalogServiceTest {
         assertThat(missing.warning()).contains("not present");
     }
 
+    /** Fabric ships no built-in entries: without an asset root, and before any admission, the catalog is empty. */
     @Test
-    void servesBundledFixtureAssetsByDefault() {
-        StudioCatalogService service = new StudioCatalogService();
+    void startsWithAnEmptyCatalogWithoutAnAssetRoot() {
+        StudioCatalogService service = new StudioCatalogService(null, null);
+
+        assertThat(service.listCatalogVisuals("tenant-a").entries()).isEmpty();
+        assertThat(service.listAssemblies("tenant-a").assemblies()).isEmpty();
+        StudioDynamicDcpProjection projection = service.dynamicDcpProjection("tenant-a", "assembly-a");
+        assertThat(projection.nodes()).extracting(StudioDynamicDcpNode::label).contains("assembly-a")
+                .doesNotContain("unfurl-flow");
+    }
+
+    /** A package visual's model is served for the real entry it decorates, with the bytes of its file. */
+    @Test
+    void servesThePackageVisualAssetsOfARealEntry() {
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioVisualAsset metadata = service.visualAsset("tenant-a", "storage-s3-model");
 
         assertThat(service.visualAssetContent("tenant-a", "storage-s3-model", metadata.sha256()))
                 .hasValueSatisfying(content -> {
                     assertThat(content.mediaType()).isEqualTo("model/gltf-binary");
-                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
-                            .isEqualTo("asset:storage-s3:META-INF/visual/storage-s3.glb");
+                    assertThat(new String(content.bytes(), StandardCharsets.UTF_8)).isEqualTo("glTF model bytes for storage-s3");
                 });
     }
 
     @Test
     void scansPackageVisualAssetsFromConfiguredAssetRoot(@TempDir Path dir) throws Exception {
+        // The payment adapter is a real jar; the package visual only decorates it.
+        StudioTestCatalog.writeJar(dir.resolve("payment-adapter.jar"),
+                StudioTestCatalog.manifest("payment-adapter", "2.0.0", List.of("payment.authorize")));
         Path model = dir.resolve("packages/payment/META-INF/visual/payment.glb");
         Path manifest = dir.resolve("packages/payment/META-INF/unfurl-studio-visuals.json");
         Files.createDirectories(model.getParent());
@@ -2036,11 +2227,20 @@ class StudioCatalogServiceTest {
                   ]
                 }
                 """, StandardCharsets.UTF_8);
+        Path orphan = dir.resolve("packages/orphan/META-INF/unfurl-studio-visuals.json");
+        Files.createDirectories(orphan.getParent());
+        Files.writeString(orphan, """
+                { "entries": [ { "catalogEntryId": "com.unfurl:pictures-only:1.0.0", "visualManifest": {} } ] }
+                """, StandardCharsets.UTF_8);
         StudioCatalogService service = new StudioCatalogService(null, dir);
 
-        assertThat(service.listCatalogVisuals("tenant-a").entries())
-                .extracting(StudioVisualCatalogEntry::catalogEntryId)
-                .contains("com.unfurl:payment-adapter:2.0.0", "com.unfurl:storage-s3:1.2.0");
+        List<StudioVisualCatalogEntry> entries = service.listCatalogVisuals("tenant-a").entries();
+        assertThat(entries).extracting(StudioVisualCatalogEntry::catalogEntryId)
+                .containsExactly("com.unfurl:payment-adapter:2.0.0");
+        StudioVisualCatalogEntry payment = entries.get(0);
+        assertThat(payment.admitted()).isTrue();
+        assertThat(payment.claimHash()).isNotEqualTo("sha256:claim-payment").as("the claim hash is the jar's, never the visual's");
+        assertThat(payment.dynamicComposition()).containsEntry("compositionMode", "STATIC");
         StudioVisualAsset asset = service.visualAsset("tenant-a", "payment-model");
 
         assertThat(asset.status()).isEqualTo("HASH_PINNED");
@@ -2054,7 +2254,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void coordinatesCollaborativeSessionsWithOptimisticRevisions() throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -2117,8 +2317,8 @@ class StudioCatalogServiceTest {
     @Test
     void peerInstanceCanSubscribeBeforeSessionIsLocal() throws Exception {
         InMemoryStudioSessionEventBus sharedBus = new InMemoryStudioSessionEventBus();
-        StudioCatalogService writer = new StudioCatalogService(null, null, sharedBus);
-        StudioCatalogService reader = new StudioCatalogService(null, null, sharedBus);
+        StudioCatalogService writer = new StudioCatalogService(null, StudioTestCatalog.assetRoot(), sharedBus);
+        StudioCatalogService reader = new StudioCatalogService(null, StudioTestCatalog.assetRoot(), sharedBus);
         StudioCreateDraftCompositionResponse created = writer.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -2157,12 +2357,7 @@ class StudioCatalogServiceTest {
 
     @Test
     void servesBinaryAssetOnlyWhenPinnedHashMatches(@TempDir Path dir) throws Exception {
-        Path asset = dir.resolve("META-INF/visual/validation-service.glb");
-        Files.createDirectories(asset.getParent());
-        Files.writeString(
-                asset,
-                "asset:validation-service:META-INF/visual/validation-service.glb",
-                StandardCharsets.UTF_8);
+        StudioTestCatalog.writeInto(dir);
         StudioCatalogService service = new StudioCatalogService(null, dir);
         StudioVisualAsset metadata = service.visualAsset("tenant-a", "validation-service-model");
 
@@ -2170,7 +2365,7 @@ class StudioCatalogServiceTest {
                 .hasValueSatisfying(content -> {
                     assertThat(content.mediaType()).isEqualTo("model/gltf-binary");
                     assertThat(new String(content.bytes(), StandardCharsets.UTF_8))
-                            .isEqualTo("asset:validation-service:META-INF/visual/validation-service.glb");
+                            .isEqualTo("glTF model bytes for validation-service");
                 });
         assertThat(service.visualAssetContent("tenant-a", "validation-service-model", "sha256:wrong"))
                 .isEmpty();

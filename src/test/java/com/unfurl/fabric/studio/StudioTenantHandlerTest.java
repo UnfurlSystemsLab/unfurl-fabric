@@ -18,7 +18,7 @@ class StudioTenantHandlerTest {
     void enforcesTenantMembershipWhenEnabled() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/studio/tenants", new StudioTenantHandler(
-                new StudioCatalogService(),
+                StudioTestCatalog.service(),
                 StudioJson.mapper(),
                 true)::handle);
         server.start();

@@ -5,6 +5,10 @@ import com.unfurl.substrate.composition.ContractInvocation;
 import com.unfurl.substrate.composition.ContractInvocationResult;
 import com.unfurl.substrate.policy.ExecutionContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
 
 import java.util.List;
 import java.util.Map;
@@ -23,7 +27,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void routesProposalThroughInjectedDcpInvocable() {
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "proposal",
                         "assistantMessage", "Proposed by the agent.",
@@ -44,7 +48,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void requestsHarnessModeWhenDelegatingToFoundry() {
         AtomicReference<ContractInvocation> seen = new AtomicReference<>();
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(new ContractInvocable() {
                     @Override
                     public String contractId() {
@@ -75,7 +79,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void passesCatalogFilesAndSessionHistoryToFoundryContext() {
         AtomicReference<ContractInvocation> seen = new AtomicReference<>();
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioFileRecord catalogFile = service.listFiles("tenant-local", "CATALOG", "", "").getFirst();
         for (int index = 0; index < 10; index++) {
             service.createDraftSession("tenant-local", "assembly-demo", new StudioCreateDraftCompositionRequest(
@@ -186,7 +190,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void passesActionContextToFoundryContext() {
         AtomicReference<ContractInvocation> seen = new AtomicReference<>();
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(new ContractInvocable() {
                     @Override
                     public String contractId() {
@@ -231,7 +235,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void passesStructuredQuestionAnswersToFoundryContext() {
         AtomicReference<ContractInvocation> seen = new AtomicReference<>();
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(new ContractInvocable() {
                     @Override
                     public String contractId() {
@@ -291,7 +295,7 @@ class StudioCatalogServiceAuthoringDcpTest {
         for (int index = 0; index < 10; index++) {
             entries.add(visualEntry("uploaded:extra-component-" + index + "-0.1.0-SNAPSHOT.jar"));
         }
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
                 "tenant-local",
                 "sha256:focused-catalog",
@@ -384,7 +388,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void deterministicFallbackAcceptsSnakeCaseStartingComponentAnswer() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioAuthoringConverseResponse response = service.converseAuthoring(new StudioAuthoringConverseRequest(
                 "tenant-local",
@@ -406,7 +410,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void mapsFoundryQuestionOptionsToLabelValuePairs() {
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "clarify",
                         "assistantMessage", "Pick a root.",
@@ -438,25 +442,13 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void canonicalizesUniqueUploadedArtifactAliasInProposalIntents() {
         String exactGeminiEntryId = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
                 "tenant-local",
                 "sha256:test-catalog",
                 List.of(
-                        new StudioVisualCatalogEntry(
-                                exactGeminiEntryId,
-                                "sha256:claim-gemini",
-                                "sha256:artifact-gemini",
-                                Map.of("ports", List.of()),
-                                Map.of(),
-                                List.of()),
-                        new StudioVisualCatalogEntry(
-                                "com.unfurl:validation-service:1.1.0",
-                                "sha256:claim-validation",
-                                "sha256:artifact-validation",
-                                Map.of("ports", List.of()),
-                                Map.of(),
-                                List.of())),
+                        StudioTestCatalog.claimedEntry(exactGeminiEntryId, Map.of("ports", List.of()), Map.of(), List.of()),
+                        StudioTestCatalog.claimedEntry("com.unfurl:validation-service:1.1.0", Map.of("ports", List.of()), Map.of(), List.of())),
                 List.of()));
         service.useAuthoringInvocable(invocable(Map.of(
                 "kind", "proposal",
@@ -491,7 +483,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void validatesProposalAgainstSelectedCatalogFile() {
         String exactGeminiEntryId = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         service.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot(
                 "tenant-local",
                 "sha256:selected-catalog",
@@ -534,10 +526,57 @@ class StudioCatalogServiceAuthoringDcpTest {
                         .containsEntry("catalogEntryId", exactGeminiEntryId));
     }
 
+    /**
+     * Regression: an earlier catalog version saved before every entry had to carry a claim may hold one without it. The
+     * load-time rule drops it from that version too (LLD-fabric-studio-api, What a catalog entry is): selecting the
+     * version serves no claimless entry, and a proposal naming the entry is refused as
+     * not found.
+     */
+    @Test
+    void dropsClaimlessEntriesFromAnEarlierCatalogVersionWhenStateLoads(@TempDir Path dir) {
+        String gemini = "uploaded:unfurl-fabric-advisor-gemini-0.1.0-SNAPSHOT.jar";
+        StudioStateStore store = new StudioStateStore(dir.resolve("studio-state.json"));
+        StudioCatalogService first = StudioTestCatalog.service(store);
+        first.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot("tenant-local", "sha256:earlier",
+                List.of(visualEntry(gemini)), List.of()));
+        StudioFileRecord earlier = first.listFiles("tenant-local", "CATALOG", "", "").getFirst();
+        // A later version becomes the active catalog, so the earlier one is history.
+        first.loadCatalogSnapshot("tenant-local", new StudioCatalogSnapshot("tenant-local", "sha256:later",
+                List.of(visualEntry("com.unfurl:validation-service:1.1.0")), List.of()));
+        // Rewrite the earlier saved version as one written before the rule: its entry carries no manifest.
+        StudioStateStore.State saved = store.load();
+        Map<String, StudioCatalogSnapshot> versions = new LinkedHashMap<>(saved.catalogSnapshotsByTenant().get("tenant-local"));
+        versions.computeIfPresent(earlier.fileId(), (fileId, snapshot) -> new StudioCatalogSnapshot(snapshot.tenantId(), snapshot.catalogHash(),
+                snapshot.entries().stream().map(entry -> new StudioVisualCatalogEntry(entry.catalogEntryId(), entry.claimHash(),
+                        entry.artifactSha256(), entry.visualManifest(), entry.dynamicComposition(), entry.visualIntegrity(),
+                        entry.warnings())).toList(),
+                snapshot.diagnosticArtifacts()));
+        store.save(new StudioStateStore.State(saved.entriesByTenant(), saved.assembliesByTenant(), saved.layoutsByTenant(),
+                saved.sessionsByTenant(), saved.filesByTenant(), saved.sessionFileLinksByTenant(), Map.of("tenant-local", versions),
+                saved.companionsByTenant(), saved.environmentsByTenant()));
+        StudioCatalogService restarted = new StudioCatalogService(store, null).useAuthoringInvocable(invocable(Map.of(
+                "kind", "proposal",
+                "assistantMessage", "Proposed.",
+                "proposal", Map.of(
+                        "needsYaml", "targetApplicationName: agentflow\n",
+                        "intents", List.of(Map.of("type", "ADD_COMPONENT", "catalogEntryId", gemini)),
+                        "deploymentPolicy", Map.of()))));
+
+        StudioCatalogVisualsResponse served = restarted.listCatalogVisuals("tenant-local", earlier.fileId());
+        assertThat(served.entries()).as("the earlier version no longer serves its claimless entry").isEmpty();
+
+        StudioAuthoringConverseResponse response = restarted.converseAuthoring(new StudioAuthoringConverseRequest(
+                "tenant-local", "assembly-a", "", earlier.fileId(), "Draft", List.of(), "Use Gemini.", Map.of(), Map.of()));
+
+        assertThat(response.kind()).isEqualTo("gap");
+        assertThat(response.unmet()).containsExactly(gemini);
+        assertThat(response.assistantMessage()).contains("CATALOG_ENTRY_NOT_FOUND");
+    }
+
     @Test
     void rejectsProposalWhoseComponentIsNotAdmittedInTheCatalog() {
         // The agent proposes a component the tenant's admitted catalog does not contain.
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "proposal",
                         "assistantMessage", "Proposed.",
@@ -554,7 +593,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void routesGapThroughInjectedDcpInvocable() {
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "gap",
                         "assistantMessage", "No component for that.",
@@ -573,7 +612,7 @@ class StudioCatalogServiceAuthoringDcpTest {
      */
     @Test
     void rejectsExecutionResponsesFromAuthoringInvocable() {
-        StudioCatalogService service = new StudioCatalogService()
+        StudioCatalogService service = StudioTestCatalog.service()
                 .useAuthoringInvocable(invocable(Map.of(
                         "kind", "execution",
                         "phase", "catalog-creation",
@@ -594,7 +633,7 @@ class StudioCatalogServiceAuthoringDcpTest {
     @Test
     void withoutInvocableFallsBackToDeterministicBridge() {
         // No invocable injected: a short prompt still produces the deterministic clarify response.
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioAuthoringConverseResponse response = service.converseAuthoring(
                 new StudioAuthoringConverseRequest("tenant-local", "assembly-demo", "s", List.of(), "app"));
@@ -605,7 +644,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void deterministicBridgeAsksForStartingComponentOnGenericAssemblyPrompt() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioAuthoringConverseResponse response = service.converseAuthoring(
                 new StudioAuthoringConverseRequest(
@@ -631,7 +670,7 @@ class StudioCatalogServiceAuthoringDcpTest {
 
     @Test
     void deterministicBridgeAsksActionScopedConfigurationQuestions() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
 
         StudioAuthoringConverseResponse response = service.converseAuthoring(
                 new StudioAuthoringConverseRequest(
@@ -683,13 +722,8 @@ class StudioCatalogServiceAuthoringDcpTest {
      * content hashes and no ports for authoring context projection tests.
      */
     private static StudioVisualCatalogEntry visualEntry(String catalogEntryId) {
-        return new StudioVisualCatalogEntry(
-                catalogEntryId,
-                "sha256:claim-" + catalogEntryId.hashCode(),
-                "sha256:artifact-" + catalogEntryId.hashCode(),
-                Map.of("ports", List.of()),
-                Map.of(),
-                List.of());
+        // A catalog entry always carries a claim read from its artifact (LLD-fabric-studio-api, What a catalog entry is).
+        return StudioTestCatalog.claimedEntry(catalogEntryId, Map.of("ports", List.of()), Map.of(), List.of());
     }
 
     /**

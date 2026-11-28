@@ -10,6 +10,12 @@ import com.unfurl.fabric.studio.StudioDeploymentService;
 import java.io.IOException;
 import java.util.Map;
 
+/**
+ * HTTP Adapter (Ports & Adapters) for {@code POST /studio/deployment/resolve}: reads a
+ * {@link StudioDeploymentResolveRequest} and hands it to the session-backed resolver ({@link StudioCatalogService}) or
+ * the filesystem resolver ({@link StudioDeploymentService}), whichever strategy the request carries. A request Fabric
+ * cannot act on is a {@code 400} with its reason, never a guess at the missing inputs.
+ */
 public final class ResolveDeploymentHandler {
     private final StudioDeploymentService service;
     private final StudioCatalogService catalogService;
@@ -40,6 +46,11 @@ public final class ResolveDeploymentHandler {
     /**
      * HTTP adapter: deserializes a deployment resolve request and dispatches to the
      * session-backed or filesystem-backed resolver according to the request shape.
+     *
+     * <p>The request checks its own inputs while the body is read, and Jackson wraps that failure as a
+     * {@link JsonProcessingException}. Its message is the one answered ({@code DEPLOYMENT_RESOLVE_INPUTS_INVALID} names
+     * what is missing); only a body that is not JSON, or does not fit the request, is "malformed json body"
+     * (LLD-fabric-studio-api, Deployment Resolution).
      */
     public void handle(HttpExchange exchange) throws IOException {
         if (!"POST".equals(exchange.getRequestMethod())) {
@@ -54,12 +65,28 @@ public final class ResolveDeploymentHandler {
                     ? catalogService.resolveDeployment(request)
                     : service.resolveDeployment(request));
         } catch (JsonProcessingException ex) {
-            write(exchange, 400, Map.of("error", "malformed json body"));
+            IllegalArgumentException invalid = requestValidation(ex);
+            write(exchange, 400, Map.of("error", invalid == null ? "malformed json body" : invalid.getMessage()));
         } catch (IllegalArgumentException ex) {
             write(exchange, 400, Map.of("error", ex.getMessage()));
         } catch (RuntimeException ex) {
             write(exchange, 500, Map.of("error", ex.getMessage()));
         }
+    }
+
+    /**
+     * The request's own validation failure inside a read failure, if that is what it was: the first
+     * {@link IllegalArgumentException} in the cause chain.
+     *
+     * @return that exception, or {@code null} when the body itself was malformed.
+     */
+    private static IllegalArgumentException requestValidation(JsonProcessingException ex) {
+        for (Throwable cause = ex.getCause(); cause != null && cause != cause.getCause(); cause = cause.getCause()) {
+            if (cause instanceof IllegalArgumentException invalid) {
+                return invalid;
+            }
+        }
+        return null;
     }
 
     /**

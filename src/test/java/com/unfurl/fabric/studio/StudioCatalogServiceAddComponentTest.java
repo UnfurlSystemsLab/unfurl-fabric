@@ -14,7 +14,7 @@ class StudioCatalogServiceAddComponentTest {
 
     @Test
     void addComponentAcceptsKnownCatalogEntry() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -34,7 +34,7 @@ class StudioCatalogServiceAddComponentTest {
 
     @Test
     void addComponentRejectsUnknownCatalogEntry() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -57,7 +57,7 @@ class StudioCatalogServiceAddComponentTest {
 
     @Test
     void addComponentRejectsBlankCatalogEntry() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -77,7 +77,7 @@ class StudioCatalogServiceAddComponentTest {
 
     @Test
     void replaceComponentRejectsUnknownNewCatalogEntry() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -98,7 +98,7 @@ class StudioCatalogServiceAddComponentTest {
 
     @Test
     void otherIntentTypesAreNotGatedAgainstCatalog() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",
@@ -125,7 +125,7 @@ class StudioCatalogServiceAddComponentTest {
      */
     @Test
     void removeComponentClearsCurrentCandidateWhenItTargetsActiveCatalogEntry() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioCreateDraftCompositionResponse created = service.createDraftSession(
                 "tenant-a",
                 "assembly-demo",

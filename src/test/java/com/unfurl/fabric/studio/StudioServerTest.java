@@ -271,7 +271,8 @@ class StudioServerTest {
 
             HttpResponse<String> assemblies = get(server, "/studio/tenants/tenant-a/assemblies");
             assertThat(assemblies.statusCode()).isEqualTo(200);
-            assertThat(assemblies.body()).contains("assembly-demo", "assembly-payments");
+            // Only recorded assemblies are listed: Fabric ships no built-in assembly (LLD-fabric-studio-api, Assembly records).
+            assertThat(assemblies.body()).contains("assembly-payments").doesNotContain("assembly-demo");
 
             HttpResponse<String> projection = get(server, "/studio/tenants/tenant-a/assemblies/assembly-payments/dynamic-dcp");
             assertThat(projection.statusCode()).isEqualTo(200);
@@ -415,7 +416,7 @@ class StudioServerTest {
      */
     @Test
     void servesCompiledExportArtifactContent() throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         assertThat(service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-demo", List.of(
                 new StudioComponentArtifactDraft("validation.jar", "", "",
                         jarBase64(manifest("validation-service", "validate.order")))))).status())
@@ -477,7 +478,7 @@ class StudioServerTest {
      */
     @Test
     void servesContractDiffAndVerifyRoutes() throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         assertThat(service.admit("tenant-a", new StudioCatalogAdmissionRequest("assembly-demo", List.of(
                 new StudioComponentArtifactDraft("validation.jar", "", "",
                         jarBase64(manifest("validation-service", "validate.order")))))).status())
@@ -609,12 +610,8 @@ class StudioServerTest {
 
     @Test
     void servesCollaborativeSessionsAndVerifiedAssetContent(@TempDir Path dir) throws Exception {
-        Path asset = dir.resolve("META-INF/visual/validation-service.glb");
-        Files.createDirectories(asset.getParent());
-        Files.writeString(
-                asset,
-                "asset:validation-service:META-INF/visual/validation-service.glb",
-                StandardCharsets.UTF_8);
+        // Real component jars and a package visual whose model bytes are a real file (StudioTestCatalog).
+        StudioTestCatalog.writeInto(dir);
 
         try (StudioServer server = started(new StudioCatalogService(null, dir))) {
             HttpResponse<String> created = post(server, "/studio/tenants/tenant-a/assemblies/assembly-demo/sessions", """
@@ -698,7 +695,7 @@ class StudioServerTest {
             assertThat(content.statusCode()).isEqualTo(200);
             assertThat(content.headers().firstValue("Content-Type")).contains("model/gltf-binary");
             assertThat(new String(content.body(), StandardCharsets.UTF_8))
-                    .isEqualTo("asset:validation-service:META-INF/visual/validation-service.glb");
+                    .isEqualTo("glTF model bytes for validation-service");
         }
     }
 
@@ -1401,7 +1398,7 @@ class StudioServerTest {
      * baseline Flowfoundry needs for the assembly used by runbook tool tests.
      */
     private static StudioCatalogService flowfoundrySessionService(Path dir) throws Exception {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         // The uploaded jars are also the catalog the binding tool reads (HLD-api-documentation-artifacts §4.0): the same
         // bytes, so the selections resolve by their SHA-256.
         String flowJar = jarBase64(manifest("flow", "workflow.execute"));
@@ -1536,7 +1533,7 @@ class StudioServerTest {
     }
 
     private StudioServer started() throws Exception {
-        return started(new StudioCatalogService());
+        return started(StudioTestCatalog.service());
     }
 
     private StudioServer started(StudioCatalogService service) throws Exception {

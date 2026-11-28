@@ -57,6 +57,18 @@ public record StudioDeploymentResolveResponse(
         this(status, candidateId, selections, warnings, reason, details, rejectedShapes, List.of(), List.of());
     }
 
+    /**
+     * This response with its selections replaced, for example attributed to the draft's catalog entries in session mode
+     * ({@link StudioDeploymentSelection#withCatalogEntryId}); every other field is kept.
+     *
+     * @param attributed the selections to carry instead.
+     * @return a copy; this response is unchanged.
+     */
+    public StudioDeploymentResolveResponse withSelections(List<StudioDeploymentSelection> attributed) {
+        return new StudioDeploymentResolveResponse(status, candidateId, attributed, warnings, reason, details, rejectedShapes,
+                reasons, trustRejections);
+    }
+
     /** Factory: a resolved response. */
     public static StudioDeploymentResolveResponse resolved(
             String candidateId,

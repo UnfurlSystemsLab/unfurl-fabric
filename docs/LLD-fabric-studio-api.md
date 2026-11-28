@@ -16,7 +16,7 @@ Default bind address is `127.0.0.1` and default port is `7878`.
 | Bind address | `--bind` | `127.0.0.1` |
 | Port | `--port` | `7878` |
 | State path | `--state-path` or `UNFURL_STUDIO_STATE_PATH` / `-Dunfurl.studio.state.path` | module default |
-| Asset root | `--asset-root` or `UNFURL_STUDIO_ASSET_ROOT` / `-Dunfurl.studio.asset.root` | fixture asset root |
+| Asset root | `--asset-root` or `UNFURL_STUDIO_ASSET_ROOT` / `-Dunfurl.studio.asset.root` | none: the catalog holds only admitted jars |
 | Event bus | `--event-bus` or `UNFURL_STUDIO_EVENT_BUS` | `in-memory` |
 | Redis URL | `--redis-url` or `UNFURL_STUDIO_REDIS_URL` | `redis://localhost:6379` |
 | Kafka bootstrap | `--kafka-bootstrap-servers` or `UNFURL_STUDIO_KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` |
@@ -64,6 +64,27 @@ Dev CORS is allowed only for loopback HTTP origins matching `localhost` or `127.
 catalog. With it, Studio resolves the catalog from the tenant-isolated file registry and returns the immutable catalog
 version associated with that file id. A `catalogFileId` from another tenant is invalid.
 
+**What a catalog entry is.** A tenant catalog entry is a component whose DCP claim Fabric read from its artifact, so every
+entry Studio lists can be added to a draft, compiled and resolved. Fabric ships no built-in entries, fixture assets or
+demo data; with nothing admitted and no asset root, the catalog is empty and says so.
+- **Sources.** An entry comes from an admitted jar (below) or from a jar with `META-INF/unfurl-catalog.yaml` scanned in
+  the configured asset root. Nothing else creates one.
+- **Package visual manifests decorate, never create.** A `META-INF/unfurl-studio-visuals.json` manifest under the asset
+  root only adds presentation to an entry that exists, matched by `catalogEntryId`:
+  - its visual manifest, its asset files and their pins, and its `dynamicComposition` nesting references (for example
+    `containsCatalogEntryIds`, REPO-recursive-dcp-projection-build-spec);
+  - never a claim, a claim hash or an artifact hash: those are the artifact's. Nor what Fabric derives from the claim:
+    the connection `ports`, `rawNeeds`, `rawOptionalNeeds` and `componentShapeProfile` stay the claim's;
+  - a visual manifest entry that names no catalog entry is skipped, and the scan log names it.
+- **No entry without a claim reaches the catalog.**
+  - State saved before this rule may hold entries without a manifest, in the active catalog or in an earlier catalog
+    version (a `CATALOG` file a draft or proposal can select by `catalogFileId`).
+    - Every such entry is dropped when the state loads, and the log names each one with its catalog version.
+    - So selecting an earlier version never serves one.
+    - A restored version keeps its file id. Its served `catalogHash` is computed from the entries it now holds.
+  - A catalog snapshot that carries one is refused, all or nothing, with `400 CATALOG_SNAPSHOT_INVALID` naming every
+    such entry.
+
 Catalog admissions accept uploaded component artifacts and update the tenant catalog after DCP claim verification. A
 claim is admitted only from the artifact that carries it (DCP HLD-C §3.10):
 
@@ -106,10 +127,17 @@ ZIP containing the resolved DCP claim YAML for each verified artifact, an `admis
 merge multiple component claims into a synthetic mega-claim.
 
 Catalog removal deletes one catalog entry from the tenant-scoped Studio catalog and returns the updated
-`StudioCatalogVisualsResponse`. Removal is a Studio catalog curation operation, not a DCP validity shortcut: existing
-draft sessions that reference the removed entry continue to fail later catalog-grounding checks until the operator
-replaces or removes those draft components. The response includes a diagnostic artifact so support and CI can replay
-the exact catalog state after the removal.
+`StudioCatalogVisualsResponse`. Removal is a Studio catalog curation operation, not a DCP validity shortcut. The response
+includes a diagnostic artifact so support and CI can replay the exact catalog state after the removal.
+
+**A draft that names an entry the catalog no longer has**, after a removal or because the entry was never a real one:
+- **Projection.** The session projection draws the draft's other components and adds one warning per missing entry:
+  `CATALOG_ENTRY_MISSING: draft component '<id>' is no longer in tenant '<tenant>''s catalog; remove it from the draft
+  (REMOVE_COMPONENT) or admit its jar`. Views and overlays carry the same words as a `CATALOG_ENTRY_MISSING`
+  diagnostic.
+- **Removal is allowed.** `REMOVE_COMPONENT` for that entry is accepted, so the operator can clean the draft.
+- **Other steps stay refused.** Deployment resolution and compile refuse the draft with `CATALOG_ENTRY_NOT_FOUND`
+  naming the entry, until it is removed or replaced.
 
 Catalog snapshots are tenant-scoped portable JSON state. Saving a catalog returns the exact DCP-backed visual entries
 and catalog hash Fabric currently serves to Studio. Loading a catalog replaces only the addressed tenant catalog; the
@@ -166,6 +194,18 @@ the Studio server.
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/snapshot` | | `StudioAssemblySnapshot` | `StudioAssemblySnapshot` |
 | `POST` | `/studio/tenants/{tenantId}/assemblies/{assemblyId}/drafts/save` | | `StudioSaveDraftRequest` | `StudioSaveDraftResponse` |
 
+**Assembly records.** Fabric ships no built-in assembly.
+- **How a record comes to exist.** An assembly is recorded when it is created, saved, imported from a snapshot, or a
+  draft session starts in it. Only recorded assemblies are listed.
+- **An unrecorded assembly** reads as a summary with nothing chosen:
+  - its target application is named after the assembly (the `StudioAssemblySummary` rule), and the projection's parent
+    node takes that name;
+  - its deployment target and deployment shape are empty.
+- **No defaults are invented.** A created or saved assembly keeps the shape its request names, and is empty when the
+  request names none. Fabric never defaults a shape, and Studio shows an empty one as "not provided by Fabric".
+- **Replacement candidates need a component.** They are asked for one component: a missing `componentNodeId` is
+  `400 COMPONENT_NODE_REQUIRED`, never a default component.
+
 Needs extraction is a DCP needs-seeding strategy, not proof that a component is already in a draft assembly.
 `StudioNeedsExtractionRequest` accepts the backward-compatible `fileNames` list and may also carry inline source
 files. Fabric derives `requiredCapabilities` by analyzing inline workflow YAML `nodes[].uses`, by inferring
@@ -177,6 +217,41 @@ deterministic subset semantics as the DCP resolver. For example, Flowfoundry can
 advertise `execution_modes: [harness]` without introducing a Fabric-specific execution flag.
 
 Dynamic DCP endpoints are read-model endpoints for visual composition and replacement guidance. They do not replace compile-time validation. When `sessionId` is supplied, the projection is draft-session scoped: Fabric loads the addressed `StudioDraftSession`, replays its accepted `ADD_COMPONENT`, `REMOVE_COMPONENT`, and `REPLACE_COMPONENT` intents, grounds every selected catalog entry in the tenant catalog, and projects only that draft inventory. This session mode must match compile's membership replay so Step 10 and Step 12 inspect the same component set. When `sessionId` is absent, the route remains a catalog projection for catalog browsing and replacement previews before a draft exists.
+
+**Containment derived from bindings.** The projection's `CONTAINS` tree nests a component under the component that uses
+it, so the drawn hierarchy follows the composition's real dependencies. `StudioDerivedContainment` (Projector) derives
+it from the claims' needs and offers Fabric has already matched. It never uses product names.
+1. **Declared containment comes first.** A component whose containment is declared keeps that parent. It can be
+   declared by an aggregate's `child_claims` (DCP HLD-C2 A.14), or by the containment bridge in claims written before
+   them (REPO-recursive-dcp-projection-build-spec). Only a component declared directly under the assembly is considered
+   for a derived parent.
+2. **Uses.** The projection's `connections` between two draft components are the bindings: the `source` component offers
+   what the `target` component needs, so the target *uses* the source.
+   - Connections to or from the substrate are not uses between components.
+   - A `BLOCKED` connection is not a binding.
+3. **Placement.**
+   - **One user:** a component used by exactly one other component is nested under it.
+   - **Several users:** a component used by several is nested under their **nearest common user**. That is the component
+     that reaches every one of those users through uses, and that reaches no other component that also does. When none
+     exists, or more than one does, the component stays under the assembly.
+   - **Not used:** a component nobody uses stays under the assembly.
+4. **Cycles never become containment.** Uses between components of one cycle (one strongly connected group) are ignored
+   for nesting, so no component can contain itself. The cycle's members are placed by their other uses.
+   - A derived parent is checked against the whole tree, declared and derived together. A parent that is already one of
+     the component's descendants is rejected: if A declares child B and B uses A, A is not nested under B. The
+     component stays under the assembly.
+5. **Each edge says where it came from.** Every edge carries `derivation`: `DECLARED`, or `DERIVED_FROM_BINDINGS` for
+   a parent derived this way. A derived edge replaces the component's edge from the assembly. Its node's `parentNodeId`
+   and `depth` follow it.
+6. **No other edges are invented between components.** A dependency is its connection. The projection once added a
+   `REQUIRES` edge from each component to the next in list order. That described no relationship, and it is removed.
+7. **Overlays follow the drawn tree.** Resilience & Faults propagates a fault up the `CONTAINS` tree, derived edges
+   included. A component's fault reaches the component that uses it.
+
+Example: Flow uses Foundry (`agent.run`), and Flow and Foundry both use the Keycloak adapter (`identity-context`).
+- Foundry is nested under Flow.
+- Flow reaches Foundry, so Flow is the nearest common user of the Keycloak adapter, which is also nested under Flow.
+- A component used by Foundry and by a substrate that Flow does not reach stays under the assembly.
 
 Assembly snapshots are portable Studio workspace JSON. Saving an assembly captures the assembly summary, saved layout,
 and draft sessions for that tenant/assembly. Loading an assembly writes those records back through Fabric's Studio state
@@ -221,7 +296,31 @@ Layout is UI state and must not be used as a contract validity source.
 | `GET` | `/studio/tenants/{tenantId}/exports/{artifactId}/content` | `sha256` | `StudioExportArtifact` content |
 | `GET` | `/studio/tenants/{tenantId}/sessions` | `assemblyId` optional | `List<StudioSessionHistoryItem>` |
 
-`StudioIntentRequest` records governed operator edits in the session intent log.
+`StudioIntentRequest` records governed operator edits in the session intent log. `ADD_COMPONENT` and the new entry of
+`REPLACE_COMPONENT` must name an entry of the tenant catalog that carries a claim:
+- an unknown entry is `CATALOG_ENTRY_NOT_FOUND`;
+- an entry without a claim is `CATALOG_ENTRY_NOT_ADMITTED`. No catalog source holds one any more, active or earlier
+  (*What a catalog entry is*), so this check guards the invariant rather than a reachable case.
+
+An authoring proposal refused this way is a `gap` naming the entry and the reason.
+
+So a draft never gains a component that could not compile.
+
+**Aggregate children (DCP HLD-C2 A.14).** An aggregate's claim names its children in `child_claims`, by `claim_uri` and
+`required`.
+- **Projection.** Each selected child is drawn under its aggregate, as declared containment. The child is the
+  component whose claim's `identity.uri` is the `claim_uri`; Studio's projection matches it through each entry's own
+  claim, never its catalog id. A required child the draft does not select is named in a projection warning:
+  `CHILD_CLAIM_MISSING: <aggregate> requires child <claim_uri>, which this draft does not include`. An absent optional
+  child is not a warning, because the aggregate runs without it.
+- **Validity.** Resolution and compile refuse a composition that selects an aggregate without one of its required
+  children. The refusal is a `NO_MATCH` with a `CHILD_CLAIM` conflict naming the aggregate's coordinates and the
+  child, the same gate in Studio and the CLI. It is part of "required dependencies resolved": the aggregate cannot run
+  without the child. An optional child is never required.
+- **Cycles.** Child references among the selected claims that form a cycle, required or optional, are refused with a
+  `CHILD_CLAIM_CYCLE` conflict naming every claim in the cycle. For example, A names B and B names A.
+  - The projection never nests along a cycle. Its members stay under the assembly, where they remain visible.
+  - The projection warns: `CHILD_CLAIM_CYCLE: <members> name each other as children`.
 `ADD_COMPONENT` and `REPLACE_COMPONENT` advance the current candidate pointer to
 the accepted catalog entry. `REMOVE_COMPONENT` clears that pointer when the
 removed catalog entry is the active candidate so later compile/export calls do
@@ -247,10 +346,10 @@ intents, so every Studio compile records `MANUAL`.
 Grounding uses only claims read from artifacts. Each draft component resolves to
 its admitted or scanned catalog entry; after a restart or a snapshot load the
 entry is rebuilt by parsing its persisted `catalogManifest` and is used only when
-the recomputed claim hash equals the pinned `claimHash`. A component with no
-manifest (a built-in or package visual asset, which is display-only) or whose
-manifest no longer matches its hash makes compile return `CATALOG_ENTRY_NOT_ADMITTED`
-naming the entry; Studio never builds a stand-in claim from visual metadata.
+the recomputed claim hash equals the pinned `claimHash`. An entry whose manifest
+no longer matches its hash makes compile return `CATALOG_ENTRY_NOT_ADMITTED`
+naming the entry; Studio never builds a stand-in claim from visual metadata. The
+catalog holds no entry without a manifest (*What a catalog entry is*).
 
 Export artifacts are not synthetic URLs. The root contract, substrate profile,
 signed root contract, and support artifacts returned by compile are stored as
@@ -501,6 +600,26 @@ strategies:
 Session mode replays the same complete draft inventory as compile and consumes
 the tenant's admitted catalog/session state. It must never require browser users
 to know server filesystem paths.
+
+Errors:
+- **Neither strategy complete.** A request with neither strategy complete, or with only one of `catalogPath` and
+  `needsPath`, is `400 DEPLOYMENT_RESOLVE_INPUTS_INVALID`, and the message names what is missing. That includes a
+  session request without its `tenantId` or `assemblyId`.
+- **The real reason, not "malformed".** The request is checked while its body is read, so the handler reports the
+  request's own message. Only a body that is not JSON, or does not match the request's fields, is
+  `400 malformed json body`.
+- **Unknown session.** An unknown session is `400` with the session id.
+
+Studio's client always sends the tenant and assembly of its scope.
+
+**Where a selection belongs.**
+- A selection's `componentId` is the component's artifact coordinates (for example `com.unfurl:flow:1.0.0`), as the
+  deployment resolver names it.
+- Studio's draft projection names components by catalog entry (for example `uploaded:flow.jar`) and carries no
+  coordinates.
+- So in session mode each selection also carries `catalogEntryId`: the draft's catalog entry it was resolved for.
+  Studio places the shape on that entry's node.
+- Filesystem mode has no draft, and its selections carry an empty `catalogEntryId`.
 
 ## Deployment Environments [P2d]
 
@@ -900,9 +1019,10 @@ add:
   - **`UNMET_NEED`:** `reasonCode` is the `UnmetCapabilityRequirement.Reason` value (`NOT_IN_CATALOG`,
     `VERSION_NOT_OFFERED`, `OFFER_DETAILS_UNSATISFIED`, `REJECTED_BY_TRUST_POLICY`).
   - **`CONFLICT`:** `reasonCode` names the `Conflict` variant (`MISSING_CAPABILITY`, `VERSION`, `OFFER_DETAIL`,
-    `ARTIFACT`, `REFUSAL`, `BINDING`, `DEPENDENCY`).
+    `ARTIFACT`, `REFUSAL`, `BINDING`, `DEPENDENCY`, `CHILD_CLAIM`, `CHILD_CLAIM_CYCLE`).
   - **Optional fields:** `capability` is set when the cause names one. `componentCoordinates` is set for `DEPENDENCY`,
-    naming the component whose claim declares the unresolved dependency.
+    naming the component whose claim declares the unresolved dependency, and for `CHILD_CLAIM`, naming the aggregate
+    whose required child is missing.
 - `trustRejections[] {coordinates, reasonCode, message}`, one per reason of each `trust.RejectedEntry` the match
   considered.
   - `coordinates` are the rejected entry's artifact coordinates.

@@ -138,6 +138,10 @@ public final class NoMatchExplanation {
                     new MatchFailureReason(kind, "BINDING", c.capability(), null, c.detail());
             case Conflict.DependencyConflict c ->
                     new MatchFailureReason(kind, "DEPENDENCY", c.capability(), c.component(), c.detail());
+            case Conflict.ChildClaimConflict c ->
+                    new MatchFailureReason(kind, "CHILD_CLAIM", null, c.aggregate(), c.detail());
+            case Conflict.ChildClaimCycleConflict c ->
+                    new MatchFailureReason(kind, "CHILD_CLAIM_CYCLE", null, null, c.detail());
         };
     }
 

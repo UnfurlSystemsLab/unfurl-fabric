@@ -1,5 +1,7 @@
 package com.unfurl.fabric.matcher;
 
+import java.util.List;
+
 /**
  * Structured description of why a candidate composition was rejected as invalid.
  * Carries enough detail for {@code fabric explain} and {@code fabric explain-rejection}
@@ -15,7 +17,9 @@ public sealed interface Conflict
                 Conflict.ArtifactConflict,
                 Conflict.RefusalConflict,
                 Conflict.BindingConflict,
-                Conflict.DependencyConflict {
+                Conflict.DependencyConflict,
+                Conflict.ChildClaimConflict,
+                Conflict.ChildClaimCycleConflict {
 
     /** @return the human-readable explanation of the conflict. */
     String detail();
@@ -140,6 +144,42 @@ public sealed interface Conflict
      * @param capability the dependency's capability name.
      * @param detail     human-readable explanation.
      */
+    /**
+     * A selected aggregate's required child (DCP HLD-C2 A.14, {@code child_claims}) is not selected: the aggregate cannot
+     * run without it. An optional child is never required, so it is never this conflict.
+     *
+     * @param aggregate coordinates of the aggregate whose claim names the child.
+     * @param child     the child's claim URI, as the aggregate names it.
+     * @param detail    human-readable explanation.
+     */
+    record ChildClaimConflict(String aggregate, String child, String detail) implements Conflict {
+        /** Convenience constructor deriving the detail message. */
+        public ChildClaimConflict(String aggregate, String child) {
+            this(aggregate, child, aggregate + " requires child " + child
+                    + ", which no selected component provides; select the component whose claim is " + child);
+        }
+    }
+
+    /**
+     * Selected claims name each other as children (DCP HLD-C2 A.14), required or optional, so an aggregate would contain
+     * itself: for example A names B and B names A. A single claim cannot show this; the composer refuses it.
+     *
+     * @param components coordinates of every selected component in the cycle, sorted.
+     * @param detail     human-readable explanation.
+     */
+    record ChildClaimCycleConflict(List<String> components, String detail) implements Conflict {
+        /** Compact constructor: freezes the members. */
+        public ChildClaimCycleConflict {
+            components = components == null ? List.of() : List.copyOf(components);
+        }
+
+        /** Convenience constructor deriving the detail message. */
+        public ChildClaimCycleConflict(List<String> components) {
+            this(components, String.join(", ", components)
+                    + " name each other as children, so an aggregate would contain itself; remove a child reference to break the cycle");
+        }
+    }
+
     record DependencyConflict(String component, String dependency, String capability, String detail)
             implements Conflict {
         /** Convenience constructor deriving the detail message. */

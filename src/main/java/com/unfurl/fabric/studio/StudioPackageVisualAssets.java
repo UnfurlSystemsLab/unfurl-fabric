@@ -8,13 +8,98 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
+/**
+ * Decorator over the tenant catalog (LLD-fabric-studio-api, What a catalog entry is): reads the
+ * {@code META-INF/unfurl-studio-visuals.json} manifests under the asset root and adds their presentation to the catalog
+ * entries they name. A package visual manifest never creates an entry and never supplies a claim, claim hash or artifact
+ * hash: an entry exists only because its claim was read from its artifact.
+ */
 final class StudioPackageVisualAssets {
     static final String MANIFEST_PATH = "META-INF/unfurl-studio-visuals.json";
 
+    /** Visual manifest keys that come from the claim (connection ports), which a package visual never replaces. */
+    private static final Set<String> CLAIM_VISUAL_KEYS = Set.of("ports");
+    /** Dynamic-composition keys derived from the claim, which a package visual never replaces. */
+    private static final Set<String> CLAIM_COMPOSITION_KEYS = Set.of("rawNeeds", "rawOptionalNeeds", "componentShapeProfile");
+
+    /**
+     * Decorates catalog entries with the package visual manifests under {@code assetRoot} that name them.
+     *
+     * <p>For a named entry, the package's visual manifest keys, asset files (with their computed pins) and
+     * {@code dynamicComposition} nesting keys apply, except the keys the claim derives: the connection {@code ports}, the
+     * raw needs and the shape profile. A manifest entry that names no catalog entry is skipped, and the log names it.
+     *
+     * @param entries   the catalog entries, each carrying the claim read from its artifact.
+     * @param assetRoot the configured asset root, or {@code null} for none.
+     * @return the entries in their order, decorated where a package visual names them.
+     */
+    List<StudioVisualCatalogEntry> decorate(List<StudioVisualCatalogEntry> entries, Path assetRoot) {
+        List<StudioVisualCatalogEntry> visuals = scan(assetRoot);
+        if (visuals.isEmpty()) {
+            return List.copyOf(entries);
+        }
+        Map<String, StudioVisualCatalogEntry> byId = new LinkedHashMap<>();
+        visuals.forEach(visual -> byId.putIfAbsent(visual.catalogEntryId(), visual));
+        List<StudioVisualCatalogEntry> decorated = new ArrayList<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            StudioVisualCatalogEntry visual = byId.get(entry.catalogEntryId());
+            if (visual == null) {
+                decorated.add(entry);
+                continue;
+            }
+            decorated.add(decorated(entry, visual));
+        }
+        return List.copyOf(decorated);
+    }
+
+    /**
+     * Names the package visual manifest entries that decorate nothing, for the scan log: each names a catalog entry no
+     * admitted or scanned jar provides.
+     *
+     * @return the catalog entry ids the asset root's package visuals name but {@code entries} does not hold.
+     */
+    List<String> orphanedVisuals(List<StudioVisualCatalogEntry> entries, Path assetRoot) {
+        Set<String> ids = new HashSet<>();
+        entries.forEach(entry -> ids.add(entry.catalogEntryId()));
+        return scan(assetRoot).stream()
+                .map(StudioVisualCatalogEntry::catalogEntryId)
+                .filter(id -> !ids.contains(id))
+                .distinct()
+                .toList();
+    }
+
+    /** One entry with a package visual's presentation applied; its claim, hashes and manifest stay its own. */
+    private static StudioVisualCatalogEntry decorated(StudioVisualCatalogEntry entry, StudioVisualCatalogEntry visual) {
+        Map<String, Object> visualManifest = overlay(entry.visualManifest(), visual.visualManifest(), CLAIM_VISUAL_KEYS);
+        Map<String, Object> composition = overlay(entry.dynamicComposition(), visual.dynamicComposition(), CLAIM_COMPOSITION_KEYS);
+        Map<String, Object> integrity = visual.visualIntegrity().isEmpty() ? entry.visualIntegrity() : visual.visualIntegrity();
+        List<String> warnings = new ArrayList<>(entry.warnings());
+        visual.warnings().stream().filter(warning -> !warnings.contains(warning)).forEach(warnings::add);
+        return new StudioVisualCatalogEntry(entry.catalogEntryId(), entry.claimHash(), entry.artifactSha256(), visualManifest,
+                composition, integrity, warnings, entry.catalogManifest());
+    }
+
+    /** {@code base} with {@code overlay}'s keys applied, except the {@code kept} keys, which stay {@code base}'s. */
+    private static Map<String, Object> overlay(Map<String, Object> base, Map<String, Object> overlay, Set<String> kept) {
+        Map<String, Object> merged = new LinkedHashMap<>(base);
+        overlay.forEach((key, value) -> {
+            if (!kept.contains(key)) {
+                merged.put(key, value);
+            }
+        });
+        return merged;
+    }
+
+    /**
+     * Reads every package visual manifest under {@code assetRoot}, with each asset's SHA-256 computed from its bytes.
+     * The entries it returns are presentation only, input to {@link #decorate}; they are never catalog entries.
+     */
     List<StudioVisualCatalogEntry> scan(Path assetRoot) {
         if (assetRoot == null || !Files.isDirectory(assetRoot)) {
             return List.of();

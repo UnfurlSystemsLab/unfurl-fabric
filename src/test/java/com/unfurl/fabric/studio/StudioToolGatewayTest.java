@@ -20,7 +20,7 @@ class StudioToolGatewayTest {
      */
     @Test
     void catalogQueryBoundsUnfilteredEntryPreview() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         List<StudioVisualCatalogEntry> entries = new ArrayList<>();
         for (int index = 0; index < 20; index++) {
             entries.add(visualEntry("uploaded:catalog-entry-" + index + "-0.1.0-SNAPSHOT.jar"));
@@ -52,13 +52,8 @@ class StudioToolGatewayTest {
      * content hashes and no ports for gateway projection tests.
      */
     private static StudioVisualCatalogEntry visualEntry(String catalogEntryId) {
-        return new StudioVisualCatalogEntry(
-                catalogEntryId,
-                "sha256:claim-" + catalogEntryId.hashCode(),
-                "sha256:artifact-" + catalogEntryId.hashCode(),
-                Map.of("ports", List.of()),
-                Map.of(),
-                List.of());
+        // A catalog entry always carries a claim read from its artifact (LLD-fabric-studio-api, What a catalog entry is).
+        return StudioTestCatalog.claimedEntry(catalogEntryId, Map.of("ports", List.of()), Map.of(), List.of());
     }
 
     /**

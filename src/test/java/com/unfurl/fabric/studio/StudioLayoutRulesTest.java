@@ -20,7 +20,7 @@ class StudioLayoutRulesTest {
     /** A valid write is stored as written, the retired field absent; a new assembly starts in 3D Flow. */
     @Test
     void validViewStateIsKept() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         StudioLayoutState initial = service.layout("tenant-a", "assembly-a");
         assertThat(initial.activeViewpoint()).isEqualTo("FLOW");
         assertThat(initial.renderer()).isEqualTo("THREE_D");
@@ -40,7 +40,7 @@ class StudioLayoutRulesTest {
     /** Each invalid write is LAYOUT_STATE_INVALID naming its field. */
     @Test
     void invalidViewStateIsRefusedNamingTheField() {
-        StudioCatalogService service = new StudioCatalogService();
+        StudioCatalogService service = StudioTestCatalog.service();
         assertRefused(service, write("COCKPIT", List.of(), null, "TABLE", null), "activeViewpoint");
         assertRefused(service, write("FLOW", List.of(), null, null, null), "renderer");
         assertRefused(service, write("FLOW", List.of("COST"), null, "TABLE", null), "activeOverlays");

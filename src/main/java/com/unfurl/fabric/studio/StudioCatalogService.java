@@ -46,6 +46,7 @@ import com.unfurl.fabric.compiler.CompiledContract;
 import com.unfurl.fabric.compiler.CompiledContractCodec;
 import com.unfurl.fabric.compiler.CompositionContractCodec;
 import com.unfurl.fabric.compiler.SelectionRecord;
+import com.unfurl.fabric.graph.StronglyConnectedGroups;
 import com.unfurl.fabric.matcher.CandidateValidity;
 import com.unfurl.fabric.matcher.CandidateValidator;
 import com.unfurl.fabric.matcher.MatchFailureReason;
@@ -209,7 +210,8 @@ public final class StudioCatalogService {
         this.compiledReader = new StudioCompiledContractReader(compiledStore);
         if (store != null) {
             StudioStateStore.State state = store.load();
-            entriesByTenant.putAll(state.entriesByTenant());
+            state.entriesByTenant().forEach((tenant, entries) ->
+                    entriesByTenant.put(tenant, withClaimsOnly("tenant " + tenant, entries)));
             state.assembliesByTenant().forEach((tenant, assemblies) ->
                     assembliesByTenant.put(tenant, new ConcurrentHashMap<>(assemblies)));
             state.layoutsByTenant().forEach((tenant, layouts) ->
@@ -220,8 +222,13 @@ public final class StudioCatalogService {
                     filesByTenant.put(tenant, new ConcurrentHashMap<>(files)));
             state.sessionFileLinksByTenant().forEach((tenant, links) ->
                     sessionFileLinksByTenant.put(tenant, List.copyOf(links)));
-            state.catalogSnapshotsByTenant().forEach((tenant, snapshots) ->
-                    catalogSnapshotsByTenant.put(tenant, new ConcurrentHashMap<>(snapshots)));
+            // Earlier catalog versions follow the same rule: a draft or proposal that selects one is never served an
+            // entry without a claim (LLD-fabric-studio-api, What a catalog entry is).
+            state.catalogSnapshotsByTenant().forEach((tenant, snapshots) -> {
+                Map<String, StudioCatalogSnapshot> versions = new ConcurrentHashMap<>();
+                snapshots.forEach((fileId, snapshot) -> versions.put(fileId, withClaimsOnly(tenant, fileId, snapshot)));
+                catalogSnapshotsByTenant.put(tenant, versions);
+            });
             state.companionsByTenant().forEach((tenant, records) ->
                     companionsByTenant.put(tenant, new ConcurrentHashMap<>(records)));
             state.environmentsByTenant().forEach((tenant, environments) ->
@@ -247,7 +254,7 @@ public final class StudioCatalogService {
         if (catalogFileId != null && !catalogFileId.isBlank()) {
             entries = catalogSnapshotForFile(tenant, catalogFileId).entries();
         } else {
-            entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+            entries = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
             ensureCatalogFile(tenant, entries, "");
         }
         StudioCatalogVisualsResponse snapshot = response(entries);
@@ -272,7 +279,7 @@ public final class StudioCatalogService {
             String correlationId
     ) {
         String tenant = normalizeTenant(tenantId);
-        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries), "");
+        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::catalogEntries), "");
         Set<String> scopedFileIds = linkedFileIds(tenant, sessionId, correlationId);
         String normalizedType = fileType == null ? "" : fileType.trim();
         return filesByTenant
@@ -346,7 +353,7 @@ public final class StudioCatalogService {
      */
     public StudioCatalogSnapshot saveCatalogSnapshot(String tenantId) {
         String tenant = normalizeTenant(tenantId);
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         StudioCatalogVisualsResponse catalog = response(entries);
         ensureCatalogFile(tenant, entries, "");
         StudioCatalogSnapshot snapshot = new StudioCatalogSnapshot(
@@ -371,6 +378,15 @@ public final class StudioCatalogService {
         if (snapshot == null) {
             throw new IllegalArgumentException("catalog snapshot is required");
         }
+        // All or nothing: a snapshot carrying an entry without a claim is refused before anything is stored.
+        List<String> withoutClaim = snapshot.entries().stream()
+                .filter(entry -> !entry.admitted())
+                .map(StudioVisualCatalogEntry::catalogEntryId)
+                .toList();
+        if (!withoutClaim.isEmpty()) {
+            throw new IllegalArgumentException("CATALOG_SNAPSHOT_INVALID: these entries carry no claim read from a component "
+                    + "artifact, so they cannot be catalog entries: " + String.join(", ", withoutClaim));
+        }
         List<StudioVisualCatalogEntry> entries = snapshot.entries().stream()
                 .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
                 .toList();
@@ -389,7 +405,7 @@ public final class StudioCatalogService {
         StudioCatalogAdmissionRequest safeRequest = request == null
                 ? new StudioCatalogAdmissionRequest("assembly-demo", List.of())
                 : request;
-        List<StudioVisualCatalogEntry> entries = new ArrayList<>(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries));
+        List<StudioVisualCatalogEntry> entries = new ArrayList<>(entriesByTenant.computeIfAbsent(tenant, this::catalogEntries));
         List<StudioClaimVerificationResult> results = new ArrayList<>();
         List<ResolvedClaimBundleEntry> resolvedClaims = new ArrayList<>();
 
@@ -423,8 +439,9 @@ public final class StudioCatalogService {
                     .computeClaimHash(validation.claim());
             String artifactSha = validation.artifactSha();
             CatalogEntry runtimeEntry = catalogEntryFromManifest(validation.claimYaml(), artifactSha, storedJar);
-            StudioVisualCatalogEntry entry = admittedVisualEntry(entryId, runtimeEntry, claimHash, artifactSha,
-                    validation.claimYaml());
+            // A package visual manifest naming this entry decorates it as it decorates scanned ones.
+            StudioVisualCatalogEntry entry = packageVisualAssets.decorate(List.of(admittedVisualEntry(entryId, runtimeEntry,
+                    claimHash, artifactSha, validation.claimYaml())), assetRoot).get(0);
             entries.removeIf(existing -> existing.catalogEntryId().equals(entryId));
             entries.add(entry);
             catalogEntriesByTenant
@@ -509,7 +526,7 @@ public final class StudioCatalogService {
         if (catalogEntryId == null || catalogEntryId.isBlank()) {
             throw new IllegalArgumentException("catalogEntryId is required");
         }
-        List<StudioVisualCatalogEntry> existing = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> existing = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         List<StudioVisualCatalogEntry> entries = existing.stream()
                 .filter(entry -> !catalogEntryId.equals(entry.catalogEntryId()))
                 .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
@@ -1758,7 +1775,7 @@ public final class StudioCatalogService {
         if (session != null && session.catalogFileId() != null && !session.catalogFileId().isBlank()) {
             return catalogSnapshotForFile(tenant, session.catalogFileId()).entries();
         }
-        return entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        return entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
     }
 
     /**
@@ -2047,8 +2064,10 @@ public final class StudioCatalogService {
                     Optional<StudioIntentResponse> rejection = rejectIntentAgainstCatalog(
                             tenant, type, Map.of(key, String.valueOf(entryId)), selectedCatalogEntries);
                     if (rejection.isPresent()) {
+                        // The gap names why, in the catalog rule's own words (not found, or carries no claim).
                         return StudioAuthoringConverseResponse.gap(sessionId,
-                                "A proposed component is not admitted in this tenant's catalog.",
+                                "A proposed component is not admitted in this tenant's catalog: "
+                                        + rejection.get().reason() + ": " + rejection.get().details(),
                                 List.of(String.valueOf(entryId)));
                     }
                 }
@@ -2293,7 +2312,7 @@ public final class StudioCatalogService {
 
     public StudioAssemblyListResponse listAssemblies(String tenantId) {
         String tenant = normalizeTenant(tenantId);
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         return new StudioAssemblyListResponse(tenant, assemblies.values().stream()
                 .sorted(Comparator.comparing(StudioAssemblySummary::assemblyId))
                 .toList());
@@ -2306,7 +2325,7 @@ public final class StudioCatalogService {
     public StudioDynamicDcpProjection dynamicDcpProjection(String tenantId, String assemblyId) {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         return dynamicDcpProjectionForEntries(tenant, assembly, entries, List.of());
     }
 
@@ -2320,11 +2339,17 @@ public final class StudioCatalogService {
             return dynamicDcpProjection(tenantId, assemblyId);
         }
         StudioDraftSession session = draftSession(tenantId, assemblyId, sessionId);
-        List<StudioVisualCatalogEntry> entries = selectedVisualEntriesForSession(session);
-        List<String> warnings = entries.isEmpty()
-                ? List.of("draft session contains no selected catalog components")
-                : List.of();
-        return dynamicDcpProjectionForEntries(session.tenantId(), session.assemblyId(), entries, warnings);
+        // The projection draws what the catalog still has and names what it no longer has, so the operator can see the
+        // draft and remove those components (LLD-fabric-studio-api, Tenant Catalog and Assets).
+        DraftEntries draft = draftEntries(session);
+        List<String> warnings = new ArrayList<>();
+        if (draft.present().isEmpty() && draft.missing().isEmpty()) {
+            warnings.add("draft session contains no selected catalog components");
+        }
+        for (String missing : draft.missing()) {
+            warnings.add(missingEntryWarning(session.tenantId(), missing));
+        }
+        return dynamicDcpProjectionForEntries(session.tenantId(), session.assemblyId(), draft.present(), warnings);
     }
 
     /**
@@ -2338,11 +2363,11 @@ public final class StudioCatalogService {
             List<String> sourceWarnings
     ) {
         List<StudioVisualCatalogEntry> entries = selectedEntries == null ? List.of() : List.copyOf(selectedEntries);
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
-        StudioAssemblySummary summary = assemblies.getOrDefault(assembly, fixtureAssemblies(tenant).get("assembly-demo"));
-        String target = summary == null || summary.targetApplicationName().isBlank()
-                ? "unfurl-flow"
-                : summary.targetApplicationName();
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
+        // An unrecorded assembly's target application is named after the assembly (StudioAssemblySummary); nothing is
+        // invented for it (LLD-fabric-studio-api, Assembly records).
+        StudioAssemblySummary summary = assemblies.getOrDefault(assembly, defaultAssemblySummary(tenant, assembly));
+        String target = summary.targetApplicationName();
         String rootNodeId = "company:" + slug(target);
         String focusNodeId = "assembly:" + slug(assembly);
         Map<URI, StudioVisualCatalogEntry> entryByClaimUri = entries.stream()
@@ -2353,8 +2378,10 @@ public final class StudioCatalogService {
                         LinkedHashMap::new));
         URI rootClaimUri = URI.create("urn:unfurl:studio:" + rootNodeId);
         URI assemblyClaimUri = URI.create("urn:unfurl:studio:" + focusNodeId);
+        List<String> warnings = new ArrayList<>(sourceWarnings == null ? List.of() : sourceWarnings);
+        Map<String, List<URI>> declaredChildren = declaredChildren(tenant, entries, warnings);
         Set<URI> nestedEntryClaimUris = new LinkedHashSet<>();
-        entries.forEach(entry -> nestedEntryClaimUris.addAll(childClaimUrisForEntry(entry)));
+        entries.forEach(entry -> nestedEntryClaimUris.addAll(childClaimUrisForEntry(entry, declaredChildren)));
         List<URI> assemblyChildClaimUris = entries.stream()
                 .map(entry -> claimUriForEntry(entry.catalogEntryId()))
                 .filter(uri -> !nestedEntryClaimUris.contains(uri))
@@ -2378,7 +2405,7 @@ public final class StudioCatalogService {
                 assemblyChildClaimUris));
         entries.stream()
                 .sorted(Comparator.comparing(StudioVisualCatalogEntry::catalogEntryId))
-                .forEach(entry -> claims.put(claimUriForEntry(entry.catalogEntryId()), claimForEntry(entry)));
+                .forEach(entry -> claims.put(claimUriForEntry(entry.catalogEntryId()), claimForEntry(entry, declaredChildren)));
 
         DcpProjection dcpProjection = new DcpProjectionProjector().project(new DcpProjectionRequest(
                 claims.get(rootClaimUri),
@@ -2401,7 +2428,62 @@ public final class StudioCatalogService {
                 nodeIdsByClaimUri,
                 entryByClaimUri,
                 entries,
-                sourceWarnings);
+                warnings);
+    }
+
+    /**
+     * An aggregate's declared children (DCP HLD-C2 A.14, {@code child_claims}) among the selected entries, by entry id, as
+     * the projection's per-entry claim URIs. A child is the selected entry whose own claim's {@code identity.uri} is the
+     * {@code claim_uri}; each entry's claim is read as compile reads it, never from its catalog id. A required child that
+     * no selected entry provides is named in {@code warnings}; an absent optional child is not, because the aggregate runs
+     * without it (LLD-fabric-studio-api, Aggregate children).
+     */
+    private Map<String, List<URI>> declaredChildren(String tenant, List<StudioVisualCatalogEntry> entries, List<String> warnings) {
+        Map<URI, URI> entryClaimUriByIdentity = new LinkedHashMap<>();
+        Map<String, com.unfurl.dcp.claim.Claim> claims = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            groundedClaim(tenant, entry.catalogEntryId()).ifPresent(claim -> {
+                claims.put(entry.catalogEntryId(), claim);
+                if (claim.identity() != null && claim.identity().uri() != null) {
+                    entryClaimUriByIdentity.putIfAbsent(claim.identity().uri(), claimUriForEntry(entry.catalogEntryId()));
+                }
+            });
+        }
+        Map<String, List<URI>> children = new LinkedHashMap<>();
+        claims.forEach((entryId, claim) -> {
+            List<URI> present = new ArrayList<>();
+            for (com.unfurl.dcp.claim.ChildClaim child : claim.childClaims()) {
+                URI entryClaimUri = child.claimUri() == null ? null : entryClaimUriByIdentity.get(child.claimUri());
+                if (entryClaimUri != null) {
+                    present.add(entryClaimUri);
+                } else if (child.isRequired()) {
+                    warnings.add("CHILD_CLAIM_MISSING: " + labelForCatalogEntry(entryId) + " requires child " + child.claimUri()
+                            + ", which this draft does not include");
+                }
+            }
+            if (!present.isEmpty()) children.put(entryId, List.copyOf(present));
+        });
+        // The projection never nests along a cycle (A names B, B names A): those references are dropped, so the cycle's
+        // members stay under the assembly, visible, and the warning names them. Resolution refuses the draft.
+        Map<URI, List<URI>> references = new LinkedHashMap<>();
+        Map<URI, String> entryIdByClaimUri = new LinkedHashMap<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            URI entryClaimUri = claimUriForEntry(entry.catalogEntryId());
+            entryIdByClaimUri.put(entryClaimUri, entry.catalogEntryId());
+            references.put(entryClaimUri, children.getOrDefault(entry.catalogEntryId(), List.of()));
+        }
+        StronglyConnectedGroups<URI> groups = StronglyConnectedGroups.of(references);
+        for (List<URI> cycle : groups.cycles(references)) {
+            warnings.add("CHILD_CLAIM_CYCLE: " + cycle.stream().map(uri -> labelForCatalogEntry(entryIdByClaimUri.get(uri)))
+                    .sorted().collect(java.util.stream.Collectors.joining(", ")) + " name each other as children");
+        }
+        Map<String, List<URI>> acyclic = new LinkedHashMap<>();
+        children.forEach((entryId, entryChildren) -> {
+            URI parent = claimUriForEntry(entryId);
+            List<URI> kept = entryChildren.stream().filter(child -> !groups.sameGroup(parent, child)).toList();
+            if (!kept.isEmpty()) acyclic.put(entryId, kept);
+        });
+        return acyclic;
     }
 
     public StudioDynamicDcpProjection dynamicDcpProjection(
@@ -2477,16 +2559,19 @@ public final class StudioCatalogService {
         List<StudioDynamicDcpNode> childNodes = nodes.stream()
                 .filter(StudioDynamicDcpNode::replacementAllowed)
                 .toList();
-        List<StudioDynamicDcpEdge> edges = new ArrayList<>(dcpProjection.edges().stream()
+        List<StudioDynamicDcpEdge> declaredEdges = dcpProjection.edges().stream()
                 .map(edge -> studioEdgeFromDcp(edge, nodeIdsByClaimUri))
-                .toList());
-        List<String> childNodeIds = childNodes.stream().map(StudioDynamicDcpNode::nodeId).toList();
-        for (int i = 0; i < childNodeIds.size() - 1; i++) {
-            edges.add(new StudioDynamicDcpEdge(childNodeIds.get(i), childNodeIds.get(i + 1), "REQUIRES"));
-        }
+                .toList();
 
         List<StudioSubstratePort> substratePorts = deriveSubstratePorts(childNodes, entries);
         List<StudioPortConnectionEdge> connections = derivePortConnections(childNodes, entries, substratePorts);
+        // The CONTAINS tree follows the matched bindings where no containment is declared (LLD-fabric-studio-api,
+        // Containment derived from bindings). No other edge is invented between components: a dependency is its
+        // connection.
+        StudioDerivedContainment.Result derived = StudioDerivedContainment.apply(nodes,
+                declaredEdges, connections, focusNodeId);
+        nodes = derived.nodes();
+        List<StudioDynamicDcpEdge> edges = derived.edges();
         List<String> warnings = new ArrayList<>();
         if (sourceWarnings != null) {
             warnings.addAll(sourceWarnings);
@@ -2543,7 +2628,7 @@ public final class StudioCatalogService {
      * for the navigator only (DCP HLD-C §3.10): it is never admitted, compiled, exported or reported as the
      * component's claim; compile uses {@link #catalogEntryForVisual}.
      */
-    private Claim claimForEntry(StudioVisualCatalogEntry entry) {
+    private Claim claimForEntry(StudioVisualCatalogEntry entry, Map<String, List<URI>> declaredChildren) {
         Map<String, Object> dynamic = entry.dynamicComposition();
         return claim(
                 claimUriForEntry(entry.catalogEntryId()),
@@ -2551,7 +2636,7 @@ public final class StudioCatalogService {
                 ComponentKind.COMPONENT,
                 stringValue(dynamic.get("dcpType"), "COMPONENT"),
                 stringValue(dynamic.get("level"), "CHILD"),
-                childClaimUrisForEntry(entry),
+                childClaimUrisForEntry(entry, declaredChildren),
                 capabilitiesFromVisual(entry.visualManifest()),
                 rawNeedsForEntry(entry));
     }
@@ -2629,9 +2714,13 @@ public final class StudioCatalogService {
         return stringList(entry.dynamicComposition().get("rawNeeds"));
     }
 
-    private List<URI> childClaimUrisForEntry(StudioVisualCatalogEntry entry) {
+    /**
+     * An entry's children for the projection: the children its claim declares ({@code child_claims}, already matched to
+     * the selected entries), then any nesting references its presentation metadata carries.
+     */
+    private List<URI> childClaimUrisForEntry(StudioVisualCatalogEntry entry, Map<String, List<URI>> declaredChildren) {
         Map<String, Object> dynamic = entry.dynamicComposition();
-        LinkedHashSet<URI> result = new LinkedHashSet<>();
+        LinkedHashSet<URI> result = new LinkedHashSet<>(declaredChildren.getOrDefault(entry.catalogEntryId(), List.of()));
         addChildClaimUris(result, dynamic.get("contains"));
         addChildClaimUris(result, dynamic.get("children"));
         addChildClaimUris(result, dynamic.get("containsCatalogEntryIds"));
@@ -3026,10 +3115,12 @@ public final class StudioCatalogService {
             String assemblyId,
             String componentNodeId
     ) {
+        if (componentNodeId == null || componentNodeId.isBlank()) {
+            throw new IllegalArgumentException("COMPONENT_NODE_REQUIRED: replacement candidates are asked for one component; "
+                    + "name it with componentNodeId");
+        }
         StudioDynamicDcpProjection projection = dynamicDcpProjection(tenantId, assemblyId);
-        String selectedNodeId = componentNodeId == null || componentNodeId.isBlank()
-                ? "component.validation-service"
-                : componentNodeId;
+        String selectedNodeId = componentNodeId;
         StudioDynamicDcpNode selected = projection.nodes().stream()
                 .filter(node -> node.nodeId().equals(selectedNodeId))
                 .findFirst()
@@ -3116,7 +3207,7 @@ public final class StudioCatalogService {
                     List.of("catalogEntryId is required"));
         }
 
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         StudioVisualCatalogEntry candidate = entries.stream()
                 .filter(entry -> candidateId.equals(entry.catalogEntryId()))
                 .findFirst()
@@ -3271,14 +3362,14 @@ public final class StudioCatalogService {
         if (request == null) {
             throw new IllegalArgumentException("assembly request is required");
         }
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         StudioAssemblySummary summary = new StudioAssemblySummary(
                 tenant,
                 request.assemblyId(),
                 request.targetApplicationName(),
                 request.defaultDeploymentTarget(),
                 "",
-                "CONTAINERIZED_SERVICE",
+                "",
                 "",
                 0);
         assemblies.put(summary.assemblyId(), summary);
@@ -3290,9 +3381,9 @@ public final class StudioCatalogService {
         String tenant = normalizeTenant(tenantId);
         String assembly = assemblyId == null || assemblyId.isBlank() ? "assembly-demo" : assemblyId;
         StudioSaveDraftRequest safeRequest = request == null
-                ? new StudioSaveDraftRequest("", "", "", "CONTAINERIZED_SERVICE", "", 0)
+                ? new StudioSaveDraftRequest("", "", "", "", "", 0)
                 : request;
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         StudioAssemblySummary previous = assemblies.get(assembly);
         StudioAssemblySummary saved = new StudioAssemblySummary(
                 tenant,
@@ -3328,7 +3419,7 @@ public final class StudioCatalogService {
         String tenant = normalizeTenant(tenantId);
         String assembly = normalizeAssembly(assemblyId);
         StudioAssemblySummary summary = assembliesByTenant
-                .computeIfAbsent(tenant, this::fixtureAssemblies)
+                .computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>())
                 .getOrDefault(assembly, defaultAssemblySummary(tenant, assembly));
         StudioLayoutState layoutState = layout(tenant, assembly);
         List<StudioDraftSession> sessions = sessionsByTenant
@@ -3477,7 +3568,7 @@ public final class StudioCatalogService {
             StudioLayoutState layoutState,
             List<StudioDraftSession> sessions
     ) {
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, this::fixtureAssemblies);
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         Map<String, StudioLayoutState> layouts = layoutsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         Map<String, StudioDraftSession> tenantSessions = sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>());
         String prefix = assembly + "/";
@@ -3568,7 +3659,7 @@ public final class StudioCatalogService {
                 ? null
                 : catalogSnapshotForFile(tenant, selectedCatalog.fileId());
         String resolvedCatalogHash = selectedSnapshot == null
-                ? response(entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries)).catalogHash()
+                ? response(entriesByTenant.computeIfAbsent(tenant, this::catalogEntries)).catalogHash()
                 : selectedSnapshot.catalogHash();
         Instant now = Instant.now();
         String sessionId = "studio-session-" + UUID.randomUUID();
@@ -3594,6 +3685,9 @@ public final class StudioCatalogService {
                 now,
                 List.of());
         sessionsByTenant.computeIfAbsent(tenant, ignored -> new ConcurrentHashMap<>()).put(sessionKey(assembly, sessionId), session);
+        // Starting a draft records its assembly, keeping what an earlier record chose (LLD-fabric-studio-api, Assembly
+        // records).
+        updateAssemblyRevision(session);
         if (selectedCatalog != null) {
             linkFileToSession(tenant, sessionId, "", selectedCatalog.fileId(), "INPUT");
         }
@@ -3765,7 +3859,14 @@ public final class StudioCatalogService {
                     build.invalid().reasons(),
                     List.of());
         }
-        return deploymentService.resolveDeployment(build.candidate(), request);
+        StudioDeploymentResolveResponse response = deploymentService.resolveDeployment(build.candidate(), request);
+        // The resolver names a selection by artifact coordinates; Studio's projection names the draft's components by
+        // catalog entry, so each selection also says which entry it was resolved for (LLD-fabric-studio-api,
+        // Deployment Resolution).
+        Map<String, String> entryIds = build.catalogEntryIdsByCoordinates();
+        return response.withSelections(response.selections().stream()
+                .map(selection -> selection.withCatalogEntryId(entryIds.getOrDefault(selection.componentId(), "")))
+                .toList());
     }
 
     /**
@@ -4532,6 +4633,12 @@ public final class StudioCatalogService {
                             "nodes[" + node.nodeId() + "]", "catalog entry " + node.catalogEntryId()
                             + " has no admitted claim; nothing is projected for it")));
         }
+        // A draft component whose entry the catalog no longer has is not in the projection; the view names it so the
+        // operator can remove it (LLD-fabric-studio-api, Tenant Catalog and Assets).
+        for (String missing : draftEntries(session).missing()) {
+            diagnostics.add(new StudioDcpDiagnostic("ERROR", "CATALOG_ENTRY_MISSING", "draft[" + missing + "]",
+                    missingEntryWarning(tenant, missing)));
+        }
         Map<java.net.URI, String> providerNodes = new LinkedHashMap<>();
         nodes.forEach(node -> {
             if (node.claim().identity() != null && node.claim().identity().uri() != null) {
@@ -4763,9 +4870,12 @@ public final class StudioCatalogService {
         }
         List<CatalogEntry> selected = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        Map<String, String> catalogEntryIdsByCoordinates = new LinkedHashMap<>();
         for (StudioVisualCatalogEntry visual : selectedVisuals) {
             try {
-                selected.add(withTenantCompanions(session.tenantId(), catalogEntryForVisual(session.tenantId(), visual)));
+                CatalogEntry entry = withTenantCompanions(session.tenantId(), catalogEntryForVisual(session.tenantId(), visual));
+                selected.add(entry);
+                catalogEntryIdsByCoordinates.putIfAbsent(entry.artifact().coordinates(), visual.catalogEntryId());
             } catch (CatalogEntryNotAdmittedException ex) {
                 return CandidateBuild.invalid(new InvalidDraft("CATALOG_ENTRY_NOT_ADMITTED", ex.getMessage()));
             } catch (CompanionMissingException ex) {
@@ -4789,7 +4899,7 @@ public final class StudioCatalogService {
                 dependencyBindings(selected),
                 List.<PlanningWarning>of(),
                 new Scorer().score(selected, need));
-        return CandidateBuild.valid(candidate, warnings);
+        return CandidateBuild.valid(candidate, warnings, catalogEntryIdsByCoordinates);
     }
 
     /**
@@ -4797,20 +4907,46 @@ public final class StudioCatalogService {
      * projection, deployment resolution, and compile share one source of truth.
      */
     private List<StudioVisualCatalogEntry> selectedVisualEntriesForSession(StudioDraftSession session) {
-        List<StudioVisualCatalogEntry> catalog = entriesByTenant.computeIfAbsent(session.tenantId(), this::fixtureEntries);
+        DraftEntries draft = draftEntries(session);
+        if (!draft.missing().isEmpty()) {
+            throw new IllegalArgumentException(missingEntryWarning(session.tenantId(), draft.missing().get(0)));
+        }
+        return draft.present();
+    }
+
+    /**
+     * Replays a draft's membership against the tenant catalog: the entries the catalog has, in draft order, and the ids
+     * of those it no longer has (removed, or never a real entry). Resolution and compile refuse a draft with missing
+     * entries; the projection draws the rest and names them.
+     */
+    private DraftEntries draftEntries(StudioDraftSession session) {
+        List<StudioVisualCatalogEntry> catalog = entriesByTenant.computeIfAbsent(session.tenantId(), this::catalogEntries);
         Map<String, StudioVisualCatalogEntry> byId = new LinkedHashMap<>();
         catalog.forEach(entry -> byId.put(entry.catalogEntryId(), entry));
-        List<StudioVisualCatalogEntry> selected = new ArrayList<>();
+        List<StudioVisualCatalogEntry> present = new ArrayList<>();
+        List<String> missing = new ArrayList<>();
         for (String entryId : selectedCatalogEntryIds(session)) {
             StudioVisualCatalogEntry visual = byId.get(entryId);
             if (visual == null) {
-                throw new IllegalArgumentException(
-                        "draft references catalog entry '" + entryId + "' that is not registered in tenant '"
-                                + session.tenantId() + "'");
+                if (!missing.contains(entryId)) missing.add(entryId);
+            } else {
+                present.add(visual);
             }
-            selected.add(visual);
         }
-        return List.copyOf(selected);
+        return new DraftEntries(List.copyOf(present), List.copyOf(missing));
+    }
+
+    /** A draft's components replayed against the catalog: those it has, and the ids of those it no longer has. */
+    private record DraftEntries(List<StudioVisualCatalogEntry> present, List<String> missing) {
+    }
+
+    /**
+     * The words for a draft component whose entry the catalog no longer has, and how to fix it. Grounding failures that
+     * report it carry {@code CATALOG_ENTRY_NOT_FOUND}; the projection's warning carries {@code CATALOG_ENTRY_MISSING}.
+     */
+    private static String missingEntryWarning(String tenantId, String entryId) {
+        return "CATALOG_ENTRY_MISSING: draft component '" + entryId + "' is no longer in tenant '" + tenantId
+                + "''s catalog; remove it from the draft (REMOVE_COMPONENT) or admit its jar";
     }
 
     /**
@@ -5264,7 +5400,7 @@ public final class StudioCatalogService {
         if (normalizedAssetId.isBlank()) {
             throw new IllegalArgumentException("asset id is required");
         }
-        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+        List<StudioVisualCatalogEntry> entries = entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         for (StudioVisualCatalogEntry entry : entries) {
             for (Map<String, Object> asset : visualAssets(entry)) {
                 if (normalizedAssetId.equals(stringValue(asset.get("assetId"), ""))) {
@@ -5460,23 +5596,49 @@ public final class StudioCatalogService {
      * <p>Fall-through order: real `META-INF/unfurl-catalog.yaml` JAR entries,
      * package visual assets, then hardcoded fixtures.
      */
-    private List<StudioVisualCatalogEntry> fixtureEntries(String tenantId) {
-        List<StudioVisualCatalogEntry> manifestEntries = scanCatalogManifests(tenantId);
-        List<StudioVisualCatalogEntry> packageEntries = packageVisualAssets.scan(assetRoot);
-        if (manifestEntries.isEmpty() && packageEntries.isEmpty()) {
-            return bundledFixtureEntries(tenantId);
+    /**
+     * Load-time rule (LLD-fabric-studio-api, What a catalog entry is): state saved before every entry had to carry a
+     * claim may hold entries without a manifest. They are dropped, never served, and the log names each one.
+     */
+    private static List<StudioVisualCatalogEntry> withClaimsOnly(String where, List<StudioVisualCatalogEntry> entries) {
+        List<StudioVisualCatalogEntry> kept = new ArrayList<>();
+        for (StudioVisualCatalogEntry entry : entries) {
+            if (entry.admitted()) {
+                kept.add(entry);
+            } else {
+                System.err.println("[studio] catalog: dropped " + entry.catalogEntryId() + " from " + where
+                        + ": it carries no claim read from a component artifact");
+            }
         }
-        Map<String, StudioVisualCatalogEntry> entries = new LinkedHashMap<>();
-        for (StudioVisualCatalogEntry entry : manifestEntries) {
-            entries.put(entry.catalogEntryId(), entry);
+        return List.copyOf(kept);
+    }
+
+    /**
+     * An earlier catalog version as restored from state, under the same load-time rule: its entries without a claim are
+     * dropped and named in the log, and its {@code catalogHash} is computed from the entries it keeps, so what a selected
+     * version serves and its hash agree. A version that held none is returned unchanged.
+     */
+    private StudioCatalogSnapshot withClaimsOnly(String tenant, String fileId, StudioCatalogSnapshot snapshot) {
+        List<StudioVisualCatalogEntry> kept = withClaimsOnly("tenant " + tenant + " catalog version " + fileId, snapshot.entries());
+        if (kept.size() == snapshot.entries().size()) {
+            return snapshot;
         }
-        for (StudioVisualCatalogEntry entry : packageEntries) {
-            entries.putIfAbsent(entry.catalogEntryId(), entry);
+        return new StudioCatalogSnapshot(snapshot.tenantId(), response(kept).catalogHash(), kept, snapshot.diagnosticArtifacts());
+    }
+
+    /**
+     * Catalog source (LLD-fabric-studio-api, What a catalog entry is): a tenant's catalog starts as the jars with a
+     * catalog manifest scanned in the asset root, each decorated by any package visual manifest that names it, and grows
+     * by admission. Fabric ships no built-in entries: with no asset root, or no jar in it carrying a manifest, a
+     * tenant's catalog starts empty.
+     */
+    private List<StudioVisualCatalogEntry> catalogEntries(String tenantId) {
+        List<StudioVisualCatalogEntry> scanned = scanCatalogManifests(tenantId);
+        for (String orphan : packageVisualAssets.orphanedVisuals(scanned, assetRoot)) {
+            System.err.println("[studio] package visuals: skipped " + orphan
+                    + ": no admitted or scanned jar provides that catalog entry, and visuals never create one");
         }
-        for (StudioVisualCatalogEntry entry : bundledFixtureEntries(tenantId)) {
-            entries.putIfAbsent(entry.catalogEntryId(), entry);
-        }
-        return List.copyOf(entries.values());
+        return packageVisualAssets.decorate(scanned, assetRoot);
     }
 
     /**
@@ -5664,61 +5826,6 @@ public final class StudioCatalogService {
         return words.isEmpty() ? capability : String.join(" ", words);
     }
 
-    private List<StudioVisualCatalogEntry> bundledFixtureEntries(String tenantId) {
-        return List.of(
-                new StudioVisualCatalogEntry(
-                        "com.unfurl:validation-service:1.1.0",
-                        sha256("claim:" + tenantId + ":validation-service"),
-                        sha256("artifact:validation-service"),
-                        visual("WORKFLOW", List.of("validate.order", "validate.payment", "validate.inventory")),
-                        dynamicComposition("COMPONENT", List.of("component.customer-policy-validator", "component.fraud-validator")),
-                        visualIntegrity("validation-service", "META-INF/visual/validation-service.glb"),
-                        List.of()),
-                new StudioVisualCatalogEntry(
-                        "com.unfurl:storage-s3:1.2.0",
-                        sha256("claim:" + tenantId + ":storage-s3"),
-                        sha256("artifact:storage-s3"),
-                        visual("STORAGE", List.of("storage.put")),
-                        dynamicComposition("COMPONENT", List.of("component.azure-blob", "component.minio-storage")),
-                        visualIntegrity("storage-s3", "META-INF/visual/storage-s3.glb"),
-                        List.of()));
-    }
-
-    private Map<String, StudioAssemblySummary> fixtureAssemblies(String tenantId) {
-        return new ConcurrentHashMap<>(Map.of("assembly-demo", new StudioAssemblySummary(
-                tenantId,
-                "assembly-demo",
-                "unfurl-flow",
-                "Customer Runtime Substrate",
-                "",
-                "CONTAINERIZED_SERVICE",
-                "",
-                0)));
-    }
-
-    private Map<String, Object> fallbackVisual(String category) {
-        return Map.of(
-                "fallbackShape", Map.of("kind", "CUBE", "category", category),
-                "ports", List.of(),
-                "interactions", Map.of("draggable", true, "connectable", true, "inspectable", true));
-    }
-
-    private Map<String, Object> visual(String category, List<String> offeredCapabilities) {
-        return visual(category, "CUBE", offeredCapabilities);
-    }
-
-    /**
-     * Build a visual descriptor with a caller-chosen fallback primitive
-     * {@code kind}. The renderer supports five kinds: CUBE, SPHERE,
-     * CYLINDER, SHIELD, GEAR (see {@code three-renderer/index.ts}).
-     * Picking a kind that reflects the component's deployment shape gives
-     * each real-catalog entry a visually distinct badge without needing
-     * a hand-authored {@code .glb} model.
-     */
-    private Map<String, Object> visual(String category, String fallbackKind, List<String> offeredCapabilities) {
-        return visual(category, fallbackKind, offeredCapabilities, List.of(), List.of());
-    }
-
     /**
      * Build a visual descriptor that emits one port per offered AND one
      * per required capability. OFFER ports anchor to the right ({@code
@@ -5796,14 +5903,6 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Builder: creates Studio's dynamic-composition metadata block while preserving raw
-     * DCP dependency strings for later candidate reconstruction.
-     */
-    private Map<String, Object> dynamicComposition(String dcpType, List<String> compatibleDescendants) {
-        return dynamicComposition(dcpType, compatibleDescendants, List.of());
-    }
-
-    /**
      * Builder: creates Studio's dynamic-composition metadata block with optional raw
      * dependency strings from catalog manifests or admitted claims.
      */
@@ -5851,23 +5950,6 @@ public final class StudioCatalogService {
                             .toList()));
         }
         return Map.copyOf(dynamic);
-    }
-
-    private Map<String, Object> visualIntegrity(String slug, String path) {
-        String thumbnailPath = path.replace(".glb", "-thumbnail.png");
-        return Map.of(
-                "visualManifestHash", sha256("visual:" + slug),
-                "assets", List.of(
-                        Map.of(
-                                "assetId", slug + "-model",
-                                "path", path,
-                                "mediaType", mediaTypeForPath(path),
-                                "sha256", sha256("asset:" + slug + ":" + path)),
-                        Map.of(
-                                "assetId", slug + "-thumbnail",
-                                "path", thumbnailPath,
-                                "mediaType", mediaTypeForPath(thumbnailPath),
-                                "sha256", sha256("asset:" + slug + ":" + thumbnailPath))));
     }
 
     private List<Map<String, Object>> visualAssets(StudioVisualCatalogEntry entry) {
@@ -6077,8 +6159,8 @@ public final class StudioCatalogService {
     }
 
     /**
-     * Factory: creates a minimal assembly summary for snapshot operations when a
-     * workspace has layout/session state but no saved draft summary yet.
+     * Factory: the summary of an assembly Fabric has no record of (LLD-fabric-studio-api, Assembly records): its target
+     * application named after it, and no deployment target, shape, needs or candidate, because none was chosen.
      */
     private StudioAssemblySummary defaultAssemblySummary(String tenantId, String assemblyId) {
         String assembly = normalizeAssembly(assemblyId);
@@ -6088,7 +6170,7 @@ public final class StudioCatalogService {
                 assembly,
                 "",
                 "",
-                "CONTAINERIZED_SERVICE",
+                "",
                 "",
                 0);
     }
@@ -6214,7 +6296,7 @@ public final class StudioCatalogService {
             String tenantId, String intentType, Map<String, Object> payload) {
         String tenant = normalizeTenant(tenantId);
         List<StudioVisualCatalogEntry> entries =
-                entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries);
+                entriesByTenant.computeIfAbsent(tenant, this::catalogEntries);
         return rejectIntentAgainstCatalog(tenant, intentType, payload, entries);
     }
 
@@ -6247,26 +6329,33 @@ public final class StudioCatalogService {
         }
         String tenant = normalizeTenant(tenantId);
         List<StudioVisualCatalogEntry> entries = catalogEntries == null ? List.of() : catalogEntries;
-        boolean known = entries.stream()
-                .anyMatch(entry -> requestedEntryId.equals(entry.catalogEntryId()));
-        if (!known) {
+        Optional<StudioVisualCatalogEntry> requested = entries.stream()
+                .filter(entry -> requestedEntryId.equals(entry.catalogEntryId()))
+                .findFirst();
+        if (requested.isEmpty()) {
             return Optional.of(StudioIntentResponse.invalid(
                     "CATALOG_ENTRY_NOT_FOUND",
                     "catalog entry '" + requestedEntryId + "' is not registered in tenant '" + tenant + "'"));
+        }
+        // A draft never gains a component that could not compile (LLD-fabric-studio-api, Sessions).
+        if (!requested.get().admitted()) {
+            return Optional.of(StudioIntentResponse.invalid(
+                    "CATALOG_ENTRY_NOT_ADMITTED",
+                    "catalog entry '" + requestedEntryId + "' carries no claim read from a component artifact; admit its jar"));
         }
         return Optional.empty();
     }
 
     private void updateAssemblyRevision(StudioDraftSession session) {
-        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(session.tenantId(), this::fixtureAssemblies);
-        StudioAssemblySummary previous = assemblies.getOrDefault(session.assemblyId(), fixtureAssemblies(session.tenantId()).get("assembly-demo"));
+        Map<String, StudioAssemblySummary> assemblies = assembliesByTenant.computeIfAbsent(session.tenantId(), ignored -> new ConcurrentHashMap<>());
+        StudioAssemblySummary previous = assemblies.get(session.assemblyId());
         assemblies.put(session.assemblyId(), new StudioAssemblySummary(
                 session.tenantId(),
                 session.assemblyId(),
                 previous == null ? "" : previous.targetApplicationName(),
                 previous == null ? "" : previous.defaultDeploymentTarget(),
                 session.needsId(),
-                previous == null ? "CONTAINERIZED_SERVICE" : previous.deploymentShape(),
+                previous == null ? "" : previous.deploymentShape(),
                 session.currentCandidateId(),
                 Math.toIntExact(session.sceneRevision())));
     }
@@ -6358,7 +6447,7 @@ public final class StudioCatalogService {
      */
     private StudioFileRecord selectedCatalogFile(String tenantId, String requestedCatalogFileId) {
         String tenant = normalizeTenant(tenantId);
-        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::fixtureEntries), "");
+        ensureCatalogFile(tenant, entriesByTenant.computeIfAbsent(tenant, this::catalogEntries), "");
         Map<String, StudioFileRecord> tenantFiles = filesByTenant.getOrDefault(tenant, Map.of());
         if (requestedCatalogFileId != null && !requestedCatalogFileId.isBlank()) {
             StudioFileRecord file = tenantFiles.get(requestedCatalogFileId.trim());
@@ -6685,7 +6774,8 @@ public final class StudioCatalogService {
         if (configured == null || configured.isBlank()) {
             configured = System.getenv("UNFURL_STUDIO_ASSET_ROOT");
         }
-        return configured == null || configured.isBlank() ? StudioFixtureAssets.assetRoot() : Path.of(configured);
+        // No configured root means no scanned catalog: entries come from admission only (LLD-fabric-studio-api).
+        return configured == null || configured.isBlank() ? null : Path.of(configured);
     }
 
     private String slug(String value) {
@@ -6729,20 +6819,26 @@ public final class StudioCatalogService {
     private record CandidateBuild(
             CompositionCandidate candidate,
             List<String> warnings,
-            InvalidDraft invalid
+            InvalidDraft invalid,
+            Map<String, String> catalogEntryIdsByCoordinates
     ) {
         /**
          * Factory for valid candidate builds.
+         *
+         * @param catalogEntryIdsByCoordinates each selected entry's artifact coordinates to the draft catalog entry it came
+         *        from, so answers keyed by coordinates can be placed on the draft's nodes.
          */
-        static CandidateBuild valid(CompositionCandidate candidate, List<String> warnings) {
-            return new CandidateBuild(candidate, warnings == null ? List.of() : List.copyOf(warnings), null);
+        static CandidateBuild valid(CompositionCandidate candidate, List<String> warnings,
+                                    Map<String, String> catalogEntryIdsByCoordinates) {
+            return new CandidateBuild(candidate, warnings == null ? List.of() : List.copyOf(warnings), null,
+                    Map.copyOf(catalogEntryIdsByCoordinates));
         }
 
         /**
          * Factory for invalid candidate builds.
          */
         static CandidateBuild invalid(InvalidDraft invalid) {
-            return new CandidateBuild(null, List.of(), invalid);
+            return new CandidateBuild(null, List.of(), invalid, Map.of());
         }
     }
 
