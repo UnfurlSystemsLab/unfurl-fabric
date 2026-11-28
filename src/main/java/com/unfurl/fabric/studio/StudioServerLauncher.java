@@ -24,11 +24,11 @@ public final class StudioServerLauncher {
             int port = StudioServer.DEFAULT_PORT;
             Path statePath = StudioStateStore.defaultPath();
             // Asset-root default resolution: -D system property first, env
-            // var second, null otherwise (constructor will then fall back to
-            // the bundled fixture root). The --asset-root CLI flag overrides
-            // both. Mirrors StudioCatalogService.defaultAssetRoot() so the
-            // same env/property convention works regardless of who is
-            // constructing the catalog service.
+            // var second, null otherwise: no asset root, so the catalog holds
+            // only admitted jars (Fabric ships no built-in entries). The
+            // --asset-root CLI flag overrides both. Mirrors
+            // StudioCatalogService.defaultAssetRoot() so the same env/property
+            // convention works regardless of who constructs the catalog service.
             Path assetRoot = resolveDefaultAssetRoot();
             String eventBus = null;
             String redisUrl = null;

@@ -21,6 +21,47 @@ class ResolveDeploymentHandlerTest {
         }
     }
 
+    /**
+     * A session request that omits its tenant and assembly is valid JSON, so it is answered with the request's own
+     * reason, naming what is missing, not as a malformed body (LLD-fabric-studio-api, Deployment Resolution).
+     */
+    @Test
+    void sessionRequestWithoutScopeNamesTheMissingFields() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> response = post(server, "{\"sessionId\":\"studio-session-1\"}", "http://localhost:5173");
+
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(response.body())
+                    .contains(StudioDeploymentResolveRequest.INPUTS_INVALID)
+                    .contains("missing: tenantId, assemblyId")
+                    .doesNotContain("malformed json body");
+        }
+    }
+
+    /** With its scope, the same request reaches the session resolver, which names the unknown session. */
+    @Test
+    void scopedSessionRequestReachesTheSessionResolver() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> response = post(server,
+                    "{\"tenantId\":\"tenant-a\",\"assemblyId\":\"assembly-a\",\"sessionId\":\"no-such-session\"}",
+                    "http://localhost:5173");
+
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(response.body()).contains("no-such-session").doesNotContain(StudioDeploymentResolveRequest.INPUTS_INVALID);
+        }
+    }
+
+    /** Only one of catalogPath and needsPath is an inputs error too. */
+    @Test
+    void halfAFilesystemRequestIsAnInputsError() throws Exception {
+        try (StudioServer server = started()) {
+            HttpResponse<String> response = post(server, "{\"catalogPath\":\"catalog\"}", "http://localhost:5173");
+
+            assertThat(response.statusCode()).isEqualTo(400);
+            assertThat(response.body()).contains(StudioDeploymentResolveRequest.INPUTS_INVALID).contains("supplied together");
+        }
+    }
+
     @Test
     void corsReflectsAnyLoopbackOrigin() throws Exception {
         try (StudioServer server = started()) {
@@ -69,7 +110,7 @@ class ResolveDeploymentHandlerTest {
     }
 
     private StudioServer started() throws Exception {
-        StudioServer server = new StudioServer("127.0.0.1", 0, new StudioCatalogService());
+        StudioServer server = new StudioServer("127.0.0.1", 0, StudioTestCatalog.service());
         server.start();
         return server;
     }

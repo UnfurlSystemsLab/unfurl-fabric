@@ -8,8 +8,9 @@ import java.util.Map;
  *
  * <p>{@code catalogManifest} is the exact {@code META-INF/unfurl-catalog.yaml} text read from the component's artifact
  * at admission or scan (DCP HLD-C §3.10). It is the only source compile uses for the component's claim: after a restart
- * or snapshot load Studio re-parses it and checks it against {@code claimHash}. It is empty for display-only entries
- * (built-in and package visual assets), which can be shown but not compiled.
+ * or snapshot load Studio re-parses it and checks it against {@code claimHash}. Every entry the catalog serves carries
+ * one (LLD-fabric-studio-api, What a catalog entry is): an entry without it exists only as a value read from state or a
+ * catalog version saved before that rule, which Fabric drops or refuses.
  *
  * @param catalogEntryId      the entry id, unique within the tenant catalog.
  * @param claimHash           the pinned hash of the claim in {@code catalogManifest}.
@@ -18,7 +19,7 @@ import java.util.Map;
  * @param dynamicComposition  projection metadata (DCP type, raw dependencies, shape profile).
  * @param visualIntegrity     hashes of the visual assets.
  * @param warnings            admission warnings shown with the entry.
- * @param catalogManifest     the manifest text read from the artifact, or empty for a display-only entry.
+ * @param catalogManifest     the manifest text read from the artifact; empty only in a value read from earlier state.
  */
 public record StudioVisualCatalogEntry(
         String catalogEntryId,
@@ -31,7 +32,8 @@ public record StudioVisualCatalogEntry(
         String catalogManifest
 ) {
     /**
-     * Display-only entry with projection metadata and no claim from an artifact.
+     * An entry without a claim, as state or a catalog version saved before every entry carried one may hold; Fabric drops
+     * or refuses it rather than serving it.
      */
     public StudioVisualCatalogEntry(
             String catalogEntryId,
@@ -46,7 +48,7 @@ public record StudioVisualCatalogEntry(
     }
 
     /**
-     * Display-only entry without projection metadata or a claim from an artifact.
+     * An entry without projection metadata or a claim, as earlier state may hold; Fabric drops or refuses it.
      */
     public StudioVisualCatalogEntry(
             String catalogEntryId,
@@ -60,7 +62,7 @@ public record StudioVisualCatalogEntry(
     }
 
     /**
-     * Invariant constructor: requires an id and copies collections; a missing manifest means display-only.
+     * Invariant constructor: requires an id and copies collections; a missing manifest means the entry carries no claim.
      */
     public StudioVisualCatalogEntry {
         if (catalogEntryId == null || catalogEntryId.isBlank()) {

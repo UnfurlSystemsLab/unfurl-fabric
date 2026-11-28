@@ -117,7 +117,9 @@ Existing `PARENT`, `ASSEMBLY`, and `CHILD` consumers remain valid.
 
 ## Data Prerequisite
 
-Nesting appears only when claims declare containment.
+Declared nesting appears when claims declare containment. Where a component has no declared parent below the assembly,
+Studio's projection derives one from the composition's matched bindings (LLD-fabric-studio-api, *Containment derived
+from bindings*), labelled `DERIVED_FROM_BINDINGS`; declared containment always wins.
 
 Current compatibility bridge:
 
@@ -128,7 +130,7 @@ ClaimMetadata.extensions.containsClaimUris
 ClaimMetadata.extensions.childClaimUris
 ```
 
-Fabric package visual metadata can provide equivalent references through `dynamicComposition`, including catalog-entry references such as:
+Fabric package visual metadata can provide equivalent references through `dynamicComposition` for a catalog entry that exists (admitted or scanned from its jar; package visuals never create an entry, LLD-fabric-studio-api *What a catalog entry is*), including catalog-entry references such as:
 
 ```json
 {

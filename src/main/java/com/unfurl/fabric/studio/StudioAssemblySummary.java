@@ -22,7 +22,8 @@ public record StudioAssemblySummary(
                 : targetApplicationName;
         defaultDeploymentTarget = defaultDeploymentTarget == null ? "" : defaultDeploymentTarget;
         needsId = needsId == null ? "" : needsId;
-        deploymentShape = deploymentShape == null || deploymentShape.isBlank() ? "CONTAINERIZED_SERVICE" : deploymentShape;
+        // An unchosen shape stays empty: Fabric never defaults one (LLD-fabric-studio-api, Assembly records).
+        deploymentShape = deploymentShape == null ? "" : deploymentShape;
         currentCandidateId = currentCandidateId == null ? "" : currentCandidateId;
     }
 }

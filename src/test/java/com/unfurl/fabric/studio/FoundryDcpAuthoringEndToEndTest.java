@@ -84,7 +84,7 @@ class FoundryDcpAuthoringEndToEndTest {
             server.start();
             DcpAuthoringClient client = new DcpAuthoringClient(
                     URI.create("http://127.0.0.1:" + server.port() + FoundryDcpServer.INVOKE_PATH));
-            StudioCatalogService service = new StudioCatalogService().useAuthoringInvocable(client);
+            StudioCatalogService service = StudioTestCatalog.service().useAuthoringInvocable(client);
 
             StudioAuthoringConverseResponse response = service.converseAuthoring(new StudioAuthoringConverseRequest(
                     "tenant-local",
